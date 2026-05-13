@@ -150,8 +150,6 @@ func (s *Scheduler) execute() {
 	todayStr := time.Now().Format("2006-01-02")
 	log.Printf("Scheduler: starting pipeline for %s", todayStr)
 
-	dataDir := filepath.Join(config.GetDataDir(), todayStr)
-
 	defer func() {
 		s.mu.Lock()
 		s.lastRun = time.Now()
@@ -197,7 +195,9 @@ func (s *Scheduler) execute() {
 	}
 
 	tplCopy := copy.GenerateCopywriting(sectors, todayStr, "full")
-	if err := os.WriteFile(filepath.Join(dataDir, "copy_全天.txt"), []byte(tplCopy), 0644); err != nil {
+	copyDir := filepath.Join(config.GetCopyDir(), todayStr)
+	os.MkdirAll(copyDir, 0755)
+	if err := os.WriteFile(filepath.Join(copyDir, "copy_全天.txt"), []byte(tplCopy), 0644); err != nil {
 		log.Printf("Scheduler: failed to save template copy: %v", err)
 	}
 
@@ -207,7 +207,7 @@ func (s *Scheduler) execute() {
 		if err != nil {
 			log.Printf("Scheduler: AI copy failed: %v", err)
 		} else {
-			os.WriteFile(filepath.Join(dataDir, "copy_ai_全天.txt"), []byte(aiText), 0644)
+			os.WriteFile(filepath.Join(copyDir, "copy_ai_全天.txt"), []byte(aiText), 0644)
 		}
 	}
 

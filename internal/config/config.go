@@ -121,6 +121,11 @@ func GetOutputDir() string {
 	return filepath.Join(GetProjectRoot(), "output")
 }
 
+// GetCopyDir returns the copywriting directory path.
+func GetCopyDir() string {
+	return filepath.Join(GetProjectRoot(), "copy")
+}
+
 // GetRendererDir returns the Remotion renderer directory path.
 func GetRendererDir() string {
 	return filepath.Join(GetProjectRoot(), "web", "frontend")

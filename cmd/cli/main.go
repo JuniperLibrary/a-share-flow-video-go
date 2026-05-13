@@ -157,7 +157,9 @@ func generateAll(sectors []fetcher.Sector, dateStr, dateDir string, useAI bool, 
 	if useAI {
 		sfx = "_ai"
 	}
-	os.WriteFile(filepath.Join(dateDir, fmt.Sprintf("copy%s_全天.txt", sfx)), []byte(copyText), 0644)
+	copyDir := filepath.Join(config.GetCopyDir(), dateStr)
+	os.MkdirAll(copyDir, 0755)
+	os.WriteFile(filepath.Join(copyDir, fmt.Sprintf("copy%s_全天.txt", sfx)), []byte(copyText), 0644)
 	fmt.Printf("文案已保存: copy%s_全天.txt\n", sfx)
 }
 

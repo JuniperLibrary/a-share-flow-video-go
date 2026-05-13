@@ -549,21 +549,22 @@ func handleGenerate(c *gin.Context) {
 	sse.Send("log", "✅ 全天视频生成完成")
 
 	fn := copy.GenerateCopywriting
+	copyDir := filepath.Join(config.GetCopyDir(), body.Date)
 	if body.CopyMode == "ai" {
 		sse.Send("log", "✍️ 生成文案（AI模式）...")
 		aiText, err := copy.GenerateCopywritingAI(sectors, body.Date, "full")
 		if err != nil {
 			sse.Send("log", fmt.Sprintf("⚠️ AI文案生成失败: %v", err))
 		} else {
-			os.MkdirAll(filepath.Join(config.GetDataDir(), body.Date), 0755)
-			os.WriteFile(filepath.Join(config.GetDataDir(), body.Date, "copy_ai_全天.txt"), []byte(aiText), 0644)
+			os.MkdirAll(copyDir, 0755)
+			os.WriteFile(filepath.Join(copyDir, "copy_ai_全天.txt"), []byte(aiText), 0644)
 			sse.Send("log", "✅ 文案已保存")
 		}
 	} else {
 		sse.Send("log", "✍️ 生成文案（模板模式）...")
 		text := fn(sectors, body.Date, "full")
-		os.MkdirAll(filepath.Join(config.GetDataDir(), body.Date), 0755)
-		os.WriteFile(filepath.Join(config.GetDataDir(), body.Date, "copy_全天.txt"), []byte(text), 0644)
+		os.MkdirAll(copyDir, 0755)
+		os.WriteFile(filepath.Join(copyDir, "copy_全天.txt"), []byte(text), 0644)
 		sse.Send("log", "✅ 文案已保存")
 	}
 
@@ -643,8 +644,8 @@ func handleOptimizeCopy(c *gin.Context) {
 	if ok {
 		label = sessCfg.TitleSuffix
 	}
-	os.MkdirAll(filepath.Join(config.GetDataDir(), body.Date), 0755)
-	os.WriteFile(filepath.Join(config.GetDataDir(), body.Date, fmt.Sprintf("copy_ai_%s.txt", label)), []byte(aiText), 0644)
+	os.MkdirAll(filepath.Join(config.GetCopyDir(), body.Date), 0755)
+	os.WriteFile(filepath.Join(config.GetCopyDir(), body.Date, fmt.Sprintf("copy_ai_%s.txt", label)), []byte(aiText), 0644)
 
 	c.JSON(200, gin.H{"text": aiText})
 }
@@ -707,7 +708,7 @@ func getVideos(dateStr string) []string {
 }
 
 func getCopy(dateStr string) map[string]map[string]string {
-	d := filepath.Join(config.GetDataDir(), dateStr)
+	d := filepath.Join(config.GetCopyDir(), dateStr)
 	result := map[string]map[string]string{
 		"template": {},
 		"ai":       {},

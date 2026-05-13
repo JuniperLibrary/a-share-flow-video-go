@@ -11,7 +11,9 @@ node_modules/
 web/frontend/dist/
 
 # Data and output
-
+data/
+output/
+copy/
 # Environment
 .env
 
