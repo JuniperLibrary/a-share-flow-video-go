@@ -1,0 +1,38 @@
+# Binaries
+/cli
+/web-server
+*.exe
+
+# Dependencies
+vendor/
+node_modules/
+
+# Build output
+web/frontend/dist/
+
+# Data and output
+data/
+output/
+
+# Environment
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go test
+*.test
+*.out
+
+# Remotion cache
+.remotion-cache/
+
+# Export progress checkpoints
+.export_progress.json

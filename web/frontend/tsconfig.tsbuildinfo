@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/types.ts","./src/utils.ts","./src/hooks/usesse.ts","./src/pages/configpage.tsx","./src/pages/datapage.tsx","./src/pages/generatepage.tsx","./src/pages/previewpage.tsx","./src/pages/schedulerpage.tsx"],"version":"5.6.3"}
