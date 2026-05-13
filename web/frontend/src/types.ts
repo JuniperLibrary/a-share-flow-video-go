@@ -11,7 +11,7 @@ export interface DateItem {
   date: string;
   videos: string[];
   sector_count: number;
-  copy_count: number;
+  文案_count: number;
   ai_count: number;
 }
 

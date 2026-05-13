@@ -194,20 +194,27 @@ func (s *Scheduler) execute() {
 		}
 	}
 
-	tplCopy := copy.GenerateCopywriting(sectors, todayStr, "full")
 	copyDir := filepath.Join(config.GetCopyDir(), todayStr)
 	os.MkdirAll(copyDir, 0755)
-	if err := os.WriteFile(filepath.Join(copyDir, "copy_全天.txt"), []byte(tplCopy), 0644); err != nil {
-		log.Printf("Scheduler: failed to save template copy: %v", err)
+
+	for _, sess := range []string{"full", "morning", "afternoon"} {
+		sessCfg := config.SessionConfigs[sess]
+		tplCopy := copy.GenerateCopywriting(sectors, todayStr, sess)
+		if err := os.WriteFile(filepath.Join(copyDir, fmt.Sprintf("文案_%s.txt", sessCfg.TitleSuffix)), []byte(tplCopy), 0644); err != nil {
+			log.Printf("Scheduler: failed to save template copy (%s): %v", sessCfg.TitleSuffix, err)
+		}
 	}
 
 	aiCfg := config.GetAIConfig()
 	if aiCfg.APIKey != "" {
-		aiText, err := copy.GenerateCopywritingAI(sectors, todayStr, "full")
-		if err != nil {
-			log.Printf("Scheduler: AI copy failed: %v", err)
-		} else {
-			os.WriteFile(filepath.Join(copyDir, "copy_ai_全天.txt"), []byte(aiText), 0644)
+		for _, sess := range []string{"full", "morning", "afternoon"} {
+			sessCfg := config.SessionConfigs[sess]
+			aiText, err := copy.GenerateCopywritingAI(sectors, todayStr, sess)
+			if err != nil {
+				log.Printf("Scheduler: AI copy failed (%s): %v", sessCfg.TitleSuffix, err)
+			} else {
+				os.WriteFile(filepath.Join(copyDir, fmt.Sprintf("文案_ai_%s.txt", sessCfg.TitleSuffix)), []byte(aiText), 0644)
+			}
 		}
 	}
 

@@ -141,26 +141,29 @@ func generateAll(sectors []fetcher.Sector, dateStr, dateDir string, useAI bool, 
 	}
 	fmt.Printf("视频已保存: output/%s/全天%s.mp4\n", dateStr, formatLabel)
 
-	var copyText string
-	if useAI {
-		var err error
-		copyText, err = copy.GenerateCopywritingAI(sectors, dateStr, "full")
-		if err != nil {
-			fmt.Printf("警告: AI文案生成失败: %v\n", err)
-			copyText = copy.GenerateCopywriting(sectors, dateStr, "full")
-		}
-	} else {
-		copyText = copy.GenerateCopywriting(sectors, dateStr, "full")
-	}
-
-	sfx := ""
-	if useAI {
-		sfx = "_ai"
-	}
 	copyDir := filepath.Join(config.GetCopyDir(), dateStr)
 	os.MkdirAll(copyDir, 0755)
-	os.WriteFile(filepath.Join(copyDir, fmt.Sprintf("copy%s_全天.txt", sfx)), []byte(copyText), 0644)
-	fmt.Printf("文案已保存: copy%s_全天.txt\n", sfx)
+
+	for _, sess := range []string{"full", "morning", "afternoon"} {
+		sessCfg := config.SessionConfigs[sess]
+		var text string
+		if useAI {
+			var err error
+			text, err = copy.GenerateCopywritingAI(sectors, dateStr, sess)
+			if err != nil {
+				fmt.Printf("警告: AI文案(%s)生成失败: %v\n", sessCfg.TitleSuffix, err)
+				text = copy.GenerateCopywriting(sectors, dateStr, sess)
+			}
+		} else {
+			text = copy.GenerateCopywriting(sectors, dateStr, sess)
+		}
+		prefix := "文案"
+		if useAI {
+			prefix = "文案_ai"
+		}
+		os.WriteFile(filepath.Join(copyDir, fmt.Sprintf("%s_%s.txt", prefix, sessCfg.TitleSuffix)), []byte(text), 0644)
+	}
+	fmt.Printf("文案已保存: 早盘/午盘/全天\n")
 }
 
 func printSectorsTable(sectors []fetcher.Sector) {

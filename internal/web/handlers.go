@@ -265,11 +265,11 @@ func handleDates(c *gin.Context) {
 		cpy := getCopy(d)
 		sectors, _ := fetcher.LoadCachedData(d)
 		items = append(items, map[string]any{
-			"date":         d,
-			"videos":       videos,
+			"date":       d,
+			"videos":     videos,
 			"sector_count": len(sectors),
-			"copy_count":   len(cpy["template"]),
-			"ai_count":     len(cpy["ai"]),
+			"文案_count": len(cpy["template"]),
+			"ai_count":   len(cpy["ai"]),
 		})
 	}
 	c.JSON(200, gin.H{"dates": items})
@@ -281,7 +281,7 @@ func handleData(c *gin.Context) {
 	c.JSON(200, gin.H{
 		"sectors": sectors,
 		"videos":  getVideos(dateStr),
-		"copy":    getCopy(dateStr),
+		"文案":    getCopy(dateStr),
 	})
 }
 
@@ -383,7 +383,7 @@ func handleFiles(c *gin.Context) {
 
 	c.JSON(200, gin.H{
 		"videos": videoMap,
-		"copy":   cpy,
+		"文案":   cpy,
 	})
 }
 
@@ -550,21 +550,28 @@ func handleGenerate(c *gin.Context) {
 
 	fn := copy.GenerateCopywriting
 	copyDir := filepath.Join(config.GetCopyDir(), body.Date)
+	os.MkdirAll(copyDir, 0755)
+
+	sessions := []string{"full", "morning", "afternoon"}
 	if body.CopyMode == "ai" {
 		sse.Send("log", "✍️ 生成文案（AI模式）...")
-		aiText, err := copy.GenerateCopywritingAI(sectors, body.Date, "full")
-		if err != nil {
-			sse.Send("log", fmt.Sprintf("⚠️ AI文案生成失败: %v", err))
-		} else {
-			os.MkdirAll(copyDir, 0755)
-			os.WriteFile(filepath.Join(copyDir, "copy_ai_全天.txt"), []byte(aiText), 0644)
-			sse.Send("log", "✅ 文案已保存")
+		for _, sess := range sessions {
+			sessCfg := config.SessionConfigs[sess]
+			aiText, err := copy.GenerateCopywritingAI(sectors, body.Date, sess)
+			if err != nil {
+				sse.Send("log", fmt.Sprintf("⚠️ AI文案(%s)生成失败: %v", sessCfg.TitleSuffix, err))
+			} else {
+				os.WriteFile(filepath.Join(copyDir, fmt.Sprintf("文案_ai_%s.txt", sessCfg.TitleSuffix)), []byte(aiText), 0644)
+				sse.Send("log", fmt.Sprintf("✅ %s文案已保存", sessCfg.TitleSuffix))
+			}
 		}
 	} else {
 		sse.Send("log", "✍️ 生成文案（模板模式）...")
-		text := fn(sectors, body.Date, "full")
-		os.MkdirAll(copyDir, 0755)
-		os.WriteFile(filepath.Join(copyDir, "copy_全天.txt"), []byte(text), 0644)
+		for _, sess := range sessions {
+			sessCfg := config.SessionConfigs[sess]
+			text := fn(sectors, body.Date, sess)
+			os.WriteFile(filepath.Join(copyDir, fmt.Sprintf("文案_%s.txt", sessCfg.TitleSuffix)), []byte(text), 0644)
+		}
 		sse.Send("log", "✅ 文案已保存")
 	}
 
@@ -665,6 +672,7 @@ func getDates() []string {
 	seen := make(map[string]bool)
 	dataDir := config.GetDataDir()
 	outputDir := config.GetOutputDir()
+	copyDir := config.GetCopyDir()
 
 	if entries, err := os.ReadDir(dataDir); err == nil {
 		for _, e := range entries {
@@ -677,6 +685,13 @@ func getDates() []string {
 		}
 	}
 	if entries, err := os.ReadDir(outputDir); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				seen[e.Name()] = true
+			}
+		}
+	}
+	if entries, err := os.ReadDir(copyDir); err == nil {
 		for _, e := range entries {
 			if e.IsDir() {
 				seen[e.Name()] = true
@@ -722,13 +737,13 @@ func getCopy(dateStr string) map[string]map[string]string {
 			continue
 		}
 		name := e.Name()
-		if strings.HasPrefix(name, "copy_ai_") && strings.HasSuffix(name, ".txt") {
-			label := strings.TrimSuffix(strings.TrimPrefix(name, "copy_ai_"), ".txt")
+		if strings.HasPrefix(name, "文案_ai_") && strings.HasSuffix(name, ".txt") {
+			label := strings.TrimSuffix(strings.TrimPrefix(name, "文案_ai_"), ".txt")
 			if b, err := os.ReadFile(filepath.Join(d, name)); err == nil {
 				result["ai"][label] = string(b)
 			}
-		} else if strings.HasPrefix(name, "copy_") && !strings.HasPrefix(name, "copy_ai_") && strings.HasSuffix(name, ".txt") {
-			label := strings.TrimSuffix(strings.TrimPrefix(name, "copy_"), ".txt")
+		} else if strings.HasPrefix(name, "文案_") && !strings.HasPrefix(name, "文案_ai_") && strings.HasSuffix(name, ".txt") {
+			label := strings.TrimSuffix(strings.TrimPrefix(name, "文案_"), ".txt")
 			if b, err := os.ReadFile(filepath.Join(d, name)); err == nil {
 				result["template"][label] = string(b)
 			}

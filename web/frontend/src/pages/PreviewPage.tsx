@@ -22,11 +22,11 @@ export function PreviewPage() {
     if (!selectedDate) return;
     api.getFiles(selectedDate).then(data => {
       setVideos(data.videos || {});
-      setCopyData(data.copy || { template: {}, ai: {} });
+      setCopyData(data.文案 || { template: {}, ai: {} });
       const sessions = new Set([
         ...Object.keys(data.videos || {}),
-        ...Object.keys(data.copy?.template || {}),
-        ...Object.keys(data.copy?.ai || {}),
+        ...Object.keys(data.文案?.template || {}),
+        ...Object.keys(data.文案?.ai || {}),
       ]);
       const arr = [...sessions];
       setActiveSession(arr.length > 0 ? arr[0] : '');

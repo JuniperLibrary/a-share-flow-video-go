@@ -11,7 +11,7 @@ export const api = {
     request<{ dates: DateItem[] }>('/api/dates'),
 
   getData: (date: string) =>
-    request<{ sectors: Sector[]; videos: string[]; copy: Record<string, Record<string, string>> }>(`/api/data/${date}`),
+    request<{ sectors: Sector[]; videos: string[]; 文案: Record<string, Record<string, string>> }>(`/api/data/${date}`),
 
   fetchSectors: (date: string, force: boolean) =>
     fetch('/api/fetch', {
@@ -58,7 +58,7 @@ export const api = {
     request<{ ok: boolean; message: string }>('/api/scheduler/run-now', { method: 'POST' }),
 
   getFiles: (date: string) =>
-    request<{ videos: Record<string, string>; copy: { template: Record<string, string>; ai: Record<string, string> } }>(`/api/files/${date}`),
+    request<{ videos: Record<string, string>; 文案: { template: Record<string, string>; ai: Record<string, string> } }>(`/api/files/${date}`),
 
   exportAll: (date: string) =>
     request<{ task_id: string; status: string; progress?: string }>(`/api/export-all/${date}`),

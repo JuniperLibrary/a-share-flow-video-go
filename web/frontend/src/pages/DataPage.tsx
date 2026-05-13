@@ -204,7 +204,7 @@ export function DataPage({ onSectorData, sectorData }: DataPageProps) {
           ) : dates.map(d => (
             <div key={d.date} className={`date-item ${selectedDate === d.date ? 'selected' : ''}`} onClick={() => selectDate(d.date)}>
               <div className="d">{d.date}</div>
-              <div className="m">{d.sector_count}板块 · {d.copy_count + d.ai_count}文案 · {d.videos.length}视频</div>
+              <div className="m">{d.sector_count}板块 · {d.文案_count + d.ai_count}文案 · {d.videos.length}视频</div>
             </div>
           ))}
         </div>
