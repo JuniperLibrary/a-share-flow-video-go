@@ -19,24 +19,19 @@ const NUM_POINTS = 300;
 const SECTOR_COLORS: Record<string, string> = {
   '半导体': '#00d4ff',
   'AI应用': '#00ffaa',
-  'AI智能体': '#00ff88',
-  '人形机器人': '#00ffcc',
-  '集成电路': '#00c8ff',
-  '软件开发': '#00b4ff',
-  '证券': '#ffc107',
-  '证券板块': '#ffc107',
-  '银行': '#ffb300',
+  'CPO概念': '#00ff88',
+  '有色金属': '#ffc107',
+  '锂矿概念': '#66bb6a',
+  '商业航天': '#ff8a80',
+  '电池': '#4caf50',
+  '机器人': '#00ffcc',
+  '创新药': '#ba68c8',
   '白酒': '#ff9800',
-  '新能源汽车': '#4caf50',
-  '锂电池': '#66bb6a',
-  '光伏': '#81c784',
-  '储能': '#a5d6a7',
-  '军工': '#ff6b9d',
-  '航天航空': '#ff8a80',
-  '石油': '#ffab40',
-  '煤炭': '#ffca28',
-  '医药': '#ba68c8',
-  '生物制品': '#ce93d8',
+  '消费电子': '#00c8ff',
+  '银行': '#ffb300',
+  '人工智能': '#00b4ff',
+  '云计算': '#ce93d8',
+  '低空经济': '#ff6b9d',
 };
 
 function getSectorColor(name: string, fallback: string): string {
@@ -115,36 +110,9 @@ function pointsToPath(
 }
 
 function normalizeY(value: number, yMin: number, yMax: number): number {
-  const absVal = Math.abs(value);
-  const isNegative = value < 0;
-
-  if (isNegative) {
-    // 负值区域：更紧凑的压缩，避免"瀑布式暴跌"视觉效果
-    // 0 ~ -50: 放大显示（保持结构层次）
-    // -50 ~ -300: 强压缩显示（深度负值压缩）
-    if (absVal <= 50) {
-      // 小负值：幂函数放大 (0.6 指数使靠近零的值被放大)
-      const amplified = Math.pow(absVal / 50, 0.6) * 0.25;
-      return -amplified;
-    } else {
-      // 大负值：强压缩 (0.35 指数使超50部分被大幅压缩)
-      const compressed = 0.25 + Math.pow((absVal - 50) / Math.max(Math.abs(yMin) - 50, 1), 0.35) * 0.35;
-      return -Math.min(compressed, 0.6);
-    }
-  } else {
-    // 正值区域：更展开，突出资金流入
-    // 0 ~ 80: 线性增长
-    // 80 ~ 300: 对数增长（突出高值）
-    const positiveMax = Math.max(yMax, 100);
-    if (absVal <= 80) {
-      // 线性增长区域
-      return (absVal / 80) * 0.6;
-    } else {
-      // 对数增长区域：突出高值但不过度展开
-      const logScale = Math.log(1 + (absVal - 80) / 80) / Math.log(1 + (positiveMax - 80) / 80);
-      return 0.6 + logScale * 0.4;
-    }
-  }
+  const range = yMax - yMin;
+  if (range === 0) return 0;
+  return (value - yMin) / range;
 }
 
 export const Chart: React.FC<ChartProps> = ({
@@ -176,15 +144,16 @@ export const Chart: React.FC<ChartProps> = ({
     }));
   }, [sectors]);
 
-  const bearishRatio = useMemo(() => {
-    if (sectors.length === 0) return 0;
-    const negativeCount = sectors.filter(s => s.net < 0).length;
-    return negativeCount / sectors.length;
-  }, [sectors]);
+  const curves = useMemo(() => {
+    return sectorsWithColor.map((s, i) => ({
+      ...s,
+      data: generateCurve(s.net, NUM_POINTS, i * 9999 + 42),
+    }));
+  }, [sectorsWithColor]);
 
-  const isBearishMarket = bearishRatio > 0.6;
-
-  const zeroBias = isBearishMarket ? 0.35 : 0;
+  const sortedByAbs = useMemo(() => {
+    return [...sectorsWithColor].sort((a, b) => Math.abs(b.net) - Math.abs(a.net));
+  }, [sectorsWithColor]);
 
   const yBounds = useMemo(() => {
     if (sectors.length === 0) return { min: -100, max: 300 };
@@ -198,29 +167,13 @@ export const Chart: React.FC<ChartProps> = ({
     };
   }, [sectors]);
 
-  const curves = useMemo(() => {
-    return sectorsWithColor.map((s, i) => ({
-      ...s,
-      data: generateCurve(s.net, NUM_POINTS, i * 9999 + 42),
-    }));
-  }, [sectorsWithColor]);
-
-  const sortedByAbs = useMemo(() => {
-    return [...sectorsWithColor].sort((a, b) => Math.abs(b.net) - Math.abs(a.net));
-  }, [sectorsWithColor]);
-
   const xScale = (v: number) => chartLeft + (v / X_MAX) * chartW;
 
   const yScale = (v: number) => {
     const range = yBounds.max - yBounds.min;
-    if (range === 0) return chartBottom;
-    const normMin = normalizeY(yBounds.min, yBounds.min, yBounds.max);
-    const normMax = normalizeY(yBounds.max, yBounds.min, yBounds.max);
-    const normRange = normMax - normMin;
-    if (normRange === 0) return (chartTop + chartBottom) / 2;
-    const normalized = (normalizeY(v, yBounds.min, yBounds.max) - normMin) / normRange;
-    const adjusted = normalized * (1 - zeroBias) + zeroBias;
-    return chartBottom - adjusted * chartH;
+    if (range === 0) return (chartTop + chartBottom) / 2;
+    const normalized = (v - yBounds.min) / range;
+    return chartBottom - normalized * chartH;
   };
 
   const yTickStep = useMemo(() => {
@@ -232,8 +185,9 @@ export const Chart: React.FC<ChartProps> = ({
   }, [yBounds]);
 
   const yTicks: number[] = [];
-  for (let v = yBounds.min; v <= yBounds.max; v += yTickStep) {
-    yTicks.push(v);
+  const startTick = Math.ceil(yBounds.min / yTickStep) * yTickStep;
+  for (let v = startTick; v <= yBounds.max; v += yTickStep) {
+    yTicks.push(Math.round(v));
   }
 
   const yZero = yScale(0);

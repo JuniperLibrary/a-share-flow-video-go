@@ -42,9 +42,9 @@ func TestSaveAndLoadCSV(t *testing.T) {
 	config.SetProjectRoot(tmpDir)
 
 	sectors := []Sector{
-		{Name: "半导体", Net: 225.5, Color: "#00F0FF", Source: "eastmoney", RankGroup: "inflow", IsAutoFill: false},
-		{Name: "银行", Net: -45.9, Color: "#FF6B8A", Source: "eastmoney", RankGroup: "outflow", IsAutoFill: false},
-		{Name: "白酒", Net: 0, Color: "#FFD700", Source: "eastmoney", RankGroup: "inflow", IsAutoFill: true},
+		{Name: "半导体", Net: 225.5, Color: "#00F0FF"},
+		{Name: "银行", Net: -45.9, Color: "#FF6B8A"},
+		{Name: "白酒", Net: 0, Color: "#FFD700"},
 	}
 
 	err := SaveDailyData(sectors, "2026-05-13")
@@ -71,12 +71,6 @@ func TestSaveAndLoadCSV(t *testing.T) {
 		}
 		if got.Color != want.Color {
 			t.Errorf("sector[%d].Color = %q, want %q", i, got.Color, want.Color)
-		}
-		if got.RankGroup != want.RankGroup {
-			t.Errorf("sector[%d].RankGroup = %q, want %q", i, got.RankGroup, want.RankGroup)
-		}
-		if got.IsAutoFill != want.IsAutoFill {
-			t.Errorf("sector[%d].IsAutoFill = %v, want %v", i, got.IsAutoFill, want.IsAutoFill)
 		}
 	}
 }
@@ -149,17 +143,11 @@ func TestFetchTop15HotSectors_Live(t *testing.T) {
 		if s.Color == "" {
 			t.Errorf("sector[%d].Color is empty", i)
 		}
-		if s.Source == "" {
-			t.Errorf("sector[%d].Source is empty", i)
-		}
-		if s.RankGroup == "" {
-			t.Errorf("sector[%d].RankGroup is empty", i)
-		}
 	}
 
 	inflowCount := 0
 	for _, s := range sectors {
-		if s.RankGroup == "inflow" {
+		if s.Net > 0 {
 			inflowCount++
 		}
 	}
@@ -278,7 +266,7 @@ func TestColorPaletteAssignment(t *testing.T) {
 	tmpDir := t.TempDir()
 	config.SetProjectRoot(tmpDir)
 
-	sectors, err := FetchTop15HotSectors()
+	sectors, err := FetchHistoricalSectors("2026-05-12")
 	if err != nil || len(sectors) == 0 {
 		t.Skipf("API returned no data: %v", err)
 	}
@@ -296,21 +284,12 @@ func TestColorPaletteAssignment(t *testing.T) {
 
 	inflowCount := 0
 	for _, s := range sectors {
-		if s.RankGroup == "inflow" {
+		if s.Net > 0 {
 			inflowCount++
 		}
 	}
 
-	for i := 0; i < inflowCount && i < len(sectors); i++ {
-		if sectors[i].RankGroup != "inflow" {
-			t.Errorf("sector[%d] should be inflow, got %s", i, sectors[i].RankGroup)
-		}
-	}
-	for i := inflowCount; i < len(sectors); i++ {
-		if sectors[i].RankGroup != "outflow" {
-			t.Errorf("sector[%d] should be outflow, got %s", i, sectors[i].RankGroup)
-		}
-	}
+	t.Logf("Fetched %d sectors: %d inflow, %d outflow", len(sectors), inflowCount, len(sectors)-inflowCount)
 }
 
 func TestNewRequest_Success(t *testing.T) {

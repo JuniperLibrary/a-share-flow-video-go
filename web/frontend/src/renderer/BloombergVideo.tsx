@@ -16,7 +16,6 @@ export const BloombergVideo: React.FC = () => {
 
   const dateStr = inputProps.dateStr || '2026-05-11';
   const displayDate = inputProps.displayDate || '05-11';
-  const typeLabel = inputProps.typeLabel || '行业板块';
   const sectors = inputProps.sectors || [];
   const totalFrames = inputProps.totalFrames || durationInFrames;
   const events = inputProps.events;
@@ -61,7 +60,7 @@ export const BloombergVideo: React.FC = () => {
   return (
     <AbsoluteFill>
       <Background frame={frame} totalFrames={totalFrames} sentiment={sentiment} width={width} height={height} format={format} />
-      <Header displayDate={displayDate} typeLabel={typeLabel} frame={frame} totalFrames={totalFrames} sentiment={sentiment} width={width} height={height} format={format} />
+      <Header displayDate={displayDate} frame={frame} totalFrames={totalFrames} sentiment={sentiment} width={width} height={height} format={format} />
       <Particles frame={frame} width={width} height={height} />
 
       <Chart

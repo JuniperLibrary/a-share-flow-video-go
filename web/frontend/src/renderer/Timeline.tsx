@@ -33,7 +33,7 @@ export const Timeline: React.FC<TimelineProps> = ({
   const timelineBottom = isTV ? height * 0.78 : height * 0.82;
 
   const events = useMemo(() => {
-    return (timelineEvents && timelineEvents.length > 0) ? timelineEvents.slice(0, 7) : [];
+    return (timelineEvents && timelineEvents.length > 0) ? timelineEvents.slice(0, 12) : [];
   }, [timelineEvents]);
 
   const progress = frame / totalFrames;
@@ -99,7 +99,7 @@ export const Timeline: React.FC<TimelineProps> = ({
           const opacity = progress > fadeStart ? Math.min(1, (progress - fadeStart) / 0.04) * 0.95 : 0;
           const color = SENTIMENT_COLORS[ev.sentiment] || '#60a5fa';
           const isLatest = ev.time === latestEventTime;
-          const isHighlighted = ev.sector === '半导体' && ev.timeMinutes >= 225 && ev.timeMinutes <= 260;
+          const isHighlighted = isLatest && ev.sentiment === 'positive';
 
           if (opacity <= 0) return null;
 

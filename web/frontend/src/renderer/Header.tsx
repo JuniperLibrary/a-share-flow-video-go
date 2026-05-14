@@ -2,7 +2,6 @@ import React from 'react';
 
 interface HeaderProps {
   displayDate: string;
-  typeLabel: string;
   frame?: number;
   totalFrames?: number;
   sentiment?: 'bullish' | 'bearish' | 'neutral';
@@ -13,7 +12,6 @@ interface HeaderProps {
 
 export const Header: React.FC<HeaderProps> = ({
   displayDate,
-  typeLabel,
   frame = 0,
   totalFrames = 900,
   sentiment = 'neutral',
@@ -75,7 +73,7 @@ export const Header: React.FC<HeaderProps> = ({
               fontFamily: '"PingFang SC", "Helvetica Neue", sans-serif',
             }}
           >
-            {typeLabel}
+            板块
           </div>
 
           <div

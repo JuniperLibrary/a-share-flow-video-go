@@ -108,9 +108,8 @@ func runExportTask(task *ExportTask) {
 			}
 			if f, ok := toFloat64(netVal); ok && f != 0 {
 				page = append(page, fetcher.Sector{
-					Name:   name,
-					Net:    roundTo2(f / 1e8),
-					Source: "eastmoney",
+					Name: name,
+					Net:  roundTo2(f / 1e8),
 				})
 			}
 		}
@@ -711,7 +710,7 @@ func getVideos(dateStr string) []string {
 	d := filepath.Join(config.GetOutputDir(), dateStr)
 	entries, err := os.ReadDir(d)
 	if err != nil {
-		return nil
+		return []string{}
 	}
 	var videos []string
 	for _, e := range entries {

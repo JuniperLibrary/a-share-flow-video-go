@@ -67,9 +67,11 @@ func clampTimeline(events []TimelineEvent) []TimelineEvent {
 				m = min(m, 330)
 			}
 			ev.TimeMinutes = m
-			h := 9 + m/60
-			mn := m % 60
-			ev.Time = fmt.Sprintf("%02d:%02d", h, mn)
+			if m <= 120 {
+				ev.Time = fmt.Sprintf("%02d:%02d", 9+m/60, m%60)
+			} else {
+				ev.Time = fmt.Sprintf("%02d:%02d", 13+(m-210)/60, (m-210)%60)
+			}
 		}
 		fixed = append(fixed, ev)
 	}
@@ -118,10 +120,10 @@ func DataDrivenGenerate(sectors []fetcher.Sector) ([]MarketEvent, []TimelineEven
 	if len(topIn) > 0 {
 		timeline = append(timeline, TimelineEvent{
 			Time: "09:35", TimeMinutes: 5,
-			Sector: topIn[0].Name,
-			Title:  fmt.Sprintf("%s开盘活跃", topIn[0].Name),
+			Sector:      topIn[0].Name,
+			Title:       fmt.Sprintf("%s开盘活跃", topIn[0].Name),
 			Description: fmt.Sprintf("资金净流入%.1f亿", topIn[0].Net),
-			Sentiment: "positive",
+			Sentiment:   "positive",
 		})
 	} else {
 		timeline = append(timeline, TimelineEvent{
@@ -133,54 +135,84 @@ func DataDrivenGenerate(sectors []fetcher.Sector) ([]MarketEvent, []TimelineEven
 
 	if len(topIn) > 1 {
 		timeline = append(timeline, TimelineEvent{
-			Time: "10:15", TimeMinutes: 45,
-			Sector: topIn[1].Name,
-			Title:  fmt.Sprintf("%s持续走强", topIn[1].Name),
-			Description: fmt.Sprintf("资金净流入%.1f亿", topIn[1].Net),
-			Sentiment: "positive",
+			Time: "10:00", TimeMinutes: 30,
+			Sector:      topIn[1].Name,
+			Title:       fmt.Sprintf("%s资金涌入", topIn[1].Name),
+			Description: fmt.Sprintf("净流入%.1f亿", topIn[1].Net),
+			Sentiment:   "positive",
 		})
 	}
 
 	if len(topOut) > 0 {
 		timeline = append(timeline, TimelineEvent{
-			Time: "10:48", TimeMinutes: 78,
-			Sector: topOut[0].Name,
-			Title:  fmt.Sprintf("%s承压调整", topOut[0].Name),
-			Description: fmt.Sprintf("资金净流出%.1f亿", absF(topOut[0].Net)),
-			Sentiment: "negative",
+			Time: "10:20", TimeMinutes: 50,
+			Sector:      topOut[0].Name,
+			Title:       fmt.Sprintf("%s资金流出", topOut[0].Name),
+			Description: fmt.Sprintf("净流出%.1f亿", absF(topOut[0].Net)),
+			Sentiment:   "negative",
+		})
+	}
+
+	if len(topIn) > 2 {
+		timeline = append(timeline, TimelineEvent{
+			Time: "10:45", TimeMinutes: 75,
+			Sector:      topIn[2].Name,
+			Title:       fmt.Sprintf("%s持续走强", topIn[2].Name),
+			Description: fmt.Sprintf("净流入%.1f亿", topIn[2].Net),
+			Sentiment:   "positive",
 		})
 	}
 
 	if len(topIn) > 0 {
 		s := topIn[0]
 		timeline = append(timeline, TimelineEvent{
-			Time: "11:15", TimeMinutes: 105,
-			Sector: s.Name,
-			Title:  fmt.Sprintf("%s资金加速流入", s.Name),
+			Time: "11:10", TimeMinutes: 100,
+			Sector:      s.Name,
+			Title:       fmt.Sprintf("%s早盘领涨", s.Name),
 			Description: fmt.Sprintf("净流入突破%.0f亿", absF(s.Net)),
-			Sentiment: "positive",
+			Sentiment:   "positive",
+		})
+	}
+
+	if len(topOut) > 1 {
+		timeline = append(timeline, TimelineEvent{
+			Time: "11:25", TimeMinutes: 115,
+			Sector:      topOut[1].Name,
+			Title:       fmt.Sprintf("%s午前承压", topOut[1].Name),
+			Description: fmt.Sprintf("净流出%.1f亿", absF(topOut[1].Net)),
+			Sentiment:   "negative",
 		})
 	}
 
 	if len(topIn) > 0 {
 		s := topIn[0]
 		timeline = append(timeline, TimelineEvent{
-			Time: "13:15", TimeMinutes: 225,
-			Sector: s.Name,
-			Title:  fmt.Sprintf("%s午后强势", s.Name),
+			Time: "13:10", TimeMinutes: 220,
+			Sector:      s.Name,
+			Title:       fmt.Sprintf("%s午后强势", s.Name),
 			Description: fmt.Sprintf("资金持续涌入，净流入%.1f亿", s.Net),
-			Sentiment: "positive",
+			Sentiment:   "positive",
+		})
+	}
+
+	if len(topIn) > 1 {
+		timeline = append(timeline, TimelineEvent{
+			Time: "13:40", TimeMinutes: 250,
+			Sector:      topIn[1].Name,
+			Title:       fmt.Sprintf("%s午后发力", topIn[1].Name),
+			Description: fmt.Sprintf("净流入%.1f亿", topIn[1].Net),
+			Sentiment:   "positive",
 		})
 	}
 
 	if len(topOut) > 0 {
 		s := topOut[0]
 		timeline = append(timeline, TimelineEvent{
-			Time: "14:10", TimeMinutes: 310,
-			Sector: s.Name,
-			Title:  fmt.Sprintf("%s加速流出", s.Name),
+			Time: "14:05", TimeMinutes: 275,
+			Sector:      s.Name,
+			Title:       fmt.Sprintf("%s加速流出", s.Name),
 			Description: fmt.Sprintf("净流出%.1f亿，资金离场", absF(s.Net)),
-			Sentiment: "negative",
+			Sentiment:   "negative",
 		})
 	}
 
@@ -191,18 +223,18 @@ func DataDrivenGenerate(sectors []fetcher.Sector) ([]MarketEvent, []TimelineEven
 		sentimentDesc = "均衡"
 	}
 	timeline = append(timeline, TimelineEvent{
-		Time: "14:32", TimeMinutes: 332,
-		Sector: "市场",
-		Title:  fmt.Sprintf("市场情绪%s", sentimentDesc),
+		Time: "14:30", TimeMinutes: 300,
+		Sector:      "市场",
+		Title:       fmt.Sprintf("市场情绪%s", sentimentDesc),
 		Description: fmt.Sprintf("净流入%d vs 流出%d板块", inflowCount, outflowCount),
-		Sentiment: "neutral",
+		Sentiment:   "neutral",
 	})
 
 	timeline = append(timeline, TimelineEvent{
-		Time: "14:55", TimeMinutes: 355,
+		Time: "14:50", TimeMinutes: 320,
 		Sector: "市场", Title: "尾盘资金动向",
 		Description: fmt.Sprintf("全天合计%+.1f亿", totalNet),
-		Sentiment: mapSentiment(totalNet),
+		Sentiment:   mapSentiment(totalNet),
 	})
 
 	var ticker []TickerItem
@@ -224,31 +256,63 @@ func DataDrivenGenerate(sectors []fetcher.Sector) ([]MarketEvent, []TimelineEven
 
 	var events []MarketEvent
 	events = append(events, MarketEvent{
-		EventType: "market", Frame: 5,
-		Text: "A股开盘",
-		Subtext: fmt.Sprintf("资金%s，%d板块流入", sentimentDesc, inflowCount),
+		EventType: "market", Frame: 3,
+		Text:       "A股开盘",
+		Subtext:    fmt.Sprintf("资金%s，%d板块流入", sentimentDesc, inflowCount),
 		Importance: 2,
 	})
 	if len(topIn) > 0 {
 		events = append(events, MarketEvent{
-			EventType: "concentration", Frame: 35,
+			EventType: "concentration", Frame: 15,
 			Text:       fmt.Sprintf("%s领涨", topIn[0].Name),
 			Subtext:    fmt.Sprintf("净流入%.1f亿", topIn[0].Net),
 			Importance: 3,
 		})
 	}
+	if len(topIn) > 1 {
+		events = append(events, MarketEvent{
+			EventType: "sentiment", Frame: 30,
+			Text:       fmt.Sprintf("%s资金涌入", topIn[1].Name),
+			Subtext:    fmt.Sprintf("净流入%.1f亿", topIn[1].Net),
+			Importance: 2,
+		})
+	}
 	if len(topOut) > 0 {
 		events = append(events, MarketEvent{
-			EventType: "aberration", Frame: 60,
+			EventType: "aberration", Frame: 45,
 			Text:       fmt.Sprintf("%s承压", topOut[0].Name),
 			Subtext:    fmt.Sprintf("净流出%.1f亿", absF(topOut[0].Net)),
 			Importance: 2,
 		})
 	}
+	if len(topIn) > 2 {
+		events = append(events, MarketEvent{
+			EventType: "rotation", Frame: 60,
+			Text:       fmt.Sprintf("%s持续走强", topIn[2].Name),
+			Subtext:    fmt.Sprintf("资金净流入%.1f亿", topIn[2].Net),
+			Importance: 2,
+		})
+	}
+	if len(topOut) > 1 {
+		events = append(events, MarketEvent{
+			EventType: "aberration", Frame: 72,
+			Text:       fmt.Sprintf("%s资金离场", topOut[1].Name),
+			Subtext:    fmt.Sprintf("净流出%.1f亿", absF(topOut[1].Net)),
+			Importance: 1,
+		})
+	}
+	if len(topIn) > 0 {
+		events = append(events, MarketEvent{
+			EventType: "sentiment", Frame: 82,
+			Text:       fmt.Sprintf("%s午后强势", topIn[0].Name),
+			Subtext:    fmt.Sprintf("净流入%.1f亿，资金加速", topIn[0].Net),
+			Importance: 3,
+		})
+	}
 	events = append(events, MarketEvent{
-		EventType: "market", Frame: 92,
-		Text: "收盘",
-		Subtext: fmt.Sprintf("全天%+.1f亿", totalNet),
+		EventType: "market", Frame: 95,
+		Text:       "收盘",
+		Subtext:    fmt.Sprintf("全天%+.1f亿", totalNet),
 		Importance: 2,
 	})
 
@@ -298,24 +362,26 @@ func AIGenerate(sectors []fetcher.Sector, dateStr string, aiCfg config.AIConfig)
 ## 输出要求
 请严格按以下 JSON 格式输出一个对象，包含三个字段：
 
-### 1. timelineEvents（市场事件时间线，6-8个）
+### 1. timelineEvents（市场事件时间线，10-12个）
 - time: 时间 "HH:MM"（必须在 09:30-11:30 或 13:00-15:00 范围内）
 - timeMinutes: 从09:30起的分钟数（如09:35=5, 10:15=45, 13:15=225, 14:10=310）
 - sector: 相关板块名（必须是数据中实际存在的板块）
 - title: 事件标题（10字以内，包含板块名）
-- description: 事件描述（20字以内，包含具体数值如"净流入XX亿"）
+- description: 事件描述（20字以内，使用专业术语如"主力资金涌入""资金出逃""板块轮动""情绪分化""量能萎缩""放量突破"，并包含具体数值）
 - sentiment: "positive" / "negative" / "neutral"
+- 时间分布建议：09:30-10:00 至少2个，10:00-11:00 至少2个，11:00-11:30 至少1个，13:00-14:00 至少2个，14:00-15:00 至少2个
 
-### 2. tickerItems（底部滚动资讯，8-10条）
+### 2. tickerItems（底部滚动资讯，10-12条）
 - time: 时间 "HH:MM"（必须在交易时段内）
 - text: 资讯内容（15字以内，包含板块名和数值）
 
-### 3. events（底部弹窗事件，4-5个）
+### 3. events（底部弹窗事件，8-10个）
 - event_type: "market"/"sentiment"/"rotation"/"aberration"
 - frame: 时间位置百分比（0-100）
 - text: 主标题（10字以内）
 - subtext: 副标题（20字以内）
 - importance: 重要程度 1/2/3
+- 时间分布建议：frame 5-15 开盘，20-40 早盘，45-65 午盘前，70-85 午盘后，90-98 收盘
 
 ## 注意事项
 - timelineEvents 的 timeMinutes 必须按升序排列
@@ -344,7 +410,7 @@ func AIGenerate(sectors []fetcher.Sector, dateStr string, aiCfg config.AIConfig)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+aiCfg.APIKey)
 
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := &http.Client{Timeout: 120 * time.Second}
 
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
@@ -424,10 +490,14 @@ func AnalyzeAllContent(sectors []fetcher.Sector, dateStr string) ([]MarketEvent,
 
 func GetFallbackEvents(totalFrames int) []MarketEvent {
 	return []MarketEvent{
-		{EventType: "market", Frame: totalFrames * 2 / 100, Text: "A股开盘", Subtext: "主力资金持续流入", Importance: 2},
-		{EventType: "sentiment", Frame: totalFrames * 35 / 100, Text: "市场情绪偏多", Subtext: "资金积极布局", Importance: 2},
-		{EventType: "rotation", Frame: totalFrames * 60 / 100, Text: "板块分化明显", Subtext: "资金轮动加剧", Importance: 2},
-		{EventType: "market", Frame: totalFrames * 92 / 100, Text: "收盘", Subtext: "今日板块情绪分化明显", Importance: 2},
+		{EventType: "market", Frame: totalFrames * 3 / 100, Text: "A股开盘", Subtext: "主力资金持续流入", Importance: 2},
+		{EventType: "sentiment", Frame: totalFrames * 18 / 100, Text: "市场情绪偏多", Subtext: "资金积极布局", Importance: 2},
+		{EventType: "concentration", Frame: totalFrames * 32 / 100, Text: "板块资金涌入", Subtext: "净流入加速", Importance: 3},
+		{EventType: "rotation", Frame: totalFrames * 48 / 100, Text: "板块分化明显", Subtext: "资金轮动加剧", Importance: 2},
+		{EventType: "aberration", Frame: totalFrames * 62 / 100, Text: "部分板块承压", Subtext: "资金流出观望", Importance: 2},
+		{EventType: "sentiment", Frame: totalFrames * 75 / 100, Text: "午后情绪回暖", Subtext: "资金回流", Importance: 2},
+		{EventType: "rotation", Frame: totalFrames * 85 / 100, Text: "尾盘资金动向", Subtext: "板块轮动加速", Importance: 1},
+		{EventType: "market", Frame: totalFrames * 95 / 100, Text: "收盘", Subtext: "今日板块情绪分化明显", Importance: 2},
 	}
 }
 

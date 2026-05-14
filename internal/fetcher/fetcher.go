@@ -32,12 +32,9 @@ var Top15HotSectors = []string{
 
 // Sector 表示一个板块的资金流向数据。
 type Sector struct {
-	Name       string  `json:"name"`
-	Net        float64 `json:"net"`
-	Color      string  `json:"color"`
-	Source     string  `json:"source"`
-	RankGroup  string  `json:"rank_group"`
-	IsAutoFill bool    `json:"is_auto_fill"`
+	Name  string  `json:"name"`
+	Net   float64 `json:"net"`
+	Color string  `json:"color"`
 }
 
 type emResponse struct {
@@ -113,38 +110,26 @@ func decodeJSON(r io.Reader, v any) error {
 }
 
 func fetchPrimaryData() ([]Sector, error) {
-	indRaw, err1 := fetchEMRaw("m:90+t:2")
-	conRaw, err2 := fetchEMRaw("m:90+t:3")
-
-	if err1 != nil && err2 != nil {
-		return nil, fmt.Errorf("东方财富板块获取失败: %v, %v", err1, err2)
+	raw, err := fetchEMRaw("m:90+t:2")
+	if err != nil {
+		return nil, err
 	}
 
 	var sectors []Sector
-	parseRaw := func(raw []map[string]any) {
-		for _, item := range raw {
-			name, _ := item["f14"].(string)
-			netVal := item["f62"]
-			if name == "" || netVal == nil {
-				continue
-			}
-			netFloat, ok := toFloat64(netVal)
-			if !ok || netFloat == 0 {
-				continue
-			}
-			sectors = append(sectors, Sector{
-				Name:   name,
-				Net:    roundTo2(netFloat / 1e8),
-				Source: "eastmoney",
-			})
+	for _, item := range raw {
+		name, _ := item["f14"].(string)
+		netVal := item["f62"]
+		if name == "" || netVal == nil {
+			continue
 		}
-	}
-
-	if indRaw != nil {
-		parseRaw(indRaw)
-	}
-	if conRaw != nil {
-		parseRaw(conRaw)
+		netFloat, ok := toFloat64(netVal)
+		if !ok || netFloat == 0 {
+			continue
+		}
+		sectors = append(sectors, Sector{
+			Name: name,
+			Net:  roundTo2(netFloat / 1e8),
+		})
 	}
 
 	fmt.Printf("  [东方财富 H5] 板块获取成功: %d 条\n", len(sectors))
@@ -255,9 +240,8 @@ func fetchSingleSectorHistorical(bkCode, sectorName, dateStr string) (*Sector, b
 					return nil, false
 				}
 				return &Sector{
-					Name:   sectorName,
-					Net:    roundTo2(netYuan / 1e8),
-					Source: "eastmoney_history",
+					Name: sectorName,
+					Net:  roundTo2(netYuan / 1e8),
 				}, false
 			}
 		}
@@ -337,11 +321,9 @@ func FetchHistoricalSectors(dateStr string) ([]Sector, error) {
 	half := len(ColorPalette) / 2
 	for i := range inflow {
 		inflow[i].Color = ColorPalette[i%len(ColorPalette)]
-		inflow[i].RankGroup = "inflow"
 	}
 	for i := range outflow {
 		outflow[i].Color = ColorPalette[(half+i)%len(ColorPalette)]
-		outflow[i].RankGroup = "outflow"
 	}
 
 	result := append(inflow, outflow...)
@@ -372,15 +354,12 @@ func SaveDailyData(sectors []Sector, dateStr string) error {
 	w := csv.NewWriter(f)
 	defer w.Flush()
 
-	w.Write([]string{"name", "net", "color", "source", "rank_group", "is_auto_fill"})
+	w.Write([]string{"name", "net", "color"})
 	for _, s := range sectors {
 		w.Write([]string{
 			s.Name,
 			strconv.FormatFloat(s.Net, 'f', 2, 64),
 			s.Color,
-			s.Source,
-			s.RankGroup,
-			strconv.FormatBool(s.IsAutoFill),
 		})
 	}
 
@@ -419,15 +398,11 @@ func LoadCachedData(dateStr string) ([]Sector, error) {
 		}
 
 		netVal, _ := strconv.ParseFloat(getField(record, colIdx, "net"), 64)
-		isAutoFill, _ := strconv.ParseBool(getField(record, colIdx, "is_auto_fill"))
 
 		sectors = append(sectors, Sector{
-			Name:       getField(record, colIdx, "name"),
-			Net:        netVal,
-			Color:      getField(record, colIdx, "color"),
-			Source:     getField(record, colIdx, "source"),
-			RankGroup:  getField(record, colIdx, "rank_group"),
-			IsAutoFill: isAutoFill,
+			Name:  getField(record, colIdx, "name"),
+			Net:   netVal,
+			Color: getField(record, colIdx, "color"),
 		})
 	}
 

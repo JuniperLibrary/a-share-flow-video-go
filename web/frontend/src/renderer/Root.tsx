@@ -14,7 +14,6 @@ export const Root: React.FC = () => {
         defaultProps={{
           dateStr: '2026-05-11',
           displayDate: '05-11',
-          typeLabel: '行业板块',
           sectors: [],
           timelineEvents: [],
           tickerItems: [],
@@ -34,7 +33,6 @@ export const Root: React.FC = () => {
         defaultProps={{
           dateStr: '2026-05-11',
           displayDate: '05-11',
-          typeLabel: '行业板块',
           sectors: [],
           timelineEvents: [],
           tickerItems: [],

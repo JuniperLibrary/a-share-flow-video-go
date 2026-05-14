@@ -33,8 +33,6 @@ export interface BloombergVideoProps {
   dateStr: string;
   displayDate: string;
   totalFrames?: number;
-  sectorType: string;
-  typeLabel: string;
   sectors: SectorData[];
   events?: MarketEvent[];
   timelineEvents?: TimelineEvent[];
