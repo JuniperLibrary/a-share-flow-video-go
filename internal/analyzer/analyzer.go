@@ -117,105 +117,121 @@ func DataDrivenGenerate(sectors []fetcher.Sector) ([]MarketEvent, []TimelineEven
 
 	var timeline []TimelineEvent
 
+	// 09:35 开盘观察
 	if len(topIn) > 0 {
+		s := topIn[0]
 		timeline = append(timeline, TimelineEvent{
 			Time: "09:35", TimeMinutes: 5,
-			Sector:      topIn[0].Name,
-			Title:       fmt.Sprintf("%s开盘活跃", topIn[0].Name),
-			Description: fmt.Sprintf("资金净流入%.1f亿", topIn[0].Net),
+			Sector:      s.Name,
+			Title:       fmt.Sprintf("%s竞价异动", s.Name),
+			Description: fmt.Sprintf("主力资金净流入%.1f亿，买盘集中", s.Net),
 			Sentiment:   "positive",
 		})
 	} else {
 		timeline = append(timeline, TimelineEvent{
 			Time: "09:35", TimeMinutes: 5,
-			Sector: "市场", Title: "A股开盘异动",
-			Description: "主力资金持续流入", Sentiment: "positive",
+			Sector: "市场", Title: "集合竞价异动",
+			Description: "主力资金早盘积极布局", Sentiment: "positive",
 		})
 	}
 
+	// 10:00 早盘资金涌入
 	if len(topIn) > 1 {
+		s := topIn[1]
 		timeline = append(timeline, TimelineEvent{
 			Time: "10:00", TimeMinutes: 30,
-			Sector:      topIn[1].Name,
-			Title:       fmt.Sprintf("%s资金涌入", topIn[1].Name),
-			Description: fmt.Sprintf("净流入%.1f亿", topIn[1].Net),
+			Sector:      s.Name,
+			Title:       fmt.Sprintf("%s放量突破", s.Name),
+			Description: fmt.Sprintf("主力扫货，净流入%.1f亿", s.Net),
 			Sentiment:   "positive",
 		})
 	}
 
+	// 10:20 流出板块承压
 	if len(topOut) > 0 {
+		s := topOut[0]
 		timeline = append(timeline, TimelineEvent{
 			Time: "10:20", TimeMinutes: 50,
-			Sector:      topOut[0].Name,
-			Title:       fmt.Sprintf("%s资金流出", topOut[0].Name),
-			Description: fmt.Sprintf("净流出%.1f亿", absF(topOut[0].Net)),
+			Sector:      s.Name,
+			Title:       fmt.Sprintf("%s资金出逃", s.Name),
+			Description: fmt.Sprintf("主力减仓，净流出%.1f亿", absF(s.Net)),
 			Sentiment:   "negative",
 		})
 	}
 
+	// 10:45 持续走强
 	if len(topIn) > 2 {
+		s := topIn[2]
 		timeline = append(timeline, TimelineEvent{
 			Time: "10:45", TimeMinutes: 75,
-			Sector:      topIn[2].Name,
-			Title:       fmt.Sprintf("%s持续走强", topIn[2].Name),
-			Description: fmt.Sprintf("净流入%.1f亿", topIn[2].Net),
+			Sector:      s.Name,
+			Title:       fmt.Sprintf("%s多头强化", s.Name),
+			Description: fmt.Sprintf("资金持续加仓，净流入%.1f亿", s.Net),
 			Sentiment:   "positive",
 		})
 	}
 
+	// 11:10 早盘领涨
 	if len(topIn) > 0 {
 		s := topIn[0]
 		timeline = append(timeline, TimelineEvent{
 			Time: "11:10", TimeMinutes: 100,
 			Sector:      s.Name,
 			Title:       fmt.Sprintf("%s早盘领涨", s.Name),
-			Description: fmt.Sprintf("净流入突破%.0f亿", absF(s.Net)),
+			Description: fmt.Sprintf("净流入突破%.0f亿，多头主导", absF(s.Net)),
 			Sentiment:   "positive",
 		})
 	}
 
+	// 11:25 午前承压
 	if len(topOut) > 1 {
+		s := topOut[1]
 		timeline = append(timeline, TimelineEvent{
 			Time: "11:25", TimeMinutes: 115,
-			Sector:      topOut[1].Name,
-			Title:       fmt.Sprintf("%s午前承压", topOut[1].Name),
-			Description: fmt.Sprintf("净流出%.1f亿", absF(topOut[1].Net)),
+			Sector:      s.Name,
+			Title:       fmt.Sprintf("%s抛压加重", s.Name),
+			Description: fmt.Sprintf("空头发力，净流出%.1f亿", absF(s.Net)),
 			Sentiment:   "negative",
 		})
 	}
 
+	// 13:10 午后强势
 	if len(topIn) > 0 {
 		s := topIn[0]
 		timeline = append(timeline, TimelineEvent{
 			Time: "13:10", TimeMinutes: 220,
 			Sector:      s.Name,
-			Title:       fmt.Sprintf("%s午后强势", s.Name),
-			Description: fmt.Sprintf("资金持续涌入，净流入%.1f亿", s.Net),
+			Title:       fmt.Sprintf("%s午后抢筹", s.Name),
+			Description: fmt.Sprintf("主力加速建仓，净流入%.1f亿", s.Net),
 			Sentiment:   "positive",
 		})
 	}
 
+	// 13:40 午后发力
 	if len(topIn) > 1 {
+		s := topIn[1]
 		timeline = append(timeline, TimelineEvent{
 			Time: "13:40", TimeMinutes: 250,
-			Sector:      topIn[1].Name,
-			Title:       fmt.Sprintf("%s午后发力", topIn[1].Name),
-			Description: fmt.Sprintf("净流入%.1f亿", topIn[1].Net),
+			Sector:      s.Name,
+			Title:       fmt.Sprintf("%s午后拉升", s.Name),
+			Description: fmt.Sprintf("资金快速流入，净流入%.1f亿", s.Net),
 			Sentiment:   "positive",
 		})
 	}
 
+	// 14:05 加速流出
 	if len(topOut) > 0 {
 		s := topOut[0]
 		timeline = append(timeline, TimelineEvent{
 			Time: "14:05", TimeMinutes: 275,
 			Sector:      s.Name,
-			Title:       fmt.Sprintf("%s加速流出", s.Name),
-			Description: fmt.Sprintf("净流出%.1f亿，资金离场", absF(s.Net)),
+			Title:       fmt.Sprintf("%s尾盘减仓", s.Name),
+			Description: fmt.Sprintf("净流出%.1f亿，资金加速离场", absF(s.Net)),
 			Sentiment:   "negative",
 		})
 	}
 
+	// 14:30 市场情绪
 	sentimentDesc := "偏多"
 	if outflowCount > inflowCount {
 		sentimentDesc = "偏空"
@@ -225,8 +241,8 @@ func DataDrivenGenerate(sectors []fetcher.Sector) ([]MarketEvent, []TimelineEven
 	timeline = append(timeline, TimelineEvent{
 		Time: "14:30", TimeMinutes: 300,
 		Sector:      "市场",
-		Title:       fmt.Sprintf("市场情绪%s", sentimentDesc),
-		Description: fmt.Sprintf("净流入%d vs 流出%d板块", inflowCount, outflowCount),
+		Title:       fmt.Sprintf("多空博弈%s", sentimentDesc),
+		Description: fmt.Sprintf("流入%d板块 vs 流出%d板块，情绪分化", inflowCount, outflowCount),
 		Sentiment:   "neutral",
 	})
 
@@ -238,81 +254,81 @@ func DataDrivenGenerate(sectors []fetcher.Sector) ([]MarketEvent, []TimelineEven
 	})
 
 	var ticker []TickerItem
-	ticker = append(ticker, TickerItem{Time: "09:30", Text: "A股开盘，板块资金流向实时更新"})
+	ticker = append(ticker, TickerItem{Time: "09:30", Text: "A股开盘，主力资金流向实时监控"})
 	for _, s := range topIn {
 		if len(ticker) >= 10 {
 			break
 		}
-		ticker = append(ticker, TickerItem{Time: "10:00", Text: fmt.Sprintf("%s净流入%.1f亿", s.Name, s.Net)})
+		ticker = append(ticker, TickerItem{Time: "10:00", Text: fmt.Sprintf("%s主力净流入%.1f亿，多头强势", s.Name, s.Net)})
 	}
 	for _, s := range topOut {
 		if len(ticker) >= 10 {
 			break
 		}
-		ticker = append(ticker, TickerItem{Time: "11:00", Text: fmt.Sprintf("%s净流出%.1f亿", s.Name, absF(s.Net))})
+		ticker = append(ticker, TickerItem{Time: "11:00", Text: fmt.Sprintf("%s主力净流出%.1f亿，空头主导", s.Name, absF(s.Net))})
 	}
-	ticker = append(ticker, TickerItem{Time: "13:30", Text: fmt.Sprintf("市场整体%+.1f亿", totalNet)})
-	ticker = append(ticker, TickerItem{Time: "14:55", Text: "尾盘资金加速流动"})
+	ticker = append(ticker, TickerItem{Time: "13:30", Text: fmt.Sprintf("午后市场整体%+.1f亿，资金方向明确", totalNet)})
+	ticker = append(ticker, TickerItem{Time: "14:55", Text: "尾盘资金加速流动，板块分化加剧"})
 
 	var events []MarketEvent
 	events = append(events, MarketEvent{
 		EventType: "market", Frame: 3,
 		Text:       "A股开盘",
-		Subtext:    fmt.Sprintf("资金%s，%d板块流入", sentimentDesc, inflowCount),
+		Subtext:    fmt.Sprintf("资金%s，%d板块主力流入", sentimentDesc, inflowCount),
 		Importance: 2,
 	})
 	if len(topIn) > 0 {
 		events = append(events, MarketEvent{
 			EventType: "concentration", Frame: 15,
-			Text:       fmt.Sprintf("%s领涨", topIn[0].Name),
-			Subtext:    fmt.Sprintf("净流入%.1f亿", topIn[0].Net),
+			Text:       fmt.Sprintf("%s主力领涨", topIn[0].Name),
+			Subtext:    fmt.Sprintf("净流入%.1f亿，多头集结", topIn[0].Net),
 			Importance: 3,
 		})
 	}
 	if len(topIn) > 1 {
 		events = append(events, MarketEvent{
 			EventType: "sentiment", Frame: 30,
-			Text:       fmt.Sprintf("%s资金涌入", topIn[1].Name),
-			Subtext:    fmt.Sprintf("净流入%.1f亿", topIn[1].Net),
+			Text:       fmt.Sprintf("%s放量突破", topIn[1].Name),
+			Subtext:    fmt.Sprintf("主力扫货，净流入%.1f亿", topIn[1].Net),
 			Importance: 2,
 		})
 	}
 	if len(topOut) > 0 {
 		events = append(events, MarketEvent{
 			EventType: "aberration", Frame: 45,
-			Text:       fmt.Sprintf("%s承压", topOut[0].Name),
-			Subtext:    fmt.Sprintf("净流出%.1f亿", absF(topOut[0].Net)),
+			Text:       fmt.Sprintf("%s抛压加重", topOut[0].Name),
+			Subtext:    fmt.Sprintf("主力减仓，净流出%.1f亿", absF(topOut[0].Net)),
 			Importance: 2,
 		})
 	}
 	if len(topIn) > 2 {
 		events = append(events, MarketEvent{
 			EventType: "rotation", Frame: 60,
-			Text:       fmt.Sprintf("%s持续走强", topIn[2].Name),
-			Subtext:    fmt.Sprintf("资金净流入%.1f亿", topIn[2].Net),
+			Text:       fmt.Sprintf("%s多头强化", topIn[2].Name),
+			Subtext:    fmt.Sprintf("资金持续加仓，净流入%.1f亿", topIn[2].Net),
 			Importance: 2,
 		})
 	}
 	if len(topOut) > 1 {
 		events = append(events, MarketEvent{
 			EventType: "aberration", Frame: 72,
-			Text:       fmt.Sprintf("%s资金离场", topOut[1].Name),
-			Subtext:    fmt.Sprintf("净流出%.1f亿", absF(topOut[1].Net)),
+			Text:       fmt.Sprintf("%s空头主导", topOut[1].Name),
+			Subtext:    fmt.Sprintf("净流出%.1f亿，资金撤退", absF(topOut[1].Net)),
 			Importance: 1,
 		})
 	}
 	if len(topIn) > 0 {
 		events = append(events, MarketEvent{
 			EventType: "sentiment", Frame: 82,
-			Text:       fmt.Sprintf("%s午后强势", topIn[0].Name),
-			Subtext:    fmt.Sprintf("净流入%.1f亿，资金加速", topIn[0].Net),
+			Text:       fmt.Sprintf("%s午后抢筹", topIn[0].Name),
+			Subtext:    fmt.Sprintf("主力加速建仓，净流入%.1f亿", topIn[0].Net),
 			Importance: 3,
 		})
 	}
 	events = append(events, MarketEvent{
 		EventType: "market", Frame: 95,
-		Text:       "收盘",
-		Subtext:    fmt.Sprintf("全天%+.1f亿", totalNet),
+		Text:       "收盘总结",
+		Subtext:    fmt.Sprintf("全天主力净流向%+.1f亿", totalNet),
 		Importance: 2,
 	})
 
@@ -410,7 +426,7 @@ func AIGenerate(sectors []fetcher.Sector, dateStr string, aiCfg config.AIConfig)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+aiCfg.APIKey)
 
-	client := &http.Client{Timeout: 120 * time.Second}
+	client := &http.Client{Timeout: 180 * time.Second}
 
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {

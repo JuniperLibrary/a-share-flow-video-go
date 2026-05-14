@@ -79,6 +79,10 @@ export const Events: React.FC<EventsProps> = ({
   const isTV = format === 'tv';
   const scale = isTV ? 1.1 : 1;
 
+  const chartLeft = isTV ? 30 : 50;
+  const chartRight = isTV ? width * 0.60 : 480;
+  const X_MAX = 330;
+
   const marketEvents = useMemo(() => {
     if (passedEvents && passedEvents.length > 0) {
       return passedEvents.map(ev => ({
@@ -121,13 +125,17 @@ export const Events: React.FC<EventsProps> = ({
   const accentColors = ['#4a80d0', '#e6a23c', '#f56c6c'];
   const accentColor = accentColors[Math.min(importance - 1, 2)];
 
+  const progress = frame / totalFrames;
+  const currentTimeMinutes = progress * X_MAX;
+  const eventX = chartLeft + (currentTimeMinutes / X_MAX) * (chartRight - chartLeft);
+
   const bottomPos = isTV ? 20 : 40;
 
   return (
     <div
       style={{
         position: 'absolute',
-        left: 50,
+        left: eventX - 80,
         bottom: bottomPos,
         zIndex: 20,
         opacity,
