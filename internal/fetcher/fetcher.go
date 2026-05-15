@@ -338,12 +338,23 @@ func FetchHistoricalSectors(dateStr string) ([]Sector, error) {
 }
 
 func SaveDailyData(sectors []Sector, dateStr string) error {
+	return SaveSessionData(sectors, dateStr, "full")
+}
+
+// SaveSessionData 按 session 保存板块数据。
+// morning → data/YYYY-MM-DD/sectors_morning.csv
+// full    → data/YYYY-MM-DD/sectors.csv
+func SaveSessionData(sectors []Sector, dateStr, session string) error {
 	dateDir := filepath.Join(config.GetDataDir(), dateStr)
 	if err := os.MkdirAll(dateDir, 0755); err != nil {
 		return err
 	}
 
-	filename := filepath.Join(dateDir, "sectors.csv")
+	filename := "sectors.csv"
+	if session == "morning" {
+		filename = "sectors_morning.csv"
+	}
+	filename = filepath.Join(dateDir, filename)
 
 	f, err := os.Create(filename)
 	if err != nil {
@@ -368,9 +379,22 @@ func SaveDailyData(sectors []Sector, dateStr string) error {
 }
 
 func LoadCachedData(dateStr string) ([]Sector, error) {
-	filename := filepath.Join(config.GetDataDir(), dateStr, "sectors.csv")
+	return LoadSessionData(dateStr, "full")
+}
 
-	f, err := os.Open(filename)
+// LoadSessionData 按 session 加载板块数据。
+func LoadSessionData(dateStr, session string) ([]Sector, error) {
+	filename := "sectors.csv"
+	if session == "morning" {
+		filename = "sectors_morning.csv"
+	}
+	return loadCSV(filename, dateStr)
+}
+
+func loadCSV(filename, dateStr string) ([]Sector, error) {
+	filepath := filepath.Join(config.GetDataDir(), dateStr, filename)
+
+	f, err := os.Open(filepath)
 	if err != nil {
 		return nil, err
 	}

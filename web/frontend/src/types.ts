@@ -25,9 +25,12 @@ export interface ConfigData {
 export interface SchedulerStatus {
   enabled: boolean;
   run_time: string;
+  morning_run_time: string;
   last_run: string;
+  last_morning_run: string;
   last_status: string;
   next_run: string;
+  next_morning_run: string;
   is_running: boolean;
 }
 

@@ -51,15 +51,6 @@ var SessionConfigs = map[string]SessionConfig{
 		TotalSpan:      120,
 		BgColor:        "#00ff88",
 	},
-	"afternoon": {
-		XLim:           [2]int{0, 120},
-		XTicks:         []int{0, 30, 60, 90, 120},
-		XTickLabels:    []string{"13:00", "13:30", "14:00", "14:30", "15:00"},
-		TitleSuffix:    "午盘",
-		FilenameSuffix: "午盘",
-		TotalSpan:      120,
-		BgColor:        "#ff6b6b",
-	},
 	"full": {
 		XLim:           [2]int{0, 330},
 		XTicks:         []int{0, 60, 120, 180, 240, 300},

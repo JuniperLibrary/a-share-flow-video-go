@@ -86,7 +86,7 @@ func clampTimeline(events []TimelineEvent) []TimelineEvent {
 // 2. TimelineEvent: 时间线事件（开盘活跃/持续走强/午后强势/尾盘动向等）
 // 3. TickerItem: 底部滚动资讯
 // 当 AI API 不可用时作为降级方案使用。
-func DataDrivenGenerate(sectors []fetcher.Sector) ([]MarketEvent, []TimelineEvent, []TickerItem) {
+func DataDrivenGenerate(sectors []fetcher.Sector, session string) ([]MarketEvent, []TimelineEvent, []TickerItem) {
 	all := make([]fetcher.Sector, 0, len(sectors))
 	all = append(all, sectors...)
 
@@ -333,7 +333,7 @@ func DataDrivenGenerate(sectors []fetcher.Sector) ([]MarketEvent, []TimelineEven
 	})
 
 	fmt.Printf("  [事件分析] 数据驱动生成: %d个事件 + %d条时间线 + %d条资讯\n", len(events), len(timeline), len(ticker))
-	return events, timeline, ticker
+	return filterBySession(events, timeline, ticker, session)
 }
 
 func AIGenerate(sectors []fetcher.Sector, dateStr string, aiCfg config.AIConfig) ([]MarketEvent, []TimelineEvent, []TickerItem, error) {
@@ -485,23 +485,60 @@ func AIGenerate(sectors []fetcher.Sector, dateStr string, aiCfg config.AIConfig)
 
 // AnalyzeAllContent 统一入口：优先尝试 AI 生成，失败时自动降级到数据驱动生成。
 // 返回 (events, timeline, ticker) 三元组，保证调用方始终有可用数据。
-func AnalyzeAllContent(sectors []fetcher.Sector, dateStr string) ([]MarketEvent, []TimelineEvent, []TickerItem) {
+func AnalyzeAllContent(sectors []fetcher.Sector, dateStr string, session string) ([]MarketEvent, []TimelineEvent, []TickerItem) {
 	aiCfg := config.GetAIConfig()
 	if aiCfg.APIKey == "" {
 		fmt.Println("  [事件分析] 未设置 AI_API_KEY，使用数据驱动生成")
-		return DataDrivenGenerate(sectors)
+		return DataDrivenGenerate(sectors, session)
 	}
 
 	events, timeline, ticker, err := AIGenerate(sectors, dateStr, aiCfg)
 	if err != nil {
 		fmt.Printf("  [事件分析] API 请求失败: %v，使用数据驱动生成\n", err)
-		return DataDrivenGenerate(sectors)
+		return DataDrivenGenerate(sectors, session)
 	}
 	if events == nil && timeline == nil && ticker == nil {
 		fmt.Println("  [事件分析] 大模型分析失败，使用数据驱动生成")
-		return DataDrivenGenerate(sectors)
+		return DataDrivenGenerate(sectors, session)
 	}
-	return events, timeline, ticker
+	return filterBySession(events, timeline, ticker, session)
+}
+
+func filterBySession(events []MarketEvent, timeline []TimelineEvent, ticker []TickerItem, session string) ([]MarketEvent, []TimelineEvent, []TickerItem) {
+	if session == "full" || session == "" {
+		return events, timeline, ticker
+	}
+
+	// morning: timeMinutes 0-120
+	// Filter timeline events to morning range
+	var filteredTimeline []TimelineEvent
+	for _, ev := range timeline {
+		if ev.TimeMinutes >= 0 && ev.TimeMinutes <= 120 {
+			filteredTimeline = append(filteredTimeline, ev)
+		}
+	}
+
+	// Filter ticker items to morning times (before 11:30)
+	var filteredTicker []TickerItem
+	for _, t := range ticker {
+		if t.Time < "11:30" {
+			filteredTicker = append(filteredTicker, t)
+		}
+	}
+
+	// Filter + remap market events: keep frame <= 40 (morning portion), remap to 0-100
+	var filteredEvents []MarketEvent
+	for _, ev := range events {
+		if ev.Frame <= 40 {
+			ev.Frame = ev.Frame * 100 / 40
+			if ev.Frame > 100 {
+				ev.Frame = 100
+			}
+			filteredEvents = append(filteredEvents, ev)
+		}
+	}
+
+	return filteredEvents, filteredTimeline, filteredTicker
 }
 
 func GetFallbackEvents(totalFrames int) []MarketEvent {

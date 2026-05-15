@@ -20,7 +20,7 @@ export const Header: React.FC<HeaderProps> = ({
   format = 'mobile',
 }) => {
   const isTV = format === 'tv';
-  const scale = isTV ? 1.2 : 1.15;
+  const scale = isTV ? 1.2 : 1.55;
 
   const progress = frame / totalFrames;
   const mins = Math.round(progress * 330);

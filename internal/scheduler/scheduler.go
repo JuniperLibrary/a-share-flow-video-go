@@ -19,23 +19,26 @@ import (
 )
 
 // Scheduler 定时调度器，负责在指定时间自动执行视频生成管道。
-// Enabled: 是否启用定时任务 | RunTime: 执行时间(HH:MM)
-// mu: 保护并发访问 | lastRun: 上次执行时间 | isRunning: 防止重复执行
-// stopCh: 用于停止轮询循环
+// Enabled: 是否启用定时任务 | RunTime: 全天执行时间(HH:MM) | MorningRunTime: 早盘执行时间(HH:MM)
+// mu: 保护并发访问 | lastRun: 上次全天执行时间 | lastMorningRun: 上次早盘执行时间
+// isRunning: 防止重复执行 | stopCh: 用于停止轮询循环
 type Scheduler struct {
-	Enabled    bool
-	RunTime    string
-	mu         sync.Mutex
-	lastRun    time.Time
-	lastStatus string
-	isRunning  bool
-	stopCh     chan struct{}
+	Enabled        bool
+	RunTime        string
+	MorningRunTime string
+	mu             sync.Mutex
+	lastRun        time.Time
+	lastMorningRun time.Time
+	lastStatus     string
+	isRunning      bool
+	stopCh         chan struct{}
 }
 
 func NewScheduler() *Scheduler {
 	return &Scheduler{
-		RunTime: "15:05",
-		stopCh:  make(chan struct{}),
+		RunTime:        "15:05",
+		MorningRunTime: "11:35",
+		stopCh:         make(chan struct{}),
 	}
 }
 
@@ -56,40 +59,57 @@ func (s *Scheduler) Stop() {
 }
 
 func (s *Scheduler) RunNow() {
-	go s.execute()
+	go s.execute("full")
 }
 
 func (s *Scheduler) GetStatus() map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var nextRun string
+	var nextRun, nextMorningRun string
 	if s.Enabled {
-		h, m := parseTime(s.RunTime)
 		now := time.Now()
-		target := time.Date(now.Year(), now.Month(), now.Day(), h, m, 0, 0, now.Location())
-		if target.Before(now) {
+		h, m := parseTime(s.MorningRunTime)
+		morningTarget := time.Date(now.Year(), now.Month(), now.Day(), h, m, 0, 0, now.Location())
+		if morningTarget.Before(now) {
+			ly, lm, ld := s.lastMorningRun.Date()
+			ny, nm, nd := now.Date()
+			if ly == ny && lm == nm && ld == nd {
+				morningTarget = morningTarget.AddDate(0, 0, 1)
+			}
+		}
+		nextMorningRun = morningTarget.Format(time.RFC3339)
+
+		h, m = parseTime(s.RunTime)
+		fullTarget := time.Date(now.Year(), now.Month(), now.Day(), h, m, 0, 0, now.Location())
+		if fullTarget.Before(now) {
 			ly, lm, ld := s.lastRun.Date()
 			ny, nm, nd := now.Date()
 			if ly == ny && lm == nm && ld == nd {
-				target = target.AddDate(0, 0, 1)
+				fullTarget = fullTarget.AddDate(0, 0, 1)
 			}
 		}
-		nextRun = target.Format(time.RFC3339)
+		nextRun = fullTarget.Format(time.RFC3339)
 	}
 
-	var lastRunStr string
+	var lastRunStr, lastMorningRunStr string
 	if !s.lastRun.IsZero() {
 		lastRunStr = s.lastRun.Format(time.RFC3339)
 	}
+	if !s.lastMorningRun.IsZero() {
+		lastMorningRunStr = s.lastMorningRun.Format(time.RFC3339)
+	}
 
 	return map[string]any{
-		"enabled":     s.Enabled,
-		"run_time":    s.RunTime,
-		"last_run":    lastRunStr,
-		"last_status": s.lastStatus,
-		"next_run":    nextRun,
-		"is_running":  s.isRunning,
+		"enabled":          s.Enabled,
+		"run_time":         s.RunTime,
+		"morning_run_time": s.MorningRunTime,
+		"last_run":         lastRunStr,
+		"last_morning_run": lastMorningRunStr,
+		"last_status":      s.lastStatus,
+		"next_run":         nextRun,
+		"next_morning_run": nextMorningRun,
+		"is_running":       s.isRunning,
 	}
 }
 
@@ -102,57 +122,77 @@ func (s *Scheduler) loop() {
 		case <-s.stopCh:
 			return
 		case <-ticker.C:
-			if s.shouldRun() {
-				s.execute()
+			if session := s.shouldRun(); session != "" {
+				s.execute(session)
 			}
 		}
 	}
 }
 
-// shouldRun 检查是否满足执行条件（6个检查点）：
-// 1. 定时任务已启用  2. 当前未在运行  3. 非周末  4. 今日尚未执行  5. 当前时间 >= 设定时间
-func (s *Scheduler) shouldRun() bool {
+// shouldRun 检查是否满足执行条件，返回要执行的 session（"morning"/"full"）或空字符串。
+func (s *Scheduler) shouldRun() string {
 	s.mu.Lock()
 	enabled := s.Enabled
 	running := s.isRunning
 	lastRun := s.lastRun
+	lastMorningRun := s.lastMorningRun
 	runTime := s.RunTime
+	morningRunTime := s.MorningRunTime
 	s.mu.Unlock()
 
 	if !enabled || running {
-		return false
+		return ""
 	}
 	now := time.Now()
 	if now.Weekday() >= time.Saturday {
-		return false
+		return ""
 	}
-	if !lastRun.IsZero() {
-		ly, lm, ld := lastRun.Date()
-		ny, nm, nd := now.Date()
-		if ly == ny && lm == nm && ld == nd {
-			return false
-		}
+	ly, lm, ld := now.Date()
+
+	// 早盘检查
+	h, m := parseTime(morningRunTime)
+	morningTarget := time.Date(ly, lm, ld, h, m, 0, 0, now.Location())
+	if (now.After(morningTarget) || now.Equal(morningTarget)) &&
+		(lastMorningRun.IsZero() || !sameDay(lastMorningRun, now)) {
+		return "morning"
 	}
 
-	h, m := parseTime(runTime)
-	target := time.Date(now.Year(), now.Month(), now.Day(), h, m, 0, 0, now.Location())
-	return now.After(target) || now.Equal(target)
+	// 全天检查
+	h, m = parseTime(runTime)
+	fullTarget := time.Date(ly, lm, ld, h, m, 0, 0, now.Location())
+	if (now.After(fullTarget) || now.Equal(fullTarget)) &&
+		(lastRun.IsZero() || !sameDay(lastRun, now)) {
+		return "full"
+	}
+
+	return ""
+}
+
+func sameDay(t1, t2 time.Time) bool {
+	y1, m1, d1 := t1.Date()
+	y2, m2, d2 := t2.Date()
+	return y1 == y2 && m1 == m2 && d1 == d2
 }
 
 // execute 执行完整的视频生成管道：
 // 数据拉取 → 保存CSV → 事件分析 → Remotion渲染(mobile+tv) → 文案生成(模板+AI)
-func (s *Scheduler) execute() {
+func (s *Scheduler) execute(session string) {
 	s.mu.Lock()
 	s.isRunning = true
 	s.lastStatus = ""
 	s.mu.Unlock()
 
 	todayStr := time.Now().Format("2006-01-02")
-	log.Printf("Scheduler: starting pipeline for %s", todayStr)
+	sessCfg := config.SessionConfigs[session]
+	log.Printf("Scheduler: starting %s pipeline for %s", sessCfg.TitleSuffix, todayStr)
 
 	defer func() {
 		s.mu.Lock()
-		s.lastRun = time.Now()
+		if session == "morning" {
+			s.lastMorningRun = time.Now()
+		} else {
+			s.lastRun = time.Now()
+		}
 		s.isRunning = false
 		s.mu.Unlock()
 	}()
@@ -166,29 +206,30 @@ func (s *Scheduler) execute() {
 		return
 	}
 
-	if err := fetcher.SaveDailyData(sectors, todayStr); err != nil {
+	if err := fetcher.SaveSessionData(sectors, todayStr, session); err != nil {
 		log.Printf("Scheduler: failed to save data: %v", err)
 	}
 
 	allSectors, _ := fetcher.FetchAllRaw()
-	events, timeline, ticker := analyzer.AnalyzeAllContent(allSectors, todayStr)
-	if len(events) == 0 {
-		events = analyzer.GetFallbackEvents(config.TotalFrames)
-	}
 
 	outputDir := config.GetOutputDir()
 	os.MkdirAll(filepath.Join(outputDir, todayStr), 0755)
+
+	events, timeline, ticker := analyzer.AnalyzeAllContent(allSectors, todayStr, session)
+	if len(events) == 0 {
+		events = analyzer.GetFallbackEvents(config.TotalFrames)
+	}
 
 	for _, format := range []string{"mobile", "tv"} {
 		suffix := ""
 		if format == "tv" {
 			suffix = "_tv"
 		}
-		outPath := filepath.Join(outputDir, todayStr, fmt.Sprintf("全天%s.mp4", suffix))
-		if _, err := renderer.RenderVideo(sectors, todayStr, outPath, events, timeline, ticker, format); err != nil {
-			log.Printf("Scheduler: render failed (%s): %v", format, err)
+		outPath := filepath.Join(outputDir, todayStr, fmt.Sprintf("%s%s.mp4", sessCfg.FilenameSuffix, suffix))
+		if _, err := renderer.RenderVideo(sectors, todayStr, outPath, events, timeline, ticker, format, session); err != nil {
+			log.Printf("Scheduler: render failed (%s %s): %v", sessCfg.TitleSuffix, format, err)
 			s.mu.Lock()
-			s.lastStatus = fmt.Sprintf("error: render %s: %v", format, err)
+			s.lastStatus = fmt.Sprintf("error: render %s %s: %v", sessCfg.TitleSuffix, format, err)
 			s.mu.Unlock()
 			return
 		}
@@ -197,24 +238,20 @@ func (s *Scheduler) execute() {
 	copyDir := filepath.Join(config.GetCopyDir(), todayStr)
 	os.MkdirAll(copyDir, 0755)
 
-	for _, sess := range []string{"full", "morning", "afternoon"} {
-		sessCfg := config.SessionConfigs[sess]
-		tplCopy := copy.GenerateCopywriting(sectors, todayStr, sess)
-		if err := os.WriteFile(filepath.Join(copyDir, fmt.Sprintf("文案_%s.txt", sessCfg.TitleSuffix)), []byte(tplCopy), 0644); err != nil {
-			log.Printf("Scheduler: failed to save template copy (%s): %v", sessCfg.TitleSuffix, err)
-		}
-	}
-
 	aiCfg := config.GetAIConfig()
 	if aiCfg.APIKey != "" {
-		for _, sess := range []string{"full", "morning", "afternoon"} {
-			sessCfg := config.SessionConfigs[sess]
-			aiText, err := copy.GenerateCopywritingAI(sectors, todayStr, sess)
-			if err != nil {
-				log.Printf("Scheduler: AI copy failed (%s): %v", sessCfg.TitleSuffix, err)
-			} else {
-				os.WriteFile(filepath.Join(copyDir, fmt.Sprintf("文案_ai_%s.txt", sessCfg.TitleSuffix)), []byte(aiText), 0644)
-			}
+		aiText, err := copy.GenerateCopywritingAI(sectors, todayStr, session)
+		if err != nil {
+			log.Printf("Scheduler: AI copy failed (%s): %v", sessCfg.TitleSuffix, err)
+			tplCopy := copy.GenerateCopywriting(sectors, todayStr, session)
+			os.WriteFile(filepath.Join(copyDir, fmt.Sprintf("文案_%s.txt", sessCfg.TitleSuffix)), []byte(tplCopy), 0644)
+		} else {
+			os.WriteFile(filepath.Join(copyDir, fmt.Sprintf("文案_ai_%s.txt", sessCfg.TitleSuffix)), []byte(aiText), 0644)
+		}
+	} else {
+		tplCopy := copy.GenerateCopywriting(sectors, todayStr, session)
+		if err := os.WriteFile(filepath.Join(copyDir, fmt.Sprintf("文案_%s.txt", sessCfg.TitleSuffix)), []byte(tplCopy), 0644); err != nil {
+			log.Printf("Scheduler: failed to save template copy (%s): %v", sessCfg.TitleSuffix, err)
 		}
 	}
 

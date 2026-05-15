@@ -231,6 +231,14 @@ func SetupRouter(sched *scheduler.Scheduler) *gin.Engine {
 				}
 			}
 		}
+		if v, ok := body["morning_run_time"]; ok {
+			if s, ok := v.(string); ok {
+				sched.MorningRunTime = s
+				if sched.Enabled {
+					sched.Start()
+				}
+			}
+		}
 		c.JSON(200, sched.GetStatus())
 	})
 	r.POST("/api/scheduler/run-now", func(c *gin.Context) {
@@ -262,13 +270,15 @@ func handleDates(c *gin.Context) {
 	for _, d := range dates {
 		videos := getVideos(d)
 		cpy := getCopy(d)
-		sectors, _ := fetcher.LoadCachedData(d)
+		sectorsFull, _ := fetcher.LoadSessionData(d, "full")
+		sectorsMorning, _ := fetcher.LoadSessionData(d, "morning")
 		items = append(items, map[string]any{
-			"date":       d,
-			"videos":     videos,
-			"sector_count": len(sectors),
-			"文案_count": len(cpy["template"]),
-			"ai_count":   len(cpy["ai"]),
+			"date":           d,
+			"videos":         videos,
+			"sector_count":   len(sectorsFull),
+			"morning_count":  len(sectorsMorning),
+			"文案_count":     len(cpy["template"]),
+			"ai_count":       len(cpy["ai"]),
 		})
 	}
 	c.JSON(200, gin.H{"dates": items})
@@ -276,7 +286,11 @@ func handleDates(c *gin.Context) {
 
 func handleData(c *gin.Context) {
 	dateStr := c.Param("date")
-	sectors, _ := fetcher.LoadCachedData(dateStr)
+	session := c.Query("session")
+	if session == "" {
+		session = "full"
+	}
+	sectors, _ := fetcher.LoadSessionData(dateStr, session)
 	c.JSON(200, gin.H{
 		"sectors": sectors,
 		"videos":  getVideos(dateStr),
@@ -370,14 +384,7 @@ func handleFiles(c *gin.Context) {
 
 	videoMap := make(map[string]string)
 	for _, v := range videos {
-		label := strings.TrimSuffix(v, "_tv")
-		if v == "全天" {
-			videoMap["全天"] = "全天.mp4"
-		} else if v == "全天_tv" {
-			videoMap["全天_tv"] = "全天_tv.mp4"
-		} else {
-			videoMap[label] = v + ".mp4"
-		}
+		videoMap[v] = v + ".mp4"
 	}
 
 	c.JSON(200, gin.H{
@@ -388,8 +395,9 @@ func handleFiles(c *gin.Context) {
 
 func handleFetch(c *gin.Context) {
 	var body struct {
-		Date  string `json:"date"`
-		Force bool   `json:"force"`
+		Date    string `json:"date"`
+		Force   bool   `json:"force"`
+		Session string `json:"session"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		body.Date = time.Now().Format("2006-01-02")
@@ -397,18 +405,26 @@ func handleFetch(c *gin.Context) {
 	if body.Date == "" {
 		body.Date = time.Now().Format("2006-01-02")
 	}
+	if body.Session == "" {
+		body.Session = "full"
+	}
 
 	sse := NewSSEWriter(c)
 
 	runPipeline := func() {
 		today := time.Now().Format("2006-01-02")
-		cachePath := filepath.Join(config.GetDataDir(), body.Date, "sectors.csv")
+		cacheFile := "sectors.csv"
+		if body.Session == "morning" {
+			cacheFile = "sectors_morning.csv"
+		}
+		cachePath := filepath.Join(config.GetDataDir(), body.Date, cacheFile)
 
 		if !body.Force {
 			if _, err := os.Stat(cachePath); err == nil {
-				sectors, err := fetcher.LoadCachedData(body.Date)
+				sectors, err := fetcher.LoadSessionData(body.Date, body.Session)
 				if err == nil && len(sectors) > 0 {
-					sse.Send("log", fmt.Sprintf("缓存命中，加载 %s 本地数据", body.Date))
+					sessCfg := config.SessionConfigs[body.Session]
+					sse.Send("log", fmt.Sprintf("缓存命中，加载 %s %s数据", body.Date, sessCfg.TitleSuffix))
 					data, _ := json.Marshal(map[string]any{
 						"sectors": sectors,
 						"source":  "cache",
@@ -450,7 +466,7 @@ func handleFetch(c *gin.Context) {
 		}
 
 		sse.Send("log", "保存数据到本地缓存...")
-		fetcher.SaveDailyData(sectors, body.Date)
+		fetcher.SaveSessionData(sectors, body.Date, body.Session)
 		sse.Send("log", "数据已保存")
 
 		data, _ := json.Marshal(map[string]any{
@@ -475,9 +491,10 @@ func handleFetch(c *gin.Context) {
 
 func handleGenerate(c *gin.Context) {
 	var body struct {
-		Date   string `json:"date"`
+		Date     string `json:"date"`
 		CopyMode string `json:"copy_mode"`
-		Format string `json:"format"`
+		Format   string `json:"format"`
+		Session  string `json:"session"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
@@ -488,6 +505,9 @@ func handleGenerate(c *gin.Context) {
 	}
 	if body.Format == "" {
 		body.Format = "mobile"
+	}
+	if body.Session == "" {
+		body.Session = "full"
 	}
 
 	sse := NewSSEWriter(c)
@@ -509,7 +529,7 @@ func handleGenerate(c *gin.Context) {
 
 	var events, timeline, ticker any
 	if len(sectors) > 0 {
-		ev, tl, tk := analyzer.AnalyzeAllContent(sectors, body.Date)
+		ev, tl, tk := analyzer.AnalyzeAllContent(sectors, body.Date, body.Session)
 		events, timeline, ticker = ev, tl, tk
 		if len(ev) == 0 {
 			events = analyzer.GetFallbackEvents(config.TotalFrames)
@@ -522,12 +542,15 @@ func handleGenerate(c *gin.Context) {
 		sse.Send("log", "⚠️ 无数据，使用默认事件")
 	}
 
-	fmtLabel := "App (9:16)"
-	if body.Format == "tv" {
-		fmtLabel = "TV (16:9)"
+	sessCfg := config.SessionConfigs[body.Session]
+	fmtLabel := sessCfg.TitleSuffix + " "
+	if body.Format == "mobile" {
+		fmtLabel += "App (9:16)"
+	} else {
+		fmtLabel += "TV (16:9)"
 	}
 	sse.Send("log", fmt.Sprintf("🎬 开始渲染: %s", fmtLabel))
-	sse.Send("log", fmt.Sprintf("▶️ 开始生成 %s 全天视频 (%s)...", body.Date, fmtLabel))
+	sse.Send("log", fmt.Sprintf("▶️ 开始生成 %s %s视频 (%s)...", body.Date, sessCfg.TitleSuffix, fmtLabel))
 	sse.Send("progress", "生成视频...")
 
 	outputDir := config.GetOutputDir()
@@ -535,23 +558,23 @@ func handleGenerate(c *gin.Context) {
 	if body.Format == "tv" {
 		formatSuffix = "_tv"
 	}
-	outPath := filepath.Join(outputDir, body.Date, fmt.Sprintf("全天%s.mp4", formatSuffix))
+	outPath := filepath.Join(outputDir, body.Date, fmt.Sprintf("%s%s.mp4", sessCfg.FilenameSuffix, formatSuffix))
 
 	evSlice := toMarketEvents(events)
 	tlSlice := toTimelineEvents(timeline)
 	tkSlice := toTickerItems(ticker)
 
-	if _, err := renderer.RenderVideo(sectors, body.Date, outPath, evSlice, tlSlice, tkSlice, body.Format); err != nil {
+	if _, err := renderer.RenderVideo(sectors, body.Date, outPath, evSlice, tlSlice, tkSlice, body.Format, body.Session); err != nil {
 		sse.Send("error", fmt.Sprintf("渲染失败: %v", err))
 		return
 	}
-	sse.Send("log", "✅ 全天视频生成完成")
+	sse.Send("log", fmt.Sprintf("✅ %s视频生成完成", sessCfg.TitleSuffix))
 
 	fn := copy.GenerateCopywriting
 	copyDir := filepath.Join(config.GetCopyDir(), body.Date)
 	os.MkdirAll(copyDir, 0755)
 
-	sessions := []string{"full", "morning", "afternoon"}
+	sessions := []string{"full", "morning"}
 	if body.CopyMode == "ai" {
 		sse.Send("log", "✍️ 生成文案（AI模式）...")
 		for _, sess := range sessions {

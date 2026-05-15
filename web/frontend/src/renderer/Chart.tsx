@@ -11,6 +11,8 @@ interface ChartProps {
   height?: number;
   format?: 'mobile' | 'tv';
   sentiment?: 'bullish' | 'bearish' | 'neutral';
+  session?: 'morning' | 'full';
+  xLim?: [number, number];
 }
 
 const X_MAX = 330;
@@ -125,8 +127,13 @@ export const Chart: React.FC<ChartProps> = ({
   height = 1920,
   format = 'mobile',
   sentiment = 'neutral',
+  session = 'full',
+  xLim: propXLim,
 }) => {
   const isTV = format === 'tv';
+
+  const xMax = propXLim ? propXLim[1] : 330;
+  const isMorning = session === 'morning';
 
   // TV layout: chart ~60%, events ~12%, ranking ~20%
   const chartLeft = isTV ? 30 : 50;
@@ -167,7 +174,7 @@ export const Chart: React.FC<ChartProps> = ({
     };
   }, [sectors]);
 
-  const xScale = (v: number) => chartLeft + (v / X_MAX) * chartW;
+  const xScale = (v: number) => chartLeft + (v / xMax) * chartW;
 
   const yScale = (v: number) => {
     const range = yBounds.max - yBounds.min;
@@ -241,7 +248,7 @@ export const Chart: React.FC<ChartProps> = ({
     const xValues = new Float64Array(currentIdx + 1);
     const yValues = new Float64Array(currentIdx + 1);
     for (let i = 0; i <= currentIdx; i++) {
-      xValues[i] = (i / (NUM_POINTS - 1)) * X_MAX;
+      xValues[i] = (i / (NUM_POINTS - 1)) * xMax;
       yValues[i] = sector.data[i];
     }
 
@@ -257,31 +264,31 @@ export const Chart: React.FC<ChartProps> = ({
     let pointOpacity: number;
 
     if (rankIdx < 5) {
-      lineWidth = isTV ? 2.5 : 2.2;
-      glowWidth = isTV ? 8 : 6;
-      glowOpacity = 0.08;
-      mainOpacity = 0.7;
-      pointR = isTV ? 4.5 : 4;
-      pointOpacity = 0.7;
+      lineWidth = isTV ? 2.5 : 3.8;
+      glowWidth = isTV ? 8 : 12;
+      glowOpacity = 0.12;
+      mainOpacity = 0.85;
+      pointR = isTV ? 4.5 : 6.5;
+      pointOpacity = 0.85;
     } else if (rankIdx < 12) {
-      lineWidth = isTV ? 1.8 : 1.5;
-      glowWidth = isTV ? 4 : 3;
-      glowOpacity = 0.04;
-      mainOpacity = 0.45;
-      pointR = isTV ? 3.5 : 3;
-      pointOpacity = 0.45;
+      lineWidth = isTV ? 1.8 : 3.0;
+      glowWidth = isTV ? 4 : 8;
+      glowOpacity = 0.08;
+      mainOpacity = 0.6;
+      pointR = isTV ? 3.5 : 5.5;
+      pointOpacity = 0.6;
     } else if (rankIdx < 20) {
-      lineWidth = isTV ? 1.2 : 1;
-      glowWidth = isTV ? 2 : 1.5;
-      glowOpacity = 0.02;
-      mainOpacity = 0.3;
-      pointR = isTV ? 2.5 : 2;
-      pointOpacity = 0.3;
+      lineWidth = isTV ? 1.2 : 2.2;
+      glowWidth = isTV ? 2 : 4;
+      glowOpacity = 0.04;
+      mainOpacity = 0.4;
+      pointR = isTV ? 2.5 : 4.5;
+      pointOpacity = 0.4;
     } else {
-      lineWidth = isTV ? 0.7 : 0.5;
+      lineWidth = isTV ? 0.7 : 1.4;
       glowWidth = 0;
       glowOpacity = 0;
-      mainOpacity = 0.12;
+      mainOpacity = 0.15;
       pointR = 0;
       pointOpacity = 0;
     }
@@ -384,8 +391,8 @@ export const Chart: React.FC<ChartProps> = ({
                 x2={endX + pointR + 8}
                 y2={labelY}
                 stroke={sector.color}
-                strokeWidth={rankIdx < 5 ? 1 : 0.6}
-                opacity={Math.min((currentIdx - 8) / 8, 1) * pointOpacity * 0.35 * eventPulse}
+                strokeWidth={rankIdx < 5 ? 1.5 : 1.0}
+                opacity={Math.min((currentIdx - 8) / 8, 1) * pointOpacity * 0.5 * eventPulse}
               />
             )}
             <line
@@ -394,14 +401,14 @@ export const Chart: React.FC<ChartProps> = ({
               x2={endX + pointR + 16}
               y2={labelY}
               stroke={sector.color}
-              strokeWidth={rankIdx < 5 ? 1.2 : 0.8}
+              strokeWidth={rankIdx < 5 ? 1.6 : 1.2}
               opacity={Math.min((currentIdx - 8) / 8, 1) * pointOpacity * 0.5 * eventPulse}
             />
             <text
               x={endX + pointR + 19}
               y={labelY + 1}
               fill={sector.color}
-              fontSize={rankIdx < 5 ? (isTV ? 12 : 13) : (isTV ? 10 : 11)}
+              fontSize={rankIdx < 5 ? (isTV ? 12 : 20) : (isTV ? 10 : 18)}
               fontWeight={rankIdx < 5 ? 600 : 400}
               textAnchor="start"
               dominantBaseline="middle"
@@ -421,7 +428,7 @@ export const Chart: React.FC<ChartProps> = ({
             x={endX + pointR + 19 + (rankIdx < 5 ? 62 : 48)}
             y={labelY + 1}
             fill={sector.net >= 0 ? '#4ade80' : '#f87171'}
-            fontSize={rankIdx < 5 ? (isTV ? 12 : 13) : (isTV ? 10 : 11)}
+            fontSize={rankIdx < 5 ? (isTV ? 12 : 20) : (isTV ? 10 : 18)}
             fontWeight={rankIdx < 5 ? 600 : 400}
             textAnchor="start"
             dominantBaseline="middle"
@@ -438,34 +445,42 @@ export const Chart: React.FC<ChartProps> = ({
     );
   });
 
-  const XTICKS = [
-    { pos: 0, label: '09:30' },
-    { pos: 60, label: '10:30' },
-    { pos: 120, label: '11:30' },
-    { pos: 180, label: '13:00' },
-    { pos: 240, label: '14:00' },
-    { pos: 300, label: '15:00' },
-  ];
+  const XTICKS = isMorning
+    ? [
+        { pos: 0, label: '09:30' },
+        { pos: 30, label: '10:00' },
+        { pos: 60, label: '10:30' },
+        { pos: 90, label: '11:00' },
+        { pos: 120, label: '11:30' },
+      ]
+    : [
+        { pos: 0, label: '09:30' },
+        { pos: 60, label: '10:30' },
+        { pos: 120, label: '11:30' },
+        { pos: 180, label: '13:00' },
+        { pos: 240, label: '14:00' },
+        { pos: 300, label: '15:00' },
+      ];
 
   return (
     <svg width={width} height={height} style={{ position: 'absolute', top: 0, left: 0, zIndex: 5, pointerEvents: 'none', overflow: 'visible' }}>
       {XTICKS.map((t, i) => {
         const x = xScale(t.pos);
         return (
-          <line key={`xgrid${i}`} x1={x} y1={chartTop} x2={x} y2={chartBottom} stroke="#1e2d45" strokeWidth={0.5} opacity={0.5} />
+          <line key={`xgrid${i}`} x1={x} y1={chartTop} x2={x} y2={chartBottom} stroke="#1e2d45" strokeWidth={0.8} opacity={0.5} />
         );
       })}
       {yTicks.map((v) => (
-        <line key={`ygrid${v}`} x1={chartLeft} y1={yScale(v)} x2={chartRight} y2={yScale(v)} stroke="#1e2d45" strokeWidth={0.5} opacity={0.6} />
+        <line key={`ygrid${v}`} x1={chartLeft} y1={yScale(v)} x2={chartRight} y2={yScale(v)} stroke="#1e2d45" strokeWidth={0.8} opacity={0.6} />
       ))}
       {yZero >= chartTop && yZero <= chartBottom && (
         <>
-          <line x1={chartLeft} y1={yZero} x2={chartRight} y2={yZero} stroke="#3a5570" strokeWidth={1.2} opacity={0.7} strokeDasharray="6 4" />
+          <line x1={chartLeft} y1={yZero} x2={chartRight} y2={yZero} stroke="#3a5570" strokeWidth={1.5} opacity={0.7} strokeDasharray="6 4" />
           <text
             x={chartRight + 8}
             y={yZero + 4}
             fill="#6b7280"
-            fontSize={12}
+            fontSize={isTV ? 12 : 16}
             fontWeight={600}
             textAnchor="start"
             fontFamily='"Helvetica Neue", Arial, sans-serif'
@@ -481,7 +496,7 @@ export const Chart: React.FC<ChartProps> = ({
           x={xScale(t.pos)}
           y={chartBottom + 22}
           fill="#5a6577"
-          fontSize={isTV ? 14 : 16}
+          fontSize={isTV ? 14 : 20}
           fontWeight={500}
           textAnchor="middle"
           fontFamily='"Helvetica Neue", Arial, sans-serif'
@@ -499,7 +514,7 @@ export const Chart: React.FC<ChartProps> = ({
             x={chartLeft - 8}
             y={y + 4}
             fill={v === 0 ? '#6b7280' : '#4a5568'}
-            fontSize={isTV ? 13 : 15}
+            fontSize={isTV ? 13 : 18}
             fontWeight={v === 0 ? 600 : 400}
             textAnchor="end"
             fontFamily='"Helvetica Neue", Arial, sans-serif'
@@ -524,9 +539,9 @@ export const Chart: React.FC<ChartProps> = ({
       {curvesJSX}
 
       <line
-        x1={xScale(progress * X_MAX)}
+        x1={xScale(progress * xMax)}
         y1={chartTop - 8}
-        x2={xScale(progress * X_MAX)}
+        x2={xScale(progress * xMax)}
         y2={chartBottom + 8}
         stroke="#5a90d0"
         strokeWidth={1.2}

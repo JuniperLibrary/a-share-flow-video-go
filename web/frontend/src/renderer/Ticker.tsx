@@ -19,7 +19,7 @@ export const Ticker: React.FC<TickerProps> = ({
   format = 'mobile',
 }) => {
   const isTV = format === 'tv';
-  const scale = isTV ? 1.1 : 1.1;
+  const scale = isTV ? 1.1 : 1.55;
 
   const progress = frame / totalFrames;
   const mins = Math.round(progress * 330);

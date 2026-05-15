@@ -40,4 +40,6 @@ export interface BloombergVideoProps {
   format?: 'mobile' | 'tv';
   width?: number;
   height?: number;
+  session?: 'morning' | 'full';
+  xLim?: [number, number];
 }

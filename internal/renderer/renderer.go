@@ -40,12 +40,14 @@ type RenderProps struct {
 	Format         string                   `json:"format"`
 	Width          int                      `json:"width"`
 	Height         int                      `json:"height"`
+	Session        string                   `json:"session"`
+	XLim           [2]int                   `json:"xLim"`
 }
 
 // RenderVideo 调用 Remotion CLI 渲染视频。
 // sectors: 板块数据 | dateStr: 日期 | outputPath: 输出路径
-// events/timeline/ticker: 分析结果 | format: mobile/tv
-func RenderVideo(sectors []fetcher.Sector, dateStr, outputPath string, events []analyzer.MarketEvent, timeline []analyzer.TimelineEvent, ticker []analyzer.TickerItem, format string) (string, error) {
+// events/timeline/ticker: 分析结果 | format: mobile/tv | session: morning/full
+func RenderVideo(sectors []fetcher.Sector, dateStr, outputPath string, events []analyzer.MarketEvent, timeline []analyzer.TimelineEvent, ticker []analyzer.TickerItem, format string, session string) (string, error) {
 	t, err := time.Parse("2006-01-02", dateStr)
 	if err != nil {
 		return "", fmt.Errorf("parse date: %w", err)
@@ -59,13 +61,18 @@ func RenderVideo(sectors []fetcher.Sector, dateStr, outputPath string, events []
 		w, h = config.TVWidth, config.TVHeight
 	}
 
+	sessCfg, ok := config.SessionConfigs[session]
+	if !ok {
+		sessCfg = config.SessionConfigs["full"]
+	}
+
 	sectorData := make([]SectorData, len(sectors))
 	for i, s := range sectors {
 		sectorData[i] = SectorData{Name: s.Name, Net: s.Net, Color: s.Color}
 	}
 
 	if len(timeline) == 0 {
-		_, timeline, ticker = analyzer.DataDrivenGenerate(sectors)
+		_, timeline, ticker = analyzer.DataDrivenGenerate(sectors, session)
 	}
 	if len(events) == 0 {
 		events = analyzer.GetFallbackEvents(TotalFrames)
@@ -82,6 +89,8 @@ func RenderVideo(sectors []fetcher.Sector, dateStr, outputPath string, events []
 		Format:         format,
 		Width:          w,
 		Height:         h,
+		Session:        session,
+		XLim:           sessCfg.XLim,
 	}
 
 	propsJSON, err := json.Marshal(props)

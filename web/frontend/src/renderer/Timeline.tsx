@@ -8,6 +8,8 @@ interface TimelineProps {
   width?: number;
   height?: number;
   format?: 'mobile' | 'tv';
+  session?: 'morning' | 'full';
+  xLim?: [number, number];
 }
 
 const SENTIMENT_COLORS: Record<string, string> = {
@@ -23,9 +25,12 @@ export const Timeline: React.FC<TimelineProps> = ({
   width = 1080,
   height = 1920,
   format = 'mobile',
+  session = 'full',
+  xLim: propXLim,
 }) => {
   const isTV = format === 'tv';
-  const scale = isTV ? 1.0 : 1.05;
+  const scale = isTV ? 1.0 : 1.45;
+  const xMax = propXLim ? propXLim[1] : 330;
 
   const timelineLeft = isTV ? width * 0.64 : width * 0.50;
   const timelineTop = isTV ? 110 : 170;
@@ -40,7 +45,7 @@ export const Timeline: React.FC<TimelineProps> = ({
 
   const visibleEvents = useMemo(() => {
     return events.filter(ev => {
-      const eventProgress = ev.timeMinutes / 330;
+      const eventProgress = ev.timeMinutes / xMax;
       return eventProgress <= progress + 0.02 && eventProgress > 0;
     });
   }, [events, progress]);
@@ -94,7 +99,7 @@ export const Timeline: React.FC<TimelineProps> = ({
         />
 
         {visibleEvents.map((ev, idx) => {
-          const eventProgress = ev.timeMinutes / 330;
+          const eventProgress = ev.timeMinutes / xMax;
           const fadeStart = progress - 0.06;
           const opacity = progress > fadeStart ? Math.min(1, (progress - fadeStart) / 0.04) * 0.95 : 0;
           const color = SENTIMENT_COLORS[ev.sentiment] || '#60a5fa';

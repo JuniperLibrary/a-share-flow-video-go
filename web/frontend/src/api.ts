@@ -47,7 +47,7 @@ export const api = {
   getSchedulerStatus: () =>
     request<SchedulerStatus>('/api/scheduler'),
 
-  updateScheduler: (body: { enabled?: boolean; run_time?: string }) =>
+  updateScheduler: (body: { enabled?: boolean; run_time?: string; morning_run_time?: string }) =>
     request<SchedulerStatus>('/api/scheduler', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

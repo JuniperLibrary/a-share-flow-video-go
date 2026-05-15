@@ -136,7 +136,7 @@ export const RankingPanel: React.FC<RankingPanelProps> = ({
   format = 'mobile',
 }) => {
   const isTV = format === 'tv';
-  const scale = isTV ? 1.1 : 1.1;
+  const scale = isTV ? 1.1 : 1.5;
 
   const panelLeft = isTV ? width * 0.78 : width * 0.70;
   const panelTop = isTV ? 110 : 180;

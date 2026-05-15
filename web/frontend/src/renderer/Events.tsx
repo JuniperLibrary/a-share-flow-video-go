@@ -77,7 +77,7 @@ export const Events: React.FC<EventsProps> = ({
   format = 'mobile',
 }) => {
   const isTV = format === 'tv';
-  const scale = isTV ? 1.1 : 1;
+  const scale = isTV ? 1.1 : 1.55;
 
   const chartLeft = isTV ? 30 : 50;
   const chartRight = isTV ? width * 0.60 : 480;

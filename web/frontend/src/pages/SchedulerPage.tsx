@@ -39,7 +39,7 @@ export function SchedulerPage() {
   async function updateSchedulerTime() {
     if (!status) return;
     try {
-      await api.updateScheduler({ run_time: status.run_time });
+      await api.updateScheduler({ run_time: status.run_time, morning_run_time: status.morning_run_time });
       loadStatus();
     } catch { void 0; }
   }
@@ -62,7 +62,7 @@ export function SchedulerPage() {
     <div>
       <div className="card">
         <h2>⏰ 定时任务</h2>
-        <p style={{ fontSize: 13, color: '#8892a4', marginBottom: 16 }}>每天收盘后自动获取数据、生成视频和文案</p>
+        <p style={{ fontSize: 13, color: '#8892a4', marginBottom: 16 }}>每天自动获取数据、生成视频和文案</p>
         <div className="form-row">
           <div className="form-group">
             <label>自动执行</label>
@@ -72,7 +72,14 @@ export function SchedulerPage() {
             </label>
           </div>
           <div className="form-group">
-            <label>执行时间</label>
+            <label>早盘时间</label>
+            <input type="time" value={status.morning_run_time || '11:35'} onChange={e => {
+              setStatus({ ...status, morning_run_time: e.target.value });
+              updateSchedulerTime();
+            }} style={{ width: 130 }} />
+          </div>
+          <div className="form-group">
+            <label>全天时间</label>
             <input type="time" value={status.run_time} onChange={e => {
               setStatus({ ...status, run_time: e.target.value });
               updateSchedulerTime();
@@ -93,11 +100,13 @@ export function SchedulerPage() {
           <div>状态：<span style={{ color: status.is_running ? '#00ff88' : (status.enabled ? '#00ff88' : '#8892a4') }}>
             {status.is_running ? '🔄 运行中' : (status.enabled ? '✅ 已启用' : '⏹ 停止')}
           </span></div>
-          <div>上次执行：<span>{fmtDate(status.last_run)}</span></div>
+          <div>早盘上次执行：<span>{fmtDate(status.last_morning_run)}</span></div>
+          <div>全天上次执行：<span>{fmtDate(status.last_run)}</span></div>
           <div>上次结果：<span style={{ color: status.last_status === 'success' ? '#00ff88' : '#8892a4' }}>
             {status.last_status === 'success' ? '✅ 成功' : (status.last_status || '—')}
           </span></div>
-          <div>下次执行：<span>{fmtDate(status.next_run)}</span></div>
+          <div>早盘下次执行：<span>{fmtDate(status.next_morning_run)}</span></div>
+          <div>全天下次执行：<span>{fmtDate(status.next_run)}</span></div>
         </div>
       </div>
     </div>

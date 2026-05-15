@@ -7,6 +7,7 @@ import { Timeline } from './Timeline.tsx';
 import { RankingPanel } from './RankingPanel.tsx';
 import { Ticker } from './Ticker.tsx';
 import { Particles } from './Particles.tsx';
+import { Disclaimer } from './Disclaimer.tsx';
 import type { BloombergVideoProps, TimelineEvent, TickerItem, SectorData } from './types.ts';
 
 export const BloombergVideo: React.FC = () => {
@@ -23,6 +24,8 @@ export const BloombergVideo: React.FC = () => {
   const tickerItems = inputProps.tickerItems || [];
   const format = inputProps.format || 'mobile';
   const isTV = format === 'tv';
+  const session = inputProps.session || 'full';
+  const xLim = inputProps.xLim || [0, 330];
 
   const mainLineId = React.useMemo(() => {
     if (sectors.length === 0) return null;
@@ -73,6 +76,8 @@ export const BloombergVideo: React.FC = () => {
         height={height}
         format={format}
         sentiment={sentiment}
+        session={session}
+        xLim={xLim}
       />
 
       <Timeline
@@ -82,6 +87,8 @@ export const BloombergVideo: React.FC = () => {
         width={width}
         height={height}
         format={format}
+        session={session}
+        xLim={xLim}
       />
 
       <RankingPanel
@@ -96,6 +103,14 @@ export const BloombergVideo: React.FC = () => {
 
       <Ticker
         tickerItems={tickerItems}
+        frame={frame}
+        totalFrames={totalFrames}
+        width={width}
+        height={height}
+        format={format}
+      />
+
+      <Disclaimer
         frame={frame}
         totalFrames={totalFrames}
         width={width}
