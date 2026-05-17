@@ -113,7 +113,7 @@ func runExportTask(task *ExportTask) {
 				})
 			}
 		}
-		return page, len(result.Data.Diff) < 100, nil
+		return page, len(result.Data.Diff) < 500, nil
 	}
 
 	allFS := []string{"m:90+t:2", "m:90+t:3"}
@@ -204,9 +204,10 @@ func SetupRouter(sched *scheduler.Scheduler) *gin.Engine {
 	r.GET("/api/export-all/:date", handleExportAll)
 	r.GET("/api/export-all/status/:task_id", handleExportStatus)
 	r.GET("/api/export-all/file/:task_id", handleExportFile)
-	r.GET("/api/export-hot15/:date", handleExportHot15)
+	r.GET("/api/export-hot18/:date", handleExportHot18)
 	r.POST("/api/fetch", handleFetch)
 	r.POST("/api/generate", handleGenerate)
+	r.POST("/api/generate-multiday", handleGenerateMultiDay)
 	r.GET("/api/config", handleGetConfig)
 	r.POST("/api/config", handleSaveConfig)
 	r.POST("/api/optimize-copy", handleOptimizeCopy)
@@ -359,13 +360,13 @@ func handleExportFile(c *gin.Context) {
 	c.File(filepath.Join(dateDir, task.Date, filename))
 }
 
-func handleExportHot15(c *gin.Context) {
+func handleExportHot18(c *gin.Context) {
 	dateStr := c.Param("date")
 	if dateStr == "" {
 		dateStr = time.Now().Format("2006-01-02")
 	}
 
-	sectors, err := fetcher.FetchTop15HotSectors()
+	sectors, err := fetcher.FetchTop18HotSectors()
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -447,7 +448,7 @@ func handleFetch(c *gin.Context) {
 
 		if body.Date == today {
 			sse.Send("log", "正在获取热门板块数据（东方财富）...")
-			sectors, err = fetcher.FetchTop15HotSectors()
+			sectors, err = fetcher.FetchTop18HotSectors()
 			if err != nil {
 				sse.Send("error", err.Error())
 				sse.Send("__done__", "")
@@ -597,6 +598,71 @@ func handleGenerate(c *gin.Context) {
 		sse.Send("log", "✅ 文案已保存")
 	}
 
+	sse.Send("progress", "完成")
+	sse.Send("done", "生成完毕")
+}
+
+func handleGenerateMultiDay(c *gin.Context) {
+	var body struct {
+		Date     string `json:"date"`
+		Days     int    `json:"days"`
+		CopyMode string `json:"copy_mode"`
+		Format   string `json:"format"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if body.Date == "" {
+		body.Date = time.Now().Format("2006-01-02")
+	}
+	if body.Days < 2 {
+		body.Days = 3
+	}
+	if body.Format == "" {
+		body.Format = "mobile"
+	}
+
+	sse := NewSSEWriter(c)
+
+	tradingDays, err := fetcher.GetTradingDays(body.Date, body.Days)
+	if err != nil {
+		sse.Send("error", fmt.Sprintf("无法获取交易日: %v", err))
+		return
+	}
+	sse.Send("log", fmt.Sprintf("📅 交易日: %s", tradingDays))
+
+	dayData, err := fetcher.LoadMultiDaySectors(tradingDays)
+	if err != nil {
+		sse.Send("error", fmt.Sprintf("加载数据失败: %v", err))
+		return
+	}
+	sse.Send("log", fmt.Sprintf("✅ 成功加载 %d 日数据", len(dayData)))
+
+	analysis := analyzer.MultiDayAnalyze(dayData, tradingDays)
+	sse.Send("log", fmt.Sprintf("✅ 趋势分析完成: %d条洞察 + %d条排名变化", len(analysis.TrendInsights), len(analysis.RankingChanges)))
+
+	outputDir := config.GetOutputDir()
+	dateLabel := tradingDays[0]
+	if len(tradingDays) > 1 {
+		dateLabel = tradingDays[0] + "_to_" + tradingDays[len(tradingDays)-1]
+	}
+	os.MkdirAll(filepath.Join(outputDir, dateLabel), 0755)
+
+	formatSuffix := ""
+	if body.Format == "tv" {
+		formatSuffix = "_tv"
+	}
+	outPath := filepath.Join(outputDir, dateLabel, fmt.Sprintf("三日资金流向%s.mp4", formatSuffix))
+
+	sse.Send("log", fmt.Sprintf("🎬 开始渲染 Bar Chart Race 视频 (%s)...", body.Format))
+	sse.Send("progress", "渲染视频中...")
+
+	if _, err := renderer.RenderMultiDayVideo(dayData, tradingDays, outPath, analysis, body.Format); err != nil {
+		sse.Send("error", fmt.Sprintf("渲染失败: %v", err))
+		return
+	}
+	sse.Send("log", "✅ Bar Chart Race 视频生成完成")
 	sse.Send("progress", "完成")
 	sse.Send("done", "生成完毕")
 }

@@ -13,7 +13,7 @@ export function PreviewPage() {
 
   useEffect(() => {
     api.getDates().then(d => {
-      const list = d.dates.map(x => x.date);
+      const list = d.dates?.map(x => x.date) || [];
       setDates(list);
       if (list.length > 0) setSelectedDate(list[0]);
     }).catch(() => void 0);
@@ -70,7 +70,7 @@ export function PreviewPage() {
         <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           <span style={{ fontSize: 14, color: '#8a8580', fontWeight: 500 }}>📅</span>
           <select value={selectedDate} onChange={e => setSelectedDate(e.target.value)} className="date-select">
-            {dates.map(d => <option key={d} value={d}>{d}</option>)}
+            {(dates || []).map(d => <option key={d} value={d}>{d}</option>)}
           </select>
           <span style={{ fontSize: 13, color: '#a5a09a' }}>共 {sessions.length} 个会话</span>
         </div>

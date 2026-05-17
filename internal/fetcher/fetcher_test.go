@@ -75,7 +75,7 @@ func TestSaveAndLoadCSV(t *testing.T) {
 	}
 }
 
-func TestTop15HotSectors_Filtering(t *testing.T) {
+func TestTop18HotSectors_Filtering(t *testing.T) {
 	df := []Sector{
 		{Name: "半导体", Net: 225.5},
 		{Name: "银行", Net: 46.4},
@@ -84,7 +84,7 @@ func TestTop15HotSectors_Filtering(t *testing.T) {
 	}
 
 	targetSet := make(map[string]bool)
-	for _, t := range Top15HotSectors {
+	for _, t := range Top18HotSectors {
 		targetSet[t] = true
 	}
 
@@ -118,18 +118,18 @@ func TestTop15HotSectors_Filtering(t *testing.T) {
 	}
 }
 
-func TestFetchTop15HotSectors_Live(t *testing.T) {
+func TestFetchTop18HotSectors_Live(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live API test")
 	}
 
-	sectors, err := FetchTop15HotSectors()
+	sectors, err := FetchTop18HotSectors()
 	if err != nil {
-		t.Fatalf("FetchTop15HotSectors failed: %v", err)
+		t.Fatalf("FetchTop18HotSectors failed: %v", err)
 	}
 
 	if len(sectors) == 0 {
-		t.Fatal("FetchTop15HotSectors returned empty sectors (API may be blocked or non-trading day)")
+		t.Fatal("FetchTop18HotSectors returned empty sectors (API may be blocked or non-trading day)")
 	}
 
 	if len(sectors) < config.MinSectorCount {
@@ -187,7 +187,7 @@ func TestSaveLoadRoundtrip_Live(t *testing.T) {
 	tmpDir := t.TempDir()
 	config.SetProjectRoot(tmpDir)
 
-	sectors, err := FetchTop15HotSectors()
+	sectors, err := FetchTop18HotSectors()
 	if err != nil || len(sectors) == 0 {
 		t.Skipf("API returned no data: %v", err)
 	}

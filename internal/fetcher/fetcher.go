@@ -23,11 +23,12 @@ var ColorPalette = []string{
 	"#BB9AF7", "#FF7B7B", "#9ECE6A", "#7DCFFF", "#FF9E64", "#89DCEB",
 }
 
-// Top15HotSectors 当前市场最热门的15个板块。
-var Top15HotSectors = []string{
+// Top18HotSectors 当前市场最热门的18个板块。
+var Top18HotSectors = []string{
 	"半导体", "AI应用", "CPO概念", "有色金属", "锂矿概念",
 	"商业航天", "电池", "机器人", "创新药", "白酒",
 	"消费电子", "银行", "人工智能", "云计算", "低空经济",
+	"电网设备", "通信设备", "传媒",
 }
 
 // Sector 表示一个板块的资金流向数据。
@@ -136,15 +137,15 @@ func fetchPrimaryData() ([]Sector, error) {
 	return sectors, nil
 }
 
-// FetchTop15HotSectors 获取 Top15HotSectors 的实时资金流数据。
-func FetchTop15HotSectors() ([]Sector, error) {
+// FetchTop18HotSectors 获取 Top18HotSectors 的实时资金流数据。
+func FetchTop18HotSectors() ([]Sector, error) {
 	all, err := fetchPrimaryData()
 	if err != nil {
 		return nil, err
 	}
 
-	targetSet := make(map[string]bool, len(Top15HotSectors))
-	for _, t := range Top15HotSectors {
+	targetSet := make(map[string]bool, len(Top18HotSectors))
+	for _, t := range Top18HotSectors {
 		targetSet[t] = true
 	}
 
@@ -159,7 +160,7 @@ func FetchTop15HotSectors() ([]Sector, error) {
 		return absF(results[i].Net) > absF(results[j].Net)
 	})
 
-	fmt.Printf("  [fetch] 热门15板块: 匹配 %d 个 | 流入 1st=%s %+.1f亿\n",
+	fmt.Printf("  [fetch] 热门18板块: 匹配 %d 个 | 流入 1st=%s %+.1f亿\n",
 		len(results), results[0].Name, results[0].Net)
 
 	return results, nil
@@ -261,7 +262,7 @@ func FetchHistoricalSectors(dateStr string) ([]Sector, error) {
 	}
 
 	var targets []string
-	for _, name := range Top15HotSectors {
+	for _, name := range Top18HotSectors {
 		if _, ok := bkMapping[name]; ok {
 			targets = append(targets, name)
 		}
@@ -327,7 +328,7 @@ func FetchHistoricalSectors(dateStr string) ([]Sector, error) {
 	}
 
 	result := append(inflow, outflow...)
-	fmt.Printf("  [历史] 热门15 | 净流入 %d + 净流出 %d = %d 个板块\n", len(inflow), len(outflow), len(result))
+	fmt.Printf("  [历史] 热门18 | 净流入 %d + 净流出 %d = %d 个板块\n", len(inflow), len(outflow), len(result))
 	if len(result) > 0 {
 		fmt.Printf("  [历史] 流入 1st=%s %+.1f亿\n", result[0].Name, result[0].Net)
 		if len(inflow) < len(result) {

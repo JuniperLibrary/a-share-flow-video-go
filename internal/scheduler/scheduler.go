@@ -197,7 +197,7 @@ func (s *Scheduler) execute(session string) {
 		s.mu.Unlock()
 	}()
 
-	sectors, err := fetcher.FetchTop15HotSectors()
+	sectors, err := fetcher.FetchTop18HotSectors()
 	if err != nil || len(sectors) == 0 {
 		s.mu.Lock()
 		s.lastStatus = fmt.Sprintf("error: %v", err)

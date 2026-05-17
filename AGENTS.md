@@ -39,7 +39,7 @@ Go backend + React/Remotion frontend. Data flows: 东方财富 API → Go fetche
 ### Key Modules
 | Module | Purpose |
 |--------|---------|
-| `internal/fetcher/` | 东方财富 API client, Top15HotSectors filtering, CSV save/load |
+| `internal/fetcher/` | 东方财富 API client, Top18HotSectors filtering, CSV save/load |
 | `internal/analyzer/` | AI event generation (AIGenerate) + data-driven fallback (DataDrivenGenerate) |
 | `internal/renderer/` | Remotion bridge — serializes props to JSON, calls `npx remotion render` |
 | `internal/copy/` | Copywriting generation (template + AI) |
@@ -55,7 +55,7 @@ Go backend + React/Remotion frontend. Data flows: 东方财富 API → Go fetche
 
 ## Data Flow
 
-1. **Fetch**: `FetchTop15HotSectors()` calls 东方财富 H5 API (`m:90+t:2`), filters to `Top15HotSectors` list
+1. **Fetch**: `FetchTop18HotSectors()` calls 东方财富 H5 API (`m:90+t:2`), filters to `Top18HotSectors` list
 2. **Analyze**: `AnalyzeAllContent()` tries AI first (180s timeout), falls back to `DataDrivenGenerate()`
 3. **Render**: `RenderVideo()` marshals RenderProps → JSON → `npx remotion render` → MP4
 4. **Copy**: Generates 文案 files for full/morning/afternoon sessions
@@ -79,7 +79,7 @@ type Sector struct {
 
 CSV columns: `name,net,color` (3 columns only).
 
-## Top15HotSectors
+## Top18HotSectors
 
 Hardcoded in `fetcher.go`: 半导体, AI应用, CPO概念, 有色金属, 锂矿概念, 商业航天, 电池, 机器人, 创新药, 白酒, 消费电子, 银行, 人工智能, 云计算, 低空经济
 
@@ -92,9 +92,9 @@ Hardcoded in `fetcher.go`: 半导体, AI应用, CPO概念, 有色金属, 锂矿�
 
 ## Testing Quirks
 
-- Live API tests (`TestFetchTop15HotSectors_Live`, `TestFetchHistoricalSectors_Live`, `TestSaveLoadRoundtrip_Live`, `TestColorPaletteAssignment`) require network and trading-day data — skip with `-skip "Live"`
+- Live API tests (`TestFetchTop18HotSectors_Live`, `TestFetchHistoricalSectors_Live`, `TestSaveLoadRoundtrip_Live`, `TestColorPaletteAssignment`) require network and trading-day data — skip with `-skip "Live"`
 - Unit tests use `config.SetProjectRoot(tmpDir)` for isolation
-- `TestFetchTop15HotSectors_Live` expects ≥20 sectors but Top15 only returns 15 — this test may fail; it's a known issue
+- `TestFetchTop18HotSectors_Live` expects ≥18 sectors
 
 ## Remotion Rendering
 

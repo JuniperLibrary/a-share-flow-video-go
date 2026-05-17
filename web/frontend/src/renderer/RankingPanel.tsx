@@ -22,7 +22,7 @@ const RankingGroup: React.FC<{
 }> = ({ title, sectors, isPositive, visibleCount, highlightId, frame, scale }) => {
   const color = isPositive ? '#4ade80' : '#f87171';
   const arrow = isPositive ? '↑' : '↓';
-  const displaySectors = sectors.slice(0, 10);
+  const displaySectors = sectors.slice(0, 18);
 
   return (
     <div style={{ marginBottom: 20 * scale }}>

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ var sep65 = strings.Repeat("-", 65)
 func main() {
 	useAI := false
 	session := ""
+	days := 0
 	var dates []string
 
 	for _, arg := range os.Args[1:] {
@@ -30,9 +32,19 @@ func main() {
 			useAI = true
 		case strings.HasPrefix(arg, "--session="):
 			session = strings.TrimPrefix(arg, "--session=")
+		case strings.HasPrefix(arg, "--days="):
+			days, _ = strconv.Atoi(strings.TrimPrefix(arg, "--days="))
 		default:
 			dates = append(dates, arg)
 		}
+	}
+
+	if days > 1 {
+		if len(dates) == 0 {
+			dates = []string{time.Now().Format("2006-01-02")}
+		}
+		generateMultiDayVideo(dates[0], days, useAI)
+		return
 	}
 
 	if len(dates) == 0 {
@@ -127,23 +139,23 @@ func processDate(dateStr string, useAI bool, sessionOverride string) bool {
 			printSectorsTable(sectors)
 		} else if dateStr == today && session == "morning" {
 			fmt.Printf("获取 %s 早盘实时热门板块数据...\n", dateStr)
-			sectors, err = fetcher.FetchTop15HotSectors()
+			sectors, err = fetcher.FetchTop18HotSectors()
 			if err != nil || len(sectors) == 0 {
 				fmt.Printf("错误: 无法获取热门板块数据\n")
 				continue
 			}
 			fetcher.SaveSessionData(sectors, dateStr, session)
-			fmt.Printf("热门15板块: 匹配 %d 个\n", len(sectors))
+			fmt.Printf("热门18板块: 匹配 %d 个\n", len(sectors))
 			printSectorsTable(sectors)
 		} else if dateStr == today && session == "full" {
 			fmt.Printf("获取 %s 全天实时热门板块数据...\n", dateStr)
-			sectors, err = fetcher.FetchTop15HotSectors()
+			sectors, err = fetcher.FetchTop18HotSectors()
 			if err != nil || len(sectors) == 0 {
 				fmt.Printf("错误: 无法获取热门板块数据\n")
 				continue
 			}
 			fetcher.SaveSessionData(sectors, dateStr, session)
-			fmt.Printf("热门15板块: 匹配 %d 个\n", len(sectors))
+			fmt.Printf("热门18板块: 匹配 %d 个\n", len(sectors))
 			printSectorsTable(sectors)
 		} else {
 			fmt.Printf("尝试获取 %s 历史热门数据...\n", dateStr)
@@ -225,4 +237,60 @@ func printSectorsTable(sectors []fetcher.Sector) {
 	}
 	fmt.Println(sep70)
 	fmt.Println()
+}
+
+func generateMultiDayVideo(endDate string, days int, useAI bool) {
+	fmt.Printf("%s\n", sep70)
+	fmt.Printf("=== 近%d日板块资金流向 Bar Chart Race 视频生成 ===\n", days)
+	fmt.Printf("截止日期: %s\n", endDate)
+	fmt.Printf("%s\n", sep70)
+
+	tradingDays, err := fetcher.GetTradingDays(endDate, days)
+	if err != nil {
+		fmt.Printf("错误: 无法获取交易日: %v\n", err)
+		return
+	}
+	fmt.Printf("交易日: %s\n", tradingDays)
+
+	dayData, err := fetcher.LoadMultiDaySectors(tradingDays)
+	if err != nil {
+		fmt.Printf("错误: %v\n", err)
+		return
+	}
+
+	fmt.Printf("成功加载 %d 日数据\n", len(dayData))
+	for _, d := range tradingDays {
+		if sectors, ok := dayData[d]; ok {
+			fmt.Printf("  %s: %d 个板块\n", d, len(sectors))
+		}
+	}
+
+	analysis := analyzer.MultiDayAnalyze(dayData, tradingDays)
+
+	outputDir := config.GetOutputDir()
+	dateLabel := tradingDays[0]
+	if len(tradingDays) > 1 {
+		dateLabel = tradingDays[0] + "_to_" + tradingDays[len(tradingDays)-1]
+	}
+
+	os.MkdirAll(filepath.Join(outputDir, dateLabel), 0755)
+
+	for _, format := range []string{"mobile", "tv"} {
+		formatSuffix := ""
+		if format == "tv" {
+			formatSuffix = "_tv"
+		}
+		outPath := filepath.Join(outputDir, dateLabel, fmt.Sprintf("三日资金流向%s.mp4", formatSuffix))
+
+		if _, err := renderer.RenderMultiDayVideo(dayData, tradingDays, outPath, analysis, format); err != nil {
+			fmt.Printf("错误: Remotion 渲染失败(%s): %v\n", format, err)
+			continue
+		}
+		fmt.Printf("视频已保存: output/%s/三日资金流向%s.mp4\n", dateLabel, formatSuffix)
+	}
+
+	fmt.Printf("\n%s\n", sep70)
+	fmt.Printf("完成！Bar Chart Race 视频已生成\n")
+	fmt.Printf("输出目录: output/%s/\n", dateLabel)
+	fmt.Printf("%s\n", sep70)
 }

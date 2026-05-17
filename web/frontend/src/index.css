@@ -24,6 +24,13 @@ body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','No
 .tab-btn:hover { border-color:#d5cec6; }
 .tab-btn.active { background:#ffffff; color:#8ea4b0; border-color:#8ea4b0; box-shadow:0 1px 3px rgba(0,0,0,0.04); }
 
+/* video type tabs */
+.video-type-tabs { display:flex; gap:12px; margin-bottom:20px; padding:12px; background:#faf8f6; border-radius:12px; border:1px solid #ece7e1; }
+.video-type-tabs .tab-btn { flex:1; display:flex; flex-direction:column; align-items:flex-start; padding:14px 18px; border-radius:10px; font-size:15px; font-weight:600; background:#ffffff; color:#5a5550; border:2px solid #e8e2da; transition:all .2s; text-align:left; }
+.video-type-tabs .tab-btn:hover { border-color:#8ea4b0; background:#f6f3ef; }
+.video-type-tabs .tab-btn.active { border-color:#8ea4b0; background:#8ea4b0; color:#fff; box-shadow:0 2px 8px rgba(142,164,176,0.25); }
+.video-type-tabs .tab-btn .tab-desc { font-size:11px; font-weight:400; margin-top:4px; opacity:0.7; }
+
 /* forms */
 .form-row { display:flex; gap:16px; flex-wrap:wrap; align-items:end; }
 .form-group { display:flex; flex-direction:column; gap:6px; }

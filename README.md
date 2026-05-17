@@ -22,7 +22,7 @@
 | **AI 文案** | 自动参考前 5 日历史文案，逐板块分析资金动向，标题 ≤20 字，含风险提示 |
 | **事件分析** | AI 优先（180s 超时），自动降级到数据驱动，保证始终有可用内容 |
 | **SSE 实时流** | 数据拉取和视频生成过程通过 Server-Sent Events 实时推送进度 |
-| **全量导出** | 支持异步导出全部板块数据（非仅 Top15），带断点续传 |
+| **全量导出** | 支持异步导出全部板块数据（非仅 Top18），带断点续传 |
 
 ---
 
@@ -228,7 +228,7 @@ copy/YYYY-MM-DD/
 ```
 东方财富 H5 API
     ↓
-FetchTop15HotSectors() / FetchHistoricalSectors()
+FetchTop18HotSectors() / FetchHistoricalSectors()
     ↓
 SaveSessionData() → data/YYYY-MM-DD/sectors[_morning].csv
     ↓
@@ -253,7 +253,7 @@ GenerateCopywriting() / GenerateCopywritingAI() → 文案
 | 早盘 X 轴 | 0-120 分钟 | 09:30-11:30 |
 | 全天 X 轴 | 0-330 分钟 | 09:30-15:00（含 11:30-13:00 午休） |
 
-### 监控板块（Top15HotSectors）
+### 监控板块（Top18HotSectors）
 
 半导体、AI应用、CPO概念、有色金属、锂矿概念、商业航天、电池、机器人、创新药、白酒、消费电子、银行、人工智能、云计算、低空经济
 
@@ -268,7 +268,7 @@ a-share-flow-video-go/
 │   └── web/main.go              # Web 服务入口：gin HTTP 服务器（端口 8084）
 ├── internal/
 │   ├── config/config.go         # 集中配置：视频参数、SessionConfigs、AI 配置、路径管理
-│   ├── fetcher/fetcher.go       # 东方财富 API：数据获取、CSV 保存/加载、Top15 过滤
+│   ├── fetcher/fetcher.go       # 东方财富 API：数据获取、CSV 保存/加载、Top18 过滤
 │   ├── analyzer/analyzer.go     # 事件分析：AIGenerate + DataDrivenGenerate + filterBySession
 │   ├── copy/copy.go             # 文案生成：模板模式 + AI 模式（含历史文案参考）
 │   ├── renderer/renderer.go     # Remotion 桥接：序列化 props → npx remotion render
@@ -316,7 +316,7 @@ cd web/frontend && npm run build
 
 ## 已知问题
 
-- `TestFetchTop15HotSectors_Live` 期望 ≥20 个板块，但 Top15 只返回 15 个——这是已知问题
+- `TestFetchTop18HotSectors_Live` 期望 ≥18 个板块
 - 早盘视频使用的是全天累计资金流向数据（定性分析够用，非分时增量）
 - 东方财富 API `f62` 字段是当日累计主力净流入，非分时增量
 

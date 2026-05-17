@@ -19,7 +19,7 @@ export default function App() {
   async function loadDates() {
     try {
       const data = await api.getDates();
-      setDates(data.dates.map(d => d.date));
+      setDates(data.dates?.map(d => d.date) || []);
     } catch { void 0; }
   }
 

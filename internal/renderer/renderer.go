@@ -114,6 +114,7 @@ func RenderVideo(sectors []fetcher.Sector, dateStr, outputPath string, events []
 		"--overwrite",
 		"--fps", fmt.Sprintf("%d", FPS),
 		"--frames", fmt.Sprintf("0-%d", TotalFrames-1),
+		"--browser-executable", "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
 	}
 
 	fmt.Printf("[remotion] rendering %d sectors → %s (%s)\n", len(sectors), outputPath, format)

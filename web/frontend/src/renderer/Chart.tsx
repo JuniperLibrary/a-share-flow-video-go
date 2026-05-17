@@ -210,7 +210,7 @@ export const Chart: React.FC<ChartProps> = ({
     const items: { name: string; rawY: number; rank: number }[] = [];
     for (const sector of curves) {
       const rankIdx = sortedByAbs.findIndex(s => s.name === sector.name);
-      if (rankIdx >= 15) continue;
+      if (rankIdx >= 18) continue;
       const ptR = rankIdx < 5 ? (isTV ? 4.5 : 4) : rankIdx < 12 ? (isTV ? 3.5 : 3) : (isTV ? 2.5 : 2);
       if (ptR <= 0) continue;
       const yVal = sector.data[currentIdx];
@@ -300,8 +300,8 @@ export const Chart: React.FC<ChartProps> = ({
     const endX = currentIdx > 0 ? xScale(xValues[currentIdx]) : 0;
     const endY = currentIdx > 0 ? yScale(yValues[currentIdx]) : 0;
 
-    const showLabel = currentIdx > 8 && rankIdx < 15 && pointR > 0;
-    const showValueLabel = currentIdx > 12 && rankIdx < 15 && pointR > 0;
+    const showLabel = currentIdx > 8 && rankIdx < 18 && pointR > 0;
+    const showValueLabel = currentIdx > 12 && rankIdx < 18 && pointR > 0;
     const labelPos = labelPositions.get(sector.name);
     const labelY = labelPos ? labelPos.adjY : endY;
 

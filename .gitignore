@@ -11,6 +11,12 @@ node_modules/
 web/frontend/dist/
 
 # Data and output
+output/
+data/
+
+# Build artifacts
+web/frontend/tsconfig.tsbuildinfo
+
 # Environment
 .env
 

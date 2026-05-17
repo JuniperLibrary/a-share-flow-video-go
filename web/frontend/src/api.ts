@@ -27,6 +27,13 @@ export const api = {
       body: JSON.stringify({ date, copy_mode, format }),
     }),
 
+  generateMultiDay: (date: string, days: number, copy_mode: string, format: string) =>
+    fetch('/api/generate-multiday', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date, days, copy_mode, format }),
+    }),
+
   getConfig: () =>
     request<ConfigData>('/api/config'),
 
@@ -70,5 +77,5 @@ export const api = {
     `/api/export-all/file/${taskId}`,
 
   exportHot15: (date: string) =>
-    request<{ date: string; sectors: Sector[] }>(`/api/export-hot15/${date}`),
+    request<{ date: string; sectors: Sector[] }>(`/api/export-hot18/${date}`),
 };

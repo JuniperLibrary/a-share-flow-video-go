@@ -25,7 +25,7 @@ export function DataPage({ onSectorData, sectorData }: DataPageProps) {
   async function loadDates() {
     try {
       const data = await api.getDates();
-      setDates(data.dates);
+      setDates(data.dates || []);
     } catch { void 0; }
   }
 
@@ -111,7 +111,7 @@ export function DataPage({ onSectorData, sectorData }: DataPageProps) {
       const rows = (data.sectors || [])
         .sort((a, b) => Math.abs(b.net) - Math.abs(a.net))
         .map(s => [s.name, s.net.toFixed(2), date, s.net > 0 ? '↑ 净流入' : '↓ 净流出']);
-      downloadCSV(`热门板块TOP15_${date}.csv`, ['板块名称', '主力资金净流入(亿)', '时间', '趋势'], rows);
+      downloadCSV(`热门板块TOP18_${date}.csv`, ['板块名称', '主力资金净流入(亿)', '时间', '趋势'], rows);
 
       setHot15Status(`✅ 已下载 ${rows.length} 个热门板块`);
     } catch (e: unknown) {
@@ -119,13 +119,14 @@ export function DataPage({ onSectorData, sectorData }: DataPageProps) {
     }
   }
 
+  const safeSectorData = sectorData || [];
   const filtered = search
-    ? sectorData.filter(s => s.name.includes(search))
-    : sectorData;
+    ? safeSectorData.filter(s => s.name.includes(search))
+    : safeSectorData;
   const sorted = [...filtered].sort((a, b) => Math.abs(b.net) - Math.abs(a.net));
 
-  const inflowCount = sectorData.filter(s => s.net > 0).length;
-  const outflowCount = sectorData.length - inflowCount;
+  const inflowCount = safeSectorData.filter(s => s.net > 0).length;
+  const outflowCount = safeSectorData.length - inflowCount;
 
   return (
     <div>
@@ -160,7 +161,7 @@ export function DataPage({ onSectorData, sectorData }: DataPageProps) {
       <div className="card">
         <h2>下载CSV</h2>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-          <button className="btn btn-sm" onClick={handleExportHot15} style={{ borderColor: '#4ade80', color: '#4ade80' }}>🔥 下载热门15</button>
+          <button className="btn btn-sm" onClick={handleExportHot15} style={{ borderColor: '#4ade80', color: '#4ade80' }}>🔥 下载热门18</button>
           <button className="btn btn-sm" onClick={handleExportAll} style={{ borderColor: '#4a90d9', color: '#4a90d9' }}>📥 下载全量CSV</button>
           <span style={{ fontSize: 13, color: '#8892a4' }}>日期: {fetchDate}</span>
         </div>
@@ -201,10 +202,10 @@ export function DataPage({ onSectorData, sectorData }: DataPageProps) {
         <div className="date-grid">
           {dates.length === 0 ? (
             <div style={{ color: '#8892a4', fontSize: 13, padding: 8 }}>暂无数据</div>
-          ) : dates.map(d => (
+          ) : (dates || []).map(d => (
             <div key={d.date} className={`date-item ${selectedDate === d.date ? 'selected' : ''}`} onClick={() => selectDate(d.date)}>
               <div className="d">{d.date}</div>
-              <div className="m">{d.sector_count}板块 · {d.文案_count + d.ai_count}文案 · {d.videos.length}视频</div>
+              <div className="m">{d.sector_count}板块 · {(d.文案_count || 0) + (d.ai_count || 0)}文案 · {(d.videos || []).length}视频</div>
             </div>
           ))}
         </div>
