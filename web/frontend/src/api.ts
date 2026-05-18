@@ -20,11 +20,11 @@ export const api = {
       body: JSON.stringify({ date, force }),
     }),
 
-  generate: (date: string, copy_mode: string, format: string) =>
+  generate: (date: string, copy_mode: string, format: string, session: string) =>
     fetch('/api/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ date, copy_mode, format }),
+      body: JSON.stringify({ date, copy_mode, format, session }),
     }),
 
   generateMultiDay: (date: string, days: number, copy_mode: string, format: string) =>

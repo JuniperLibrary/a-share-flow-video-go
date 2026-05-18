@@ -13,6 +13,7 @@ type VideoType = 'single' | 'multiday';
 export function GeneratePage({ dates, onDone }: GeneratePageProps) {
   const [videoType, setVideoType] = useState<VideoType>('single');
   const [genDate, setGenDate] = useState('');
+  const [session, setSession] = useState('full');
   const [copyMode, setCopyMode] = useState('template');
   const [format, setFormat] = useState('mobile');
   const [days, setDays] = useState(3);
@@ -37,7 +38,7 @@ export function GeneratePage({ dates, onDone }: GeneratePageProps) {
           if (videoType === 'multiday') {
             return api.generateMultiDay(genDate, days, copyMode, format);
           }
-          return api.generate(genDate, copyMode, format);
+          return api.generate(genDate, copyMode, format, session);
         },
         (msg: SSEMessage) => {
           if (msg.type === 'done') {
@@ -93,6 +94,15 @@ export function GeneratePage({ dates, onDone }: GeneratePageProps) {
               <option value={3}>近3日</option>
               <option value={5}>近5日</option>
               <option value={7}>近7日</option>
+            </select>
+          </div>
+        )}
+        {videoType === 'single' && (
+          <div className="form-group">
+            <label>时段</label>
+            <select value={session} onChange={e => setSession(e.target.value)} style={{ minWidth: 100 }}>
+              <option value="full">全天</option>
+              <option value="morning">早盘</option>
             </select>
           </div>
         )}
