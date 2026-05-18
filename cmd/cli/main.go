@@ -145,7 +145,7 @@ func processDate(dateStr string, useAI bool, sessionOverride string) bool {
 				continue
 			}
 			fetcher.SaveSessionData(sectors, dateStr, session)
-			fmt.Printf("热门18板块: 匹配 %d 个\n", len(sectors))
+			fmt.Printf("热门板块: 匹配 %d 个\n", len(sectors))
 			printSectorsTable(sectors)
 		} else if dateStr == today && session == "full" {
 			fmt.Printf("获取 %s 全天实时热门板块数据...\n", dateStr)
@@ -155,7 +155,7 @@ func processDate(dateStr string, useAI bool, sessionOverride string) bool {
 				continue
 			}
 			fetcher.SaveSessionData(sectors, dateStr, session)
-			fmt.Printf("热门18板块: 匹配 %d 个\n", len(sectors))
+			fmt.Printf("热门板块: 匹配 %d 个\n", len(sectors))
 			printSectorsTable(sectors)
 		} else {
 			fmt.Printf("尝试获取 %s 历史热门数据...\n", dateStr)

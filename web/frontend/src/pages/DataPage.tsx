@@ -105,13 +105,13 @@ export function DataPage({ onSectorData, sectorData }: DataPageProps) {
     if (!fetchDate) { alert('请选择日期'); return; }
     setHot15Status('⏳ 正在获取热门板块数据...');
     try {
-      const data = await api.exportHot15(fetchDate);
+      const data = await api.exportHotSectors(fetchDate);
       const date = data.date || fetchDate;
 
       const rows = (data.sectors || [])
         .sort((a, b) => Math.abs(b.net) - Math.abs(a.net))
         .map(s => [s.name, s.net.toFixed(2), date, s.net > 0 ? '↑ 净流入' : '↓ 净流出']);
-      downloadCSV(`热门板块TOP18_${date}.csv`, ['板块名称', '主力资金净流入(亿)', '时间', '趋势'], rows);
+      downloadCSV(`热门板块_${date}.csv`, ['板块名称', '主力资金净流入(亿)', '时间', '趋势'], rows);
 
       setHot15Status(`✅ 已下载 ${rows.length} 个热门板块`);
     } catch (e: unknown) {
@@ -161,7 +161,7 @@ export function DataPage({ onSectorData, sectorData }: DataPageProps) {
       <div className="card">
         <h2>下载CSV</h2>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-          <button className="btn btn-sm" onClick={handleExportHot15} style={{ borderColor: '#4ade80', color: '#4ade80' }}>🔥 下载热门18</button>
+          <button className="btn btn-sm" onClick={handleExportHot15} style={{ borderColor: '#4ade80', color: '#4ade80' }}>🔥 下载热门板块</button>
           <button className="btn btn-sm" onClick={handleExportAll} style={{ borderColor: '#4a90d9', color: '#4a90d9' }}>📥 下载全量CSV</button>
           <span style={{ fontSize: 13, color: '#8892a4' }}>日期: {fetchDate}</span>
         </div>

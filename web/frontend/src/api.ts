@@ -76,6 +76,6 @@ export const api = {
   exportAllFile: (taskId: string) =>
     `/api/export-all/file/${taskId}`,
 
-  exportHot15: (date: string) =>
-    request<{ date: string; sectors: Sector[] }>(`/api/export-hot18/${date}`),
+  exportHotSectors: (date: string) =>
+    request<{ date: string; sectors: Sector[] }>(`/api/export-hot-sectors/${date}`),
 };

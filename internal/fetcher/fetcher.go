@@ -154,7 +154,7 @@ func FetchTop18HotSectors() ([]Sector, error) {
 		return absF(results[i].Net) > absF(results[j].Net)
 	})
 
-	fmt.Printf("  [fetch] 热门18板块: 匹配 %d 个 | 流入 1st=%s %+.1f亿\n",
+	fmt.Printf("  [fetch] 热门板块: 匹配 %d 个 | 流入 1st=%s %+.1f亿\n",
 		len(results), results[0].Name, results[0].Net)
 
 	return results, nil
@@ -314,7 +314,7 @@ func FetchHistoricalSectors(dateStr string) ([]Sector, error) {
 	}
 
 	result := append(inflow, outflow...)
-	fmt.Printf("  [历史] 热门18 | 净流入 %d + 净流出 %d = %d 个板块\n", len(inflow), len(outflow), len(result))
+	fmt.Printf("  [历史] 热门板块 | 净流入 %d + 净流出 %d = %d 个板块\n", len(inflow), len(outflow), len(result))
 	if len(result) > 0 {
 		fmt.Printf("  [历史] 流入 1st=%s %+.1f亿\n", result[0].Name, result[0].Net)
 		if len(inflow) < len(result) {

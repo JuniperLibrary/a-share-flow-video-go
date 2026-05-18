@@ -204,7 +204,7 @@ func SetupRouter(sched *scheduler.Scheduler) *gin.Engine {
 	r.GET("/api/export-all/:date", handleExportAll)
 	r.GET("/api/export-all/status/:task_id", handleExportStatus)
 	r.GET("/api/export-all/file/:task_id", handleExportFile)
-	r.GET("/api/export-hot18/:date", handleExportHot18)
+	r.GET("/api/export-hot-sectors/:date", handleExportHotSectors)
 	r.POST("/api/fetch", handleFetch)
 	r.POST("/api/generate", handleGenerate)
 	r.POST("/api/generate-multiday", handleGenerateMultiDay)
@@ -360,7 +360,7 @@ func handleExportFile(c *gin.Context) {
 	c.File(filepath.Join(dateDir, task.Date, filename))
 }
 
-func handleExportHot18(c *gin.Context) {
+func handleExportHotSectors(c *gin.Context) {
 	dateStr := c.Param("date")
 	if dateStr == "" {
 		dateStr = time.Now().Format("2006-01-02")

@@ -221,7 +221,7 @@ copy/YYYY-MM-DD/
 | `/api/export-all/:date` | GET | 异步全量板块数据导出 |
 | `/api/export-all/status/:task_id` | GET | 查询导出任务状态 |
 | `/api/export-all/file/:task_id` | GET | 下载导出文件 |
-| `/api/export-hot15/:date` | GET | 获取热门 15 板块数据 |
+| `/api/export-hot-sectors/:date` | GET | 获取热门板块数据 |
 | `/output/:date/:file` | GET | 下载视频文件 |
 
 ---
