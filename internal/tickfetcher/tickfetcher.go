@@ -90,7 +90,7 @@ func (tf *TickFetcher) run() {
 
 		startMinute := rng.start
 		if currentMinute >= 0 && currentMinute > rng.start {
-			startMinute = ((currentMinute-rng.start)/10 + 1) * 10 + rng.start
+			startMinute = ((currentMinute - rng.start) / 10) * 10 + rng.start
 		}
 
 		for minute := startMinute; minute <= rng.end; minute += 10 {
