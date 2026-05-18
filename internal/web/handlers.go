@@ -23,6 +23,9 @@ import (
 	"github.com/a-share-flow-video-go/internal/fetcher"
 	"github.com/a-share-flow-video-go/internal/renderer"
 	"github.com/a-share-flow-video-go/internal/scheduler"
+	"github.com/a-share-flow-video-go/internal/tickfetcher"
+	"github.com/a-share-flow-video-go/internal/tickrenderer"
+	"github.com/a-share-flow-video-go/internal/tickscheduler"
 )
 
 // ExportTask 异步全量下载任务
@@ -195,7 +198,7 @@ func jsonStr(s string) string {
 }
 
 // SetupRouter 注册所有 HTTP 路由。
-func SetupRouter(sched *scheduler.Scheduler) *gin.Engine {
+func SetupRouter(sched *scheduler.Scheduler, tickSched *tickscheduler.TickScheduler) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
 
@@ -246,6 +249,44 @@ func SetupRouter(sched *scheduler.Scheduler) *gin.Engine {
 		sched.RunNow()
 		c.JSON(200, gin.H{"ok": true, "message": "已触发立即执行"})
 	})
+
+	r.GET("/api/tick/status", func(c *gin.Context) {
+		c.JSON(200, tickSched.GetStatus())
+	})
+	r.POST("/api/tick/start", func(c *gin.Context) {
+		if err := tickSched.StartManual(); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(200, gin.H{"ok": true, "message": "tick 采集已启动"})
+	})
+	r.POST("/api/tick/stop", func(c *gin.Context) {
+		tickSched.StopManual()
+		c.JSON(200, gin.H{"ok": true, "message": "tick 采集已停止"})
+	})
+	r.POST("/api/tick/enable", func(c *gin.Context) {
+		var body struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+		tickSched.SetEnabled(body.Enabled)
+		c.JSON(200, gin.H{"ok": true})
+	})
+	r.GET("/api/tick-data/:date", func(c *gin.Context) {
+		dateStr := c.Param("date")
+		session := c.DefaultQuery("session", "full")
+		points, err := tickfetcher.LoadTickCSV(dateStr, session)
+		if err != nil {
+			c.JSON(404, gin.H{"error": "no tick data"})
+			return
+		}
+		c.JSON(200, gin.H{"date": dateStr, "session": session, "points": points})
+	})
+	r.POST("/api/generate-tick", handleGenerateTick)
+
 	r.GET("/output/:date/:file", serveVideo)
 
 	distDir := filepath.Join(config.GetProjectRoot(), "web", "frontend", "dist")
@@ -890,4 +931,39 @@ func toFloat64(v any) (float64, bool) {
 
 func roundTo2(x float64) float64 {
 	return math.Round(x*100) / 100
+}
+
+func handleGenerateTick(c *gin.Context) {
+	var body struct {
+		Date    string `json:"date"`
+		Format  string `json:"format"`
+		Session string `json:"session"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if body.Date == "" {
+		body.Date = time.Now().Format("2006-01-02")
+	}
+	if body.Format == "" {
+		body.Format = "mobile"
+	}
+	if body.Session == "" {
+		body.Session = "full"
+	}
+
+	sessCfg := config.SessionConfigs[body.Session]
+	formatSuffix := ""
+	if body.Format == "tv" {
+		formatSuffix = "_tv"
+	}
+	outPath := filepath.Join(config.GetOutputDir(), body.Date, fmt.Sprintf("%s_tick%s.mp4", sessCfg.FilenameSuffix, formatSuffix))
+
+	out, err := tickrenderer.RenderTickVideo(body.Date, outPath, body.Format, body.Session, nil, nil, nil)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true, "output": out})
 }

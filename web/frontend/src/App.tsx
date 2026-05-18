@@ -4,10 +4,11 @@ import { GeneratePage } from './pages/GeneratePage';
 import { PreviewPage } from './pages/PreviewPage';
 import { ConfigPage } from './pages/ConfigPage';
 import { SchedulerPage } from './pages/SchedulerPage';
+import { TickPage } from './pages/TickPage';
 import { api } from './api';
 import type { Sector, DateItem } from './types';
 
-type Page = 'data' | 'generate' | 'preview' | 'config' | 'scheduler';
+type Page = 'data' | 'generate' | 'preview' | 'config' | 'scheduler' | 'tick';
 
 export default function App() {
   const [page, setPage] = useState<Page>('data');
@@ -38,6 +39,7 @@ export default function App() {
     { key: 'preview', label: '预览', icon: '👁' },
     { key: 'config', label: '配置', icon: '⚙' },
     { key: 'scheduler', label: '定时', icon: '⏰' },
+    { key: 'tick', label: 'Tick', icon: '📈' },
   ];
 
   return (
@@ -69,6 +71,9 @@ export default function App() {
       </div>
       <div className={page === 'scheduler' ? 'page active' : 'page'}>
         <SchedulerPage />
+      </div>
+      <div className={page === 'tick' ? 'page active' : 'page'}>
+        <TickPage />
       </div>
     </div>
   );

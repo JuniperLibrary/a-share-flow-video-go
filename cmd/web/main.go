@@ -7,6 +7,7 @@ import (
 
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/scheduler"
+	"github.com/a-share-flow-video-go/internal/tickscheduler"
 	"github.com/a-share-flow-video-go/internal/web"
 )
 
@@ -19,7 +20,11 @@ func main() {
 	sched.Start()
 	defer sched.Stop()
 
-	r := web.SetupRouter(sched)
+	tickSched := tickscheduler.New()
+	tickSched.Start()
+	defer tickSched.Stop()
+
+	r := web.SetupRouter(sched, tickSched)
 
 	port := os.Getenv("PORT")
 	if port == "" {
