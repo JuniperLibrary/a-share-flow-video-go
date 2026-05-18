@@ -85,11 +85,16 @@ go run ./cmd/cli/ --ai 2026-05-12 2026-05-13 2026-05-14
 #### Web 控制台方式
 
 ```bash
+# ⚠️ 修改前端代码后，需重新构建才能生效
+cd web/frontend && npm run build
+
 go run ./cmd/web/
 # 浏览器打开 http://localhost:8084
 ```
 
 Web 控制台提供：数据拉取、视频生成、文案优化、调度器配置、AI 参数设置、历史数据浏览。
+
+> **注意**：Go Web 服务直接读取 `web/frontend/dist/` 下的静态文件。修改前端源码（`src/`）后，必须执行 `npm run build` 重新编译，重启 Go 服务才能看到最新变化。
 
 ### 4. 编译二进制
 
