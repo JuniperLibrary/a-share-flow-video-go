@@ -173,7 +173,6 @@ func BuildBarSnapshots(dayData map[string][]Sector, dates []string) []BarSnapsho
 
 	// 累计资金流 map
 	cumulativeNets := make(map[string]float64)
-	cumulativeColors := make(map[string]string)
 
 	for _, date := range dates {
 		sectors, ok := dayData[date]
@@ -181,21 +180,15 @@ func BuildBarSnapshots(dayData map[string][]Sector, dates []string) []BarSnapsho
 			continue
 		}
 
-		// 累计当日数据到总累计中
 		for _, s := range sectors {
 			cumulativeNets[s.Name] += s.Net
-			if s.Color != "" {
-				cumulativeColors[s.Name] = s.Color
-			}
 		}
 
-		// 构建累计快照
 		var allEntries []BarEntry
 		for name, net := range cumulativeNets {
 			allEntries = append(allEntries, BarEntry{
-				Name:  name,
-				Net:   roundTo2(net),
-				Color: cumulativeColors[name],
+				Name: name,
+				Net:  roundTo2(net),
 			})
 		}
 

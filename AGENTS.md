@@ -77,7 +77,7 @@ type Sector struct {
 }
 ```
 
-CSV columns: `name,net,color` (3 columns only).
+CSV columns: `name,net` (2 columns only).
 
 ## Top18HotSectors
 

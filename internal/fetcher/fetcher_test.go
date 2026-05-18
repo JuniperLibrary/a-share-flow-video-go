@@ -42,9 +42,9 @@ func TestSaveAndLoadCSV(t *testing.T) {
 	config.SetProjectRoot(tmpDir)
 
 	sectors := []Sector{
-		{Name: "半导体", Net: 225.5, Color: "#00F0FF"},
-		{Name: "银行", Net: -45.9, Color: "#FF6B8A"},
-		{Name: "白酒", Net: 0, Color: "#FFD700"},
+		{Name: "半导体", Net: 225.5},
+		{Name: "银行", Net: -45.9},
+		{Name: "白酒", Net: 0},
 	}
 
 	err := SaveDailyData(sectors, "2026-05-13")
@@ -68,9 +68,6 @@ func TestSaveAndLoadCSV(t *testing.T) {
 		}
 		if got.Net != want.Net {
 			t.Errorf("sector[%d].Net = %v, want %v", i, got.Net, want.Net)
-		}
-		if got.Color != want.Color {
-			t.Errorf("sector[%d].Color = %q, want %q", i, got.Color, want.Color)
 		}
 	}
 }
@@ -139,9 +136,6 @@ func TestFetchTop18HotSectors_Live(t *testing.T) {
 	for i, s := range sectors {
 		if s.Name == "" {
 			t.Errorf("sector[%d].Name is empty", i)
-		}
-		if s.Color == "" {
-			t.Errorf("sector[%d].Color is empty", i)
 		}
 	}
 
@@ -248,8 +242,8 @@ func TestToFloat64(t *testing.T) {
 }
 
 func TestGetField(t *testing.T) {
-	colIdx := map[string]int{"name": 0, "net": 1, "color": 2}
-	record := []string{"半导体", "225.50", "#00F0FF"}
+	colIdx := map[string]int{"name": 0, "net": 1}
+	record := []string{"半导体", "225.50"}
 
 	if getField(record, colIdx, "name") != "半导体" {
 		t.Error("getField name mismatch")
@@ -260,36 +254,6 @@ func TestGetField(t *testing.T) {
 	if getField(record, colIdx, "missing") != "" {
 		t.Error("getField missing should return empty")
 	}
-}
-
-func TestColorPaletteAssignment(t *testing.T) {
-	tmpDir := t.TempDir()
-	config.SetProjectRoot(tmpDir)
-
-	sectors, err := FetchHistoricalSectors("2026-05-12")
-	if err != nil || len(sectors) == 0 {
-		t.Skipf("API returned no data: %v", err)
-	}
-
-	paletteSet := make(map[string]bool)
-	for _, c := range ColorPalette {
-		paletteSet[c] = true
-	}
-
-	for i, s := range sectors {
-		if !paletteSet[s.Color] {
-			t.Errorf("sector[%d].Color %q not in ColorPalette", i, s.Color)
-		}
-	}
-
-	inflowCount := 0
-	for _, s := range sectors {
-		if s.Net > 0 {
-			inflowCount++
-		}
-	}
-
-	t.Logf("Fetched %d sectors: %d inflow, %d outflow", len(sectors), inflowCount, len(sectors)-inflowCount)
 }
 
 func TestNewRequest_Success(t *testing.T) {

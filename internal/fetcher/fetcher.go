@@ -17,10 +17,11 @@ import (
 	"github.com/a-share-flow-video-go/internal/config"
 )
 
-// ColorPalette 12色霓虹色板，用于板块曲线着色。
-var ColorPalette = []string{
-	"#00F0FF", "#FFB347", "#7AA2FF", "#00FFA8", "#FF6B8A", "#FFD700",
-	"#BB9AF7", "#FF7B7B", "#9ECE6A", "#7DCFFF", "#FF9E64", "#89DCEB",
+// Sector 表示一个板块的资金流向数据。
+type Sector struct {
+	Name  string  `json:"name"`
+	Net   float64 `json:"net"`
+	Color string  `json:"color"` // 运行时由前端/渲染层分配，不持久化到 CSV
 }
 
 // Top18HotSectors 当前市场最热门的板块。
@@ -29,13 +30,6 @@ var Top18HotSectors = []string{
 	"商业航天", "电池", "机器人", "创新药", "白酒",
 	"消费电子", "银行", "人工智能", "云计算", "低空经济",
 	"电网设备", "通信设备", "传媒", "国产芯片",
-}
-
-// Sector 表示一个板块的资金流向数据。
-type Sector struct {
-	Name  string  `json:"name"`
-	Net   float64 `json:"net"`
-	Color string  `json:"color"`
 }
 
 type emResponse struct {
@@ -319,14 +313,6 @@ func FetchHistoricalSectors(dateStr string) ([]Sector, error) {
 		outflow = outflow[:10]
 	}
 
-	half := len(ColorPalette) / 2
-	for i := range inflow {
-		inflow[i].Color = ColorPalette[i%len(ColorPalette)]
-	}
-	for i := range outflow {
-		outflow[i].Color = ColorPalette[(half+i)%len(ColorPalette)]
-	}
-
 	result := append(inflow, outflow...)
 	fmt.Printf("  [历史] 热门18 | 净流入 %d + 净流出 %d = %d 个板块\n", len(inflow), len(outflow), len(result))
 	if len(result) > 0 {
@@ -366,12 +352,11 @@ func SaveSessionData(sectors []Sector, dateStr, session string) error {
 	w := csv.NewWriter(f)
 	defer w.Flush()
 
-	w.Write([]string{"name", "net", "color"})
+	w.Write([]string{"name", "net"})
 	for _, s := range sectors {
 		w.Write([]string{
 			s.Name,
 			strconv.FormatFloat(s.Net, 'f', 2, 64),
-			s.Color,
 		})
 	}
 
