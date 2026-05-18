@@ -36,6 +36,8 @@ const SECTOR_COLORS: Record<string, string> = {
   '低空经济': '#ff6b9d',
   '国产算力': '#e07a5f',
   '国产芯片': '#e07a5f',
+  '元件': '#5cdb95',
+  '通信服务': '#845ec2',
 };
 
 function getSectorColor(name: string, fallback: string): string {

@@ -34,6 +34,8 @@ const SECTOR_COLORS: Record<string, string> = {
   '通信设备': '#89dceb',
   '传媒': '#f4a261',
   '国产芯片': '#e07a5f',
+  '元件': '#5cdb95',
+  '通信服务': '#845ec2',
 };
 
 function getSectorColor(name: string, fallback: string): string {

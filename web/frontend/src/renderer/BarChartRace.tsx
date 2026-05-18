@@ -41,6 +41,8 @@ const SECTOR_COLOR_MAP: Record<string, string> = {
   '有色金属': '#B5838D',
   '云计算': '#6D6875',
   '国产芯片': '#E07A5F',
+  '元件': '#5CDB95',
+  '通信服务': '#845EC2',
 };
 
 function easeInOutCubic(t: number): number {
