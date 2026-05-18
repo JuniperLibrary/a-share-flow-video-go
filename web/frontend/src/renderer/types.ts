@@ -29,6 +29,13 @@ export interface TickerItem {
   text: string;
 }
 
+export interface SectorTick {
+  name: string;
+  color: string;
+  data: number[];
+  times: string[];
+}
+
 export interface BloombergVideoProps {
   dateStr: string;
   displayDate: string;
