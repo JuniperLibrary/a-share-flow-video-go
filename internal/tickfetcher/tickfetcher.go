@@ -78,7 +78,7 @@ func (tf *TickFetcher) run() {
 	stopCh := tf.stopCh
 	tf.mu.Unlock()
 
-	allRanges := []tradingRange{{0, 120}, {210, 330}}
+	allRanges := []tradingRange{{0, 120}, {120, 240}}
 	currentMinute := nowTradingMinute()
 
 	fmt.Printf("  [tick] 采集启动 | 当前交易分钟=%d | 交易时段: 09:30-11:30, 13:00-15:00\n", currentMinute)
@@ -139,7 +139,7 @@ func nowTradingMinute() int {
 	if wallMin < afternoonStart {
 		return -1
 	}
-	return wallMin - 570
+	return wallMin - morningStart - 90
 }
 
 func (tf *TickFetcher) collectTick(dateStr, timeStr string, minute int) {
@@ -202,16 +202,14 @@ type tradingRange struct {
 }
 
 func minutesToTime(minutes int) string {
-	baseHour := 9
-	baseMin := 30
-	totalMin := baseHour*60 + baseMin + minutes
-
-	if totalMin >= 11*60+30 {
-		totalMin += 90
+	if minutes <= 120 {
+		h := 9 + (30+minutes)/60
+		m := (30 + minutes) % 60
+		return fmt.Sprintf("%02d:%02d", h, m)
 	}
-
-	h := totalMin / 60
-	m := totalMin % 60
+	afternoonMin := minutes - 120
+	h := 13 + afternoonMin/60
+	m := afternoonMin % 60
 	return fmt.Sprintf("%02d:%02d", h, m)
 }
 
