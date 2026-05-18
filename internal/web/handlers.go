@@ -513,14 +513,18 @@ func handleGenerate(c *gin.Context) {
 
 	sse := NewSSEWriter(c)
 
-	cachePath := filepath.Join(config.GetDataDir(), body.Date, "sectors.csv")
+	cacheFile := "sectors.csv"
+	if body.Session == "morning" {
+		cacheFile = "sectors_morning.csv"
+	}
+	cachePath := filepath.Join(config.GetDataDir(), body.Date, cacheFile)
 	if _, err := os.Stat(cachePath); err != nil {
-		sse.Send("log", fmt.Sprintf("❌ %s 无数据，请先拉取", body.Date))
+		sse.Send("log", fmt.Sprintf("❌ %s 无%s数据，请先拉取", body.Date, config.SessionConfigs[body.Session].TitleSuffix))
 		sse.Send("error", fmt.Sprintf("%s 无数据，请先拉取", body.Date))
 		return
 	}
 
-	sectors, err := fetcher.LoadCachedData(body.Date)
+	sectors, err := fetcher.LoadSessionData(body.Date, body.Session)
 	if err != nil || len(sectors) == 0 {
 		sse.Send("error", "加载板块数据失败")
 		return
@@ -722,9 +726,9 @@ func handleOptimizeCopy(c *gin.Context) {
 		return
 	}
 
-	sectors, err := fetcher.LoadCachedData(body.Date)
+	sectors, err := fetcher.LoadSessionData(body.Date, body.Session)
 	if err != nil || len(sectors) == 0 {
-		c.JSON(400, gin.H{"error": fmt.Sprintf("%s 无板块数据", body.Date)})
+		c.JSON(400, gin.H{"error": fmt.Sprintf("%s 无%s板块数据", body.Date, config.SessionConfigs[body.Session].TitleSuffix)})
 		return
 	}
 
