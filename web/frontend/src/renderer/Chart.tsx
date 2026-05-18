@@ -34,6 +34,7 @@ const SECTOR_COLORS: Record<string, string> = {
   '人工智能': '#00b4ff',
   '云计算': '#ce93d8',
   '低空经济': '#ff6b9d',
+  '国产算力': '#e07a5f',
 };
 
 function getSectorColor(name: string, fallback: string): string {

@@ -40,6 +40,7 @@ const SECTOR_COLOR_MAP: Record<string, string> = {
   '锂矿概念': '#95D5B2',
   '有色金属': '#B5838D',
   '云计算': '#6D6875',
+  '国产算力': '#E07A5F',
 };
 
 function easeInOutCubic(t: number): number {
