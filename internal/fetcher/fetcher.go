@@ -325,25 +325,13 @@ func FetchHistoricalSectors(dateStr string) ([]Sector, error) {
 }
 
 func SaveDailyData(sectors []Sector, dateStr string) error {
-	return SaveSessionData(sectors, dateStr, "full")
-}
-
-// SaveSessionData 按 session 保存板块数据。
-// morning → data/YYYY-MM-DD/sectors_morning.csv
-// full    → data/YYYY-MM-DD/sectors.csv
-func SaveSessionData(sectors []Sector, dateStr, session string) error {
 	dateDir := filepath.Join(config.GetDataDir(), dateStr)
 	if err := os.MkdirAll(dateDir, 0755); err != nil {
 		return err
 	}
 
-	filename := "sectors.csv"
-	if session == "morning" {
-		filename = "sectors_morning.csv"
-	}
-	filename = filepath.Join(dateDir, filename)
-
-	f, err := os.Create(filename)
+	fpath := filepath.Join(dateDir, "sectors.csv")
+	f, err := os.Create(fpath)
 	if err != nil {
 		return err
 	}
@@ -360,7 +348,7 @@ func SaveSessionData(sectors []Sector, dateStr, session string) error {
 		})
 	}
 
-	fmt.Printf("  数据已保存到 %s\n", filename)
+	fmt.Printf("  数据已保存到 %s\n", fpath)
 	return nil
 }
 
@@ -368,13 +356,86 @@ func LoadCachedData(dateStr string) ([]Sector, error) {
 	return LoadSessionData(dateStr, "full")
 }
 
-// LoadSessionData 按 session 加载板块数据。
 func LoadSessionData(dateStr, session string) ([]Sector, error) {
-	filename := "sectors.csv"
 	if session == "morning" {
-		filename = "sectors_morning.csv"
+		return LoadMorningFromTick(dateStr)
 	}
-	return loadCSV(filename, dateStr)
+	return loadCSV("sectors.csv", dateStr)
+}
+
+func LoadMorningFromTick(dateStr string) ([]Sector, error) {
+	points, err := loadTickCSV(dateStr, "morning")
+	if err != nil || len(points) == 0 {
+		return nil, fmt.Errorf("no morning tick data for %s", dateStr)
+	}
+
+	latest := make(map[string]float64)
+	for _, p := range points {
+		latest[p.Name] = p.Net
+	}
+
+	var sectors []Sector
+	for name, net := range latest {
+		sectors = append(sectors, Sector{Name: name, Net: net})
+	}
+
+	sort.Slice(sectors, func(i, j int) bool {
+		return absF(sectors[i].Net) > absF(sectors[j].Net)
+	})
+
+	return sectors, nil
+}
+
+func loadTickCSV(dateStr, session string) ([]TickPoint, error) {
+	fpath := filepath.Join(config.GetDataDir(), dateStr, "ticks.csv")
+
+	f, err := os.Open(fpath)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	r := csv.NewReader(f)
+	records, err := r.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+
+	if len(records) < 2 {
+		return nil, nil
+	}
+
+	var points []TickPoint
+	for _, rec := range records[1:] {
+		if len(rec) < 3 {
+			continue
+		}
+		timeStr := rec[0]
+		name := rec[1]
+		net, _ := strconv.ParseFloat(rec[2], 64)
+
+		if session == "morning" && !isMorningTime(timeStr) {
+			continue
+		}
+
+		points = append(points, TickPoint{
+			Time: timeStr,
+			Name: name,
+			Net:  net,
+		})
+	}
+
+	return points, nil
+}
+
+func isMorningTime(t string) bool {
+	return t >= "09:30" && t <= "11:30"
+}
+
+type TickPoint struct {
+	Time string
+	Name string
+	Net  float64
 }
 
 func loadCSV(filename, dateStr string) ([]Sector, error) {

@@ -457,7 +457,7 @@ func handleFetch(c *gin.Context) {
 		today := time.Now().Format("2006-01-02")
 		cacheFile := "sectors.csv"
 		if body.Session == "morning" {
-			cacheFile = "sectors_morning.csv"
+			cacheFile = "ticks.csv"
 		}
 		cachePath := filepath.Join(config.GetDataDir(), body.Date, cacheFile)
 
@@ -508,7 +508,7 @@ func handleFetch(c *gin.Context) {
 		}
 
 		sse.Send("log", "保存数据到本地缓存...")
-		fetcher.SaveSessionData(sectors, body.Date, body.Session)
+		fetcher.SaveDailyData(sectors, body.Date)
 		sse.Send("log", "数据已保存")
 
 		data, _ := json.Marshal(map[string]any{
@@ -556,7 +556,7 @@ func handleGenerate(c *gin.Context) {
 
 	cacheFile := "sectors.csv"
 	if body.Session == "morning" {
-		cacheFile = "sectors_morning.csv"
+		cacheFile = "ticks.csv"
 	}
 	cachePath := filepath.Join(config.GetDataDir(), body.Date, cacheFile)
 	if _, err := os.Stat(cachePath); err != nil {

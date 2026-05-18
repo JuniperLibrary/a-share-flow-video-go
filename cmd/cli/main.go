@@ -104,7 +104,7 @@ func processDate(dateStr string, useAI bool, sessionOverride string) bool {
 		}
 	} else {
 		// 历史日期：检查哪些数据文件存在
-		if _, err := os.Stat(filepath.Join(dateDir, "sectors_morning.csv")); err == nil {
+		if _, err := os.Stat(filepath.Join(dateDir, "ticks.csv")); err == nil {
 			sessions = append(sessions, "morning")
 		}
 		if _, err := os.Stat(filepath.Join(dateDir, "sectors.csv")); err == nil {
@@ -120,41 +120,22 @@ func processDate(dateStr string, useAI bool, sessionOverride string) bool {
 		sessCfg := config.SessionConfigs[session]
 		fmt.Printf("\n--- 生成 %s 视频 ---\n", sessCfg.TitleSuffix)
 
-		sectorsFile := filepath.Join(dateDir, "sectors.csv")
-		if session == "morning" {
-			sectorsFile = filepath.Join(dateDir, "sectors_morning.csv")
-		}
-
 		var sectors []fetcher.Sector
 		var err error
 
-		if _, statErr := os.Stat(sectorsFile); statErr == nil {
+		sectors, err = fetcher.LoadSessionData(dateStr, session)
+		if err == nil && len(sectors) > 0 {
 			fmt.Printf("从本地加载 %s %s数据...\n", dateStr, sessCfg.TitleSuffix)
-			sectors, err = fetcher.LoadSessionData(dateStr, session)
-			if err != nil {
-				fmt.Printf("错误: 加载缓存数据失败: %v\n", err)
-				continue
-			}
 			fmt.Printf("已加载 %d 个板块\n", len(sectors))
 			printSectorsTable(sectors)
-		} else if dateStr == today && session == "morning" {
-			fmt.Printf("获取 %s 早盘实时热门板块数据...\n", dateStr)
+		} else if dateStr == today {
+			fmt.Printf("获取 %s 实时热门板块数据...\n", sessCfg.TitleSuffix)
 			sectors, err = fetcher.FetchTop18HotSectors()
 			if err != nil || len(sectors) == 0 {
 				fmt.Printf("错误: 无法获取热门板块数据\n")
 				continue
 			}
-			fetcher.SaveSessionData(sectors, dateStr, session)
-			fmt.Printf("热门板块: 匹配 %d 个\n", len(sectors))
-			printSectorsTable(sectors)
-		} else if dateStr == today && session == "full" {
-			fmt.Printf("获取 %s 全天实时热门板块数据...\n", dateStr)
-			sectors, err = fetcher.FetchTop18HotSectors()
-			if err != nil || len(sectors) == 0 {
-				fmt.Printf("错误: 无法获取热门板块数据\n")
-				continue
-			}
-			fetcher.SaveSessionData(sectors, dateStr, session)
+			fetcher.SaveDailyData(sectors, dateStr)
 			fmt.Printf("热门板块: 匹配 %d 个\n", len(sectors))
 			printSectorsTable(sectors)
 		} else {
@@ -165,7 +146,7 @@ func processDate(dateStr string, useAI bool, sessionOverride string) bool {
 				fmt.Printf("提示: 请检查网络连接，或手动保存数据到 data/%s/sectors.csv\n", dateStr)
 				continue
 			}
-			fetcher.SaveSessionData(sectors, dateStr, session)
+			fetcher.SaveDailyData(sectors, dateStr)
 			fmt.Printf("历史热门: 匹配 %d 个\n", len(sectors))
 			printSectorsTable(sectors)
 		}

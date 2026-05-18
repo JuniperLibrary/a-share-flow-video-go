@@ -39,7 +39,7 @@ Go backend + React/Remotion frontend. Data flows: 东方财富 API → Go fetche
 ### Key Modules
 | Module | Purpose |
 |--------|---------|
-| `internal/fetcher/` | 东方财富 API client, Top18HotSectors filtering, CSV save/load |
+| `internal/fetcher/` | 东方财富 API client, Top18HotSectors filtering, CSV save/load, tick data loading |
 | `internal/analyzer/` | AI event generation (AIGenerate) + data-driven fallback (DataDrivenGenerate) |
 | `internal/renderer/` | Remotion bridge — serializes props to JSON, calls `npx remotion render` |
 | `internal/copy/` | Copywriting generation (template + AI) |

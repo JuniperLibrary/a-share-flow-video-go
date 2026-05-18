@@ -206,7 +206,7 @@ func (s *Scheduler) execute(session string) {
 		return
 	}
 
-	if err := fetcher.SaveSessionData(sectors, todayStr, session); err != nil {
+	if err := fetcher.SaveDailyData(sectors, todayStr); err != nil {
 		log.Printf("Scheduler: failed to save data: %v", err)
 	}
 

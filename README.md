@@ -111,7 +111,7 @@ go build -o web-server ./cmd/web/
 
 | 触发时间 | 维度 | 数据文件 | 输出视频 |
 |----------|------|----------|----------|
-| `11:35`（可配置） | 早盘 | `data/YYYY-MM-DD/sectors_morning.csv` | `早盘.mp4` + `早盘_tv.mp4` |
+| `11:35`（可配置） | 早盘 | `data/YYYY-MM-DD/ticks.csv` (09:30-11:30) | `早盘.mp4` + `早盘_tv.mp4` |
 | `15:05`（可配置） | 全天 | `data/YYYY-MM-DD/sectors.csv` | `全天.mp4` + `全天_tv.mp4` |
 
 - 跳过周末（周六、周日不执行）
@@ -177,8 +177,8 @@ output/YYYY-MM-DD/
 └── 全天_tv.mp4
 
 data/YYYY-MM-DD/
-├── sectors_morning.csv       # 早盘板块数据（15个监控板块）
-├── sectors.csv               # 全天板块数据（15个监控板块）
+├── sectors.csv               # 全天板块数据（21个监控板块）
+├── ticks.csv                 # Tick采集数据（09:30-15:00每10分钟）
 └── 板块全量_YYYY-MM-DD.csv   # 全量板块导出（异步任务）
 
 copy/YYYY-MM-DD/
@@ -235,7 +235,7 @@ copy/YYYY-MM-DD/
     ↓
 FetchTop18HotSectors() / FetchHistoricalSectors()
     ↓
-SaveSessionData() → data/YYYY-MM-DD/sectors[_morning].csv
+SaveSessionData() → data/YYYY-MM-DD/sectors.csv
     ↓
 AnalyzeAllContent() → AI 生成（180s 超时）→ 降级 DataDrivenGenerate()
     ├── MarketEvent[]    底部弹窗事件
