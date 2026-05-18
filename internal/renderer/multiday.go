@@ -98,7 +98,6 @@ func RenderMultiDayVideo(dayData map[string][]fetcher.Sector, dates []string,
 		"--overwrite",
 		"--fps", fmt.Sprintf("%d", config.FPS),
 		"--frames", fmt.Sprintf("0-%d", config.TotalFrames-1),
-		"--browser-executable", "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
 	}
 
 	fmt.Printf("[remotion] rendering %d-day bar chart race → %s (%s)\n", len(dates), outputPath, format)
