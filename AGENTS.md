@@ -81,7 +81,7 @@ CSV columns: `name,net,color` (3 columns only).
 
 ## Top18HotSectors
 
-Hardcoded in `fetcher.go`: 半导体, AI应用, CPO概念, 有色金属, 锂矿概念, 商业航天, 电池, 机器人, 创新药, 白酒, 消费电子, 银行, 人工智能, 云计算, 低空经济, 电网设备, 通信设备, 传媒, 国产算力
+Hardcoded in `fetcher.go`: 半导体, AI应用, CPO概念, 有色金属, 锂矿概念, 商业航天, 电池, 机器人, 创新药, 白酒, 消费电子, 银行, 人工智能, 云计算, 低空经济, 电网设备, 通信设备, 传媒, 国产芯片
 
 ## File Conventions
 
