@@ -12,6 +12,8 @@ import (
 
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/fetcher"
+	"github.com/a-share-flow-video-go/internal/logger"
+	"go.uber.org/zap"
 )
 
 // MultiDayAnalysis Bar Chart Race 视频所需的全部分析结果。
@@ -57,17 +59,17 @@ type MultiDayTicker struct {
 func MultiDayAnalyze(dayData map[string][]fetcher.Sector, dates []string) MultiDayAnalysis {
 	aiCfg := config.GetAIConfig()
 	if aiCfg.APIKey == "" {
-		fmt.Println("  [多日分析] 未设置 AI_API_KEY，使用数据驱动生成")
+		logger.Info("多日分析：未设置 AI_API_KEY，使用数据驱动生成")
 		return DataDrivenMultiDay(dayData, dates)
 	}
 
 	result, err := AIGenerateMultiDay(dayData, dates, aiCfg)
 	if err != nil {
-		fmt.Printf("  [多日分析] API 请求失败: %v，使用数据驱动生成\n", err)
+		logger.Warn("多日分析：API 请求失败，使用数据驱动生成", zap.Error(err))
 		return DataDrivenMultiDay(dayData, dates)
 	}
 	if result.TrendInsights == nil && result.SummaryText.Title == "" {
-		fmt.Println("  [多日分析] 大模型分析失败，使用数据驱动生成")
+		logger.Warn("多日分析：大模型分析失败，使用数据驱动生成")
 		return DataDrivenMultiDay(dayData, dates)
 	}
 	return result
@@ -183,18 +185,20 @@ func AIGenerateMultiDay(dayData map[string][]fetcher.Sector, dates []string, aiC
 		content := result.Choices[0].Message.Content
 		jsonStr := extractJSON(content)
 		if jsonStr == "" {
-			fmt.Println("  [多日分析] 大模型返回格式异常")
+			logger.Warn("多日分析：大模型返回格式异常")
 			return MultiDayAnalysis{}, nil
 		}
 
 		var data MultiDayAnalysis
 		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
-			fmt.Printf("  [多日分析] JSON 解析失败: %v\n", err)
+			logger.Warn("多日分析：JSON 解析失败", zap.Error(err))
 			return MultiDayAnalysis{}, nil
 		}
 
-		fmt.Printf("  [多日分析] 大模型生成: %d条趋势洞察 + %d条排名变化 + %d条资讯\n",
-			len(data.TrendInsights), len(data.RankingChanges), len(data.TickerItems))
+		logger.Info("多日分析：大模型生成",
+			zap.Int("trends", len(data.TrendInsights)),
+			zap.Int("changes", len(data.RankingChanges)),
+			zap.Int("ticker", len(data.TickerItems)))
 		return data, nil
 	}
 
@@ -337,8 +341,10 @@ func DataDrivenMultiDay(dayData map[string][]fetcher.Sector, dates []string) Mul
 		},
 	}
 
-	fmt.Printf("  [多日分析] 数据驱动生成: %d条趋势 + %d条排名变化 + %d条资讯\n",
-		len(insights), len(rankingChanges), len(tickers))
+	logger.Info("多日分析：数据驱动生成",
+			zap.Int("trends", len(insights)),
+			zap.Int("changes", len(rankingChanges)),
+			zap.Int("ticker", len(tickers)))
 	return summary
 }
 

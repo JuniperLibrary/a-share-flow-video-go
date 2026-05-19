@@ -12,6 +12,9 @@ import (
 
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/fetcher"
+	"github.com/a-share-flow-video-go/internal/logger"
+	"github.com/a-share-flow-video-go/internal/tickfetcher"
+	"go.uber.org/zap"
 )
 
 type TimelineEvent struct {
@@ -79,6 +82,487 @@ func clampTimeline(events []TimelineEvent) []TimelineEvent {
 		return fixed[i].TimeMinutes < fixed[j].TimeMinutes
 	})
 	return fixed
+}
+
+// TickDataDrivenGenerate 基于 tick 时序数据，数据驱动地生成事件分析。
+// 利用真实时间序列特征检测：资金突变、板块轮动、极值点、交叉点等。
+func TickDataDrivenGenerate(points []tickfetcher.TickPoint, session string) ([]MarketEvent, []TimelineEvent, []TickerItem) {
+	// 1. 按时间排序，构建 per-sector 时间序列
+	timeOrder := uniqueTickTimes(points)
+	sectorSeries := buildSectorTimeSeries(points, timeOrder)
+
+	// 2. 计算每个板块的累计值和变化率
+	cumulative := make(map[string][]float64)
+	for name, deltas := range sectorSeries {
+		cum := make([]float64, len(deltas))
+		sum := 0.0
+		for i, d := range deltas {
+			sum += d
+			cum[i] = sum
+		}
+		cumulative[name] = cum
+	}
+
+	// 3. 检测资金突变（delta 变化最大的时间点）
+	type SpikeEvent struct {
+		Time     string
+		Minutes  int
+		Sector   string
+		Delta    float64
+		IsInflow bool
+	}
+	var spikes []SpikeEvent
+	for name, deltas := range sectorSeries {
+		for i, d := range deltas {
+			if absF(d) > 5 { // 单次变化超过5亿视为突变
+				spikes = append(spikes, SpikeEvent{
+					Time:     timeOrder[i],
+					Minutes:  timeToMinutes(timeOrder[i]),
+					Sector:   name,
+					Delta:    d,
+					IsInflow: d > 0,
+				})
+			}
+		}
+	}
+	sort.Slice(spikes, func(i, j int) bool {
+		return absF(spikes[i].Delta) > absF(spikes[j].Delta)
+	})
+
+	// 4. 检测极值点（累计值最大的时间点）
+	type PeakEvent struct {
+		Time    string
+		Minutes int
+		Sector  string
+		Value   float64
+		IsMax   bool
+	}
+	var peaks []PeakEvent
+	for name, cum := range cumulative {
+		maxVal := 0.0
+		minVal := 0.0
+		maxIdx := 0
+		minIdx := 0
+		for i, v := range cum {
+			if v > maxVal {
+				maxVal = v
+				maxIdx = i
+			}
+			if v < minVal {
+				minVal = v
+				minIdx = i
+			}
+		}
+		if maxVal > 3 {
+			peaks = append(peaks, PeakEvent{Time: timeOrder[maxIdx], Minutes: timeToMinutes(timeOrder[maxIdx]), Sector: name, Value: maxVal, IsMax: true})
+		}
+		if absF(minVal) > 3 {
+			peaks = append(peaks, PeakEvent{Time: timeOrder[minIdx], Minutes: timeToMinutes(timeOrder[minIdx]), Sector: name, Value: minVal, IsMax: false})
+		}
+	}
+
+	// 5. 检测板块轮动（排名变化）
+	type RankChange struct {
+		Time       string
+		Minutes    int
+		Sector     string
+		FromRank   int
+		ToRank     int
+		PrevNet    float64
+		CurrNet    float64
+	}
+	var rankChanges []RankChange
+	for i := 1; i < len(timeOrder); i++ {
+		// 计算上一时刻排名
+		prevNets := make(map[string]float64)
+		for name, cum := range cumulative {
+			if i-1 < len(cum) {
+				prevNets[name] = cum[i-1]
+			}
+		}
+		// 计算当前时刻排名
+		currNets := make(map[string]float64)
+		for name, cum := range cumulative {
+			if i < len(cum) {
+				currNets[name] = cum[i]
+			}
+		}
+		prevRank := rankByAbs(prevNets)
+		currRank := rankByAbs(currNets)
+		for name := range currNets {
+			pr, ok1 := prevRank[name]
+			cr, ok2 := currRank[name]
+			if ok1 && ok2 && pr != cr && absInt(pr-cr) >= 3 {
+				rankChanges = append(rankChanges, RankChange{
+					Time:     timeOrder[i],
+					Minutes:  timeToMinutes(timeOrder[i]),
+					Sector:   name,
+					FromRank: pr,
+					ToRank:   cr,
+					PrevNet:  prevNets[name],
+					CurrNet:  currNets[name],
+				})
+			}
+		}
+	}
+	sort.Slice(rankChanges, func(i, j int) bool {
+		return absF(rankChanges[i].CurrNet-rankChanges[i].PrevNet) > absF(rankChanges[j].CurrNet-rankChanges[j].PrevNet)
+	})
+
+	// 6. 生成 TimelineEvent
+	var timeline []TimelineEvent
+
+	// 开盘
+	if len(timeOrder) > 0 {
+		firstTime := timeOrder[0]
+		firstNets := make(map[string]float64)
+		for name, cum := range cumulative {
+			if len(cum) > 0 {
+				firstNets[name] = cum[0]
+			}
+		}
+		topFirst := topByAbs(firstNets, 1)
+		if len(topFirst) > 0 {
+			s := topFirst[0]
+			timeline = append(timeline, TimelineEvent{
+				Time:        firstTime,
+				TimeMinutes: timeToMinutes(firstTime),
+				Sector:      s.Name,
+				Title:       fmt.Sprintf("%s开盘异动", s.Name),
+				Description: fmt.Sprintf("开盘资金%s%.1f亿", ifElse(s.Net > 0, "净流入", "净流出"), absF(s.Net)),
+				Sentiment:   ifElse(s.Net > 0, "positive", "negative"),
+			})
+		}
+	}
+
+	// 资金突变事件
+	for _, sp := range spikes {
+		if len(timeline) >= 10 {
+			break
+		}
+		// 检查是否已有相近时间点的事件
+		duplicate := false
+		for _, ev := range timeline {
+			if absInt(ev.TimeMinutes-sp.Minutes) < 15 && ev.Sector == sp.Sector {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		timeline = append(timeline, TimelineEvent{
+			Time:        sp.Time,
+			TimeMinutes: sp.Minutes,
+			Sector:      sp.Sector,
+			Title:       fmt.Sprintf("%s资金%s", sp.Sector, ifElse(sp.IsInflow, "加速涌入", "加速流出")),
+			Description: fmt.Sprintf("单时段%s%.1f亿", ifElse(sp.IsInflow, "净流入", "净流出"), absF(sp.Delta)),
+			Sentiment:   ifElse(sp.IsInflow, "positive", "negative"),
+		})
+	}
+
+	// 板块轮动事件
+	for _, rc := range rankChanges {
+		if len(timeline) >= 12 {
+			break
+		}
+		duplicate := false
+		for _, ev := range timeline {
+			if absInt(ev.TimeMinutes-rc.Minutes) < 10 && ev.Sector == rc.Sector {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		dir := ifElse(rc.ToRank < rc.FromRank, "排名上升", "排名下降")
+		timeline = append(timeline, TimelineEvent{
+			Time:        rc.Time,
+			TimeMinutes: rc.Minutes,
+			Sector:      rc.Sector,
+			Title:       fmt.Sprintf("%s%s至第%d", rc.Sector, dir, rc.ToRank),
+			Description: fmt.Sprintf("资金从%.1f亿变化至%.1f亿", rc.PrevNet, rc.CurrNet),
+			Sentiment:   ifElse(rc.ToRank < rc.FromRank, "positive", "negative"),
+		})
+	}
+
+	// 极值点事件
+	for _, pk := range peaks {
+		if len(timeline) >= 14 {
+			break
+		}
+		duplicate := false
+		for _, ev := range timeline {
+			if absInt(ev.TimeMinutes-pk.Minutes) < 10 && ev.Sector == pk.Sector {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		timeline = append(timeline, TimelineEvent{
+			Time:        pk.Time,
+			TimeMinutes: pk.Minutes,
+			Sector:      pk.Sector,
+			Title:       fmt.Sprintf("%s%s", pk.Sector, ifElse(pk.IsMax, "净流入峰值", "净流出峰值")),
+			Description: fmt.Sprintf("累计%s%.1f亿", ifElse(pk.IsMax, "净流入", "净流出"), absF(pk.Value)),
+			Sentiment:   ifElse(pk.IsMax, "positive", "negative"),
+		})
+	}
+
+	// 收盘总结
+	if len(timeOrder) > 0 {
+		lastTime := timeOrder[len(timeOrder)-1]
+		totalNet := 0.0
+		for _, cum := range cumulative {
+			if len(cum) > 0 {
+				totalNet += cum[len(cum)-1]
+			}
+		}
+		timeline = append(timeline, TimelineEvent{
+			Time:        lastTime,
+			TimeMinutes: timeToMinutes(lastTime),
+			Sector:      "市场",
+			Title:       "收盘总结",
+			Description: fmt.Sprintf("全天主力净流向%+.1f亿", totalNet),
+			Sentiment:   mapSentiment(totalNet),
+		})
+	}
+
+	// 按时间排序
+	sort.Slice(timeline, func(i, j int) bool {
+		return timeline[i].TimeMinutes < timeline[j].TimeMinutes
+	})
+
+	// 7. 生成 TickerItem
+	var ticker []TickerItem
+	ticker = append(ticker, TickerItem{Time: timeOrder[0], Text: "A股开盘，主力资金流向实时监控"})
+
+	// 从 spikes 生成 ticker
+	for _, sp := range spikes {
+		if len(ticker) >= 10 {
+			break
+		}
+		ticker = append(ticker, TickerItem{
+			Time: sp.Time,
+			Text: fmt.Sprintf("%s%s%.1f亿，%s", sp.Sector, ifElse(sp.IsInflow, "主力净流入", "主力净流出"), absF(sp.Delta), ifElse(sp.IsInflow, "多头强势", "空头主导")),
+		})
+	}
+
+	// 从 rankChanges 生成 ticker
+	for _, rc := range rankChanges {
+		if len(ticker) >= 10 {
+			break
+		}
+		ticker = append(ticker, TickerItem{
+			Time: rc.Time,
+			Text: fmt.Sprintf("%s排名变化：第%d→第%d", rc.Sector, rc.FromRank, rc.ToRank),
+		})
+	}
+
+	// 8. 生成 MarketEvent
+	var events []MarketEvent
+	totalFrames := 900
+
+	// 开盘事件
+	if len(timeOrder) > 0 {
+		firstNets := make(map[string]float64)
+		for name, cum := range cumulative {
+			if len(cum) > 0 {
+				firstNets[name] = cum[0]
+			}
+		}
+		topFirst := topByAbs(firstNets, 1)
+		sentimentStr := "偏多"
+		inflowCount := 0
+		for _, cum := range cumulative {
+			if len(cum) > 0 && cum[0] > 0 {
+				inflowCount++
+			}
+		}
+		if len(cumulative)-inflowCount > inflowCount {
+			sentimentStr = "偏空"
+		}
+		events = append(events, MarketEvent{
+			EventType: "market", Frame: totalFrames * 3 / 100,
+			Text:    "A股开盘",
+			Subtext: fmt.Sprintf("资金%s，%d板块主力流入", sentimentStr, inflowCount),
+			Importance: 2,
+		})
+		if len(topFirst) > 0 {
+			events = append(events, MarketEvent{
+				EventType: "concentration", Frame: totalFrames * 12 / 100,
+				Text:    fmt.Sprintf("%s开盘领涨", topFirst[0].Name),
+				Subtext: fmt.Sprintf("净流入%.1f亿，多头集结", topFirst[0].Net),
+				Importance: 3,
+			})
+		}
+	}
+
+	// 从 spikes 生成事件
+	for _, sp := range spikes {
+		if len(events) >= 8 {
+			break
+		}
+		frame := timeMinutesToFrame(sp.Minutes, totalFrames, session)
+		events = append(events, MarketEvent{
+			EventType: ifElse(sp.IsInflow, "sentiment", "aberration"),
+			Frame:     frame,
+			Text:      fmt.Sprintf("%s资金%s", sp.Sector, ifElse(sp.IsInflow, "加速涌入", "加速流出")),
+			Subtext:   fmt.Sprintf("单时段%s%.1f亿", ifElse(sp.IsInflow, "净流入", "净流出"), absF(sp.Delta)),
+			Importance: ifElseInt(absF(sp.Delta) > 10, 3, 2),
+		})
+	}
+
+	// 从 rankChanges 生成事件
+	for _, rc := range rankChanges {
+		if len(events) >= 10 {
+			break
+		}
+		frame := timeMinutesToFrame(rc.Minutes, totalFrames, session)
+		events = append(events, MarketEvent{
+			EventType: "rotation",
+			Frame:     frame,
+			Text:      fmt.Sprintf("%s板块轮动", rc.Sector),
+			Subtext:   fmt.Sprintf("排名从第%d变化至第%d", rc.FromRank, rc.ToRank),
+			Importance: 2,
+		})
+	}
+
+	// 收盘事件
+	events = append(events, MarketEvent{
+		EventType: "market", Frame: totalFrames * 95 / 100,
+		Text:    "收盘总结",
+		Subtext: "全天资金流向分析完成",
+		Importance: 2,
+	})
+
+	sort.Slice(events, func(i, j int) bool {
+		return events[i].Frame < events[j].Frame
+	})
+
+	logger.Info("时序驱动生成",
+		zap.Int("events", len(events)),
+		zap.Int("timeline", len(timeline)),
+		zap.Int("ticker", len(ticker)))
+	return filterBySession(events, timeline, ticker, session)
+}
+
+func uniqueTickTimes(points []tickfetcher.TickPoint) []string {
+	seen := make(map[string]bool)
+	var times []string
+	for _, p := range points {
+		if !seen[p.Time] {
+			seen[p.Time] = true
+			times = append(times, p.Time)
+		}
+	}
+	sort.Slice(times, func(i, j int) bool {
+		return timeToMinutes(times[i]) < timeToMinutes(times[j])
+	})
+	return times
+}
+
+func buildSectorTimeSeries(points []tickfetcher.TickPoint, timeOrder []string) map[string][]float64 {
+	// 构建 delta 序列
+	sectorPrev := make(map[string]float64)
+	sectorDeltas := make(map[string][]float64)
+
+	for _, p := range points {
+		prev := sectorPrev[p.Name]
+		delta := p.Net - prev
+		sectorDeltas[p.Name] = append(sectorDeltas[p.Name], delta)
+		sectorPrev[p.Name] = p.Net
+	}
+
+	// 补齐缺失的时间点
+	for name := range sectorDeltas {
+		deltas := sectorDeltas[name]
+		if len(deltas) < len(timeOrder) {
+			padded := make([]float64, len(timeOrder))
+			copy(padded, deltas)
+			sectorDeltas[name] = padded
+		}
+	}
+
+	return sectorDeltas
+}
+
+func timeToMinutes(t string) int {
+	var h, m int
+	fmt.Sscanf(t, "%d:%d", &h, &m)
+	base := 9*60 + 30
+	val := h*60 + m - base
+	if val < 0 {
+		val = 0
+	}
+	if h >= 13 {
+		val -= 90
+	}
+	return val
+}
+
+func timeMinutesToFrame(minutes int, totalFrames int, session string) int {
+	xLim := 330
+	if session == "morning" {
+		xLim = 120
+	}
+	progress := float64(minutes) / float64(xLim)
+	return int(progress * float64(totalFrames))
+}
+
+func rankByAbs(nets map[string]float64) map[string]int {
+	type pair struct {
+		Name string
+		Net  float64
+	}
+	var pairs []pair
+	for name, net := range nets {
+		pairs = append(pairs, pair{name, net})
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		return absF(pairs[i].Net) > absF(pairs[j].Net)
+	})
+	rank := make(map[string]int)
+	for i, p := range pairs {
+		rank[p.Name] = i + 1
+	}
+	return rank
+}
+
+type sectorNet struct {
+	Name string
+	Net  float64
+}
+
+func topByAbs(nets map[string]float64, n int) []sectorNet {
+	var pairs []sectorNet
+	for name, net := range nets {
+		pairs = append(pairs, sectorNet{name, net})
+	}
+	sort.Slice(pairs, func(i, j int) bool {
+		return absF(pairs[i].Net) > absF(pairs[j].Net)
+	})
+	if len(pairs) > n {
+		pairs = pairs[:n]
+	}
+	return pairs
+}
+
+func ifElse[T any](cond bool, a, b T) T {
+	if cond {
+		return a
+	}
+	return b
+}
+
+func ifElseInt(cond bool, a, b int) int {
+	if cond {
+		return a
+	}
+	return b
 }
 
 // DataDrivenGenerate 基于板块资金流数据，数据驱动地生成视频所需的三类内容：
@@ -332,8 +816,203 @@ func DataDrivenGenerate(sectors []fetcher.Sector, session string) ([]MarketEvent
 		Importance: 2,
 	})
 
-	fmt.Printf("  [事件分析] 数据驱动生成: %d个事件 + %d条时间线 + %d条资讯\n", len(events), len(timeline), len(ticker))
+	logger.Info("数据驱动生成",
+		zap.Int("events", len(events)),
+		zap.Int("timeline", len(timeline)),
+		zap.Int("ticker", len(ticker)))
 	return filterBySession(events, timeline, ticker, session)
+}
+
+// AITickGenerate 基于 tick 时序数据，AI 分析生成事件。
+// 采用游资复盘视角，分析资金攻击路径、扩散方向、主线判断等。
+func AITickGenerate(points []tickfetcher.TickPoint, dateStr string, session string, aiCfg config.AIConfig) ([]MarketEvent, []TimelineEvent, []TickerItem, error) {
+	dateDisplay := parseDateDisplay(dateStr)
+
+	timeOrder := uniqueTickTimes(points)
+	sectorSeries := buildSectorTimeSeries(points, timeOrder)
+
+	cumulative := make(map[string][]float64)
+	for name, deltas := range sectorSeries {
+		cum := make([]float64, len(deltas))
+		sum := 0.0
+		for i, d := range deltas {
+			sum += d
+			cum[i] = sum
+		}
+		cumulative[name] = cum
+	}
+
+	var sectorLines []string
+	for name, cum := range cumulative {
+		var pts []string
+		for i, v := range cum {
+			if i < len(timeOrder) {
+				pts = append(pts, fmt.Sprintf("%s:%+.1f", timeOrder[i], v))
+			}
+		}
+		sectorLines = append(sectorLines, fmt.Sprintf("- %s: [%s]", name, strings.Join(pts, ", ")))
+	}
+	sort.Strings(sectorLines)
+
+	dataSummary := fmt.Sprintf(`## %s A股板块主力资金流向时序数据
+
+### 时间序列（每个板块在各时间点的累计净流入，单位：亿元）
+%s
+
+### 时间规则
+- 上午: 09:30 - 11:30
+- 午休: 11:30 - 13:00（闭盘，不产生事件）
+- 下午: 13:00 - 15:00`, dateDisplay, strings.Join(sectorLines, "\n"))
+
+	prompt := fmt.Sprintf(`你是一名顶级A股主线研究员和游资资金流分析师。
+
+下面给你的是不同时间段的板块主力资金净流入时序数据。
+
+## 你的任务
+
+从资金流变化中分析并生成视频所需的三类内容（timelineEvents、tickerItems、events）。
+
+## 分析视角（重要）
+
+不要机械复述数据，要像游资复盘一样思考：
+- 资金最先攻击哪个方向？为什么？
+- 后续资金扩散路径是什么？是产业链联动还是情绪套利？
+- 是否形成主线共振？核心龙头是谁？
+- 是否出现高低切、低位补涨、资金回流？
+- 市场风险偏好是提升还是下降？
+- 主力真正想做什么？
+
+## 输出风格对比
+
+❌ 错误（财经新闻口吻）：
+- title: "AI应用资金流入"
+- description: "AI应用板块净流入增加3.2亿"
+
+✅ 正确（游资复盘风格）：
+- title: "AI应用早盘抢筹"
+- description: "主力率先攻击AI应用方向，净流入+3.2亿"
+
+❌ 错误：
+- title: "半导体板块表现良好"
+- description: "半导体板块资金持续流入"
+
+✅ 正确：
+- title: "半导体产业链共振"
+- description: "CPO与半导体同步获资金，算力主线强化"
+
+## 数据摘要
+%s
+
+## 输出要求
+
+请严格按以下 JSON 格式输出一个对象，包含三个字段：
+
+### 1. timelineEvents（市场事件时间线，10-12个）
+- time: 时间 "HH:MM"（必须在 09:30-11:30 或 13:00-15:00 范围内）
+- timeMinutes: 从09:30起的分钟数（如09:35=5, 10:15=45, 13:15=225, 14:10=310）
+- sector: 相关板块名（必须是数据中实际存在的板块）
+- title: 事件标题（8-10字，游资复盘风格）
+- description: 事件描述（15-20字，使用专业交易术语如"主力抢筹""产业链共振""高低切换""补涨逻辑""主线强化""资金分歧"，并包含具体数值）
+- sentiment: "positive" / "negative" / "neutral"
+- 时间分布建议：09:30-10:00 至少2个，10:00-11:00 至少2个，11:00-11:30 至少1个，13:00-14:00 至少2个，14:00-15:00 至少2个
+
+### 2. tickerItems（底部滚动资讯，10-12条）
+- time: 时间 "HH:MM"（必须在交易时段内）
+- text: 资讯内容（12-15字，游资复盘风格）
+
+### 3. events（底部弹窗事件，8-10个）
+- event_type: "market"/"sentiment"/"rotation"/"aberration"
+- frame: 时间位置百分比（0-100）
+- text: 主标题（8-10字，游资风格）
+- subtext: 副标题（15-20字，包含板块名和数值）
+- importance: 重要程度 1/2/3
+- 时间分布建议：frame 5-15 开盘，20-40 早盘，45-65 午盘前，70-85 午盘后，90-98 收盘
+
+## 注意事项
+- timelineEvents 的 timeMinutes 必须按升序排列
+- tickerItems 的 time 从早到晚排列
+- events 的 frame 从低到高分布（开盘5%%，盘中30-60%%，收盘90%%+）
+- 所有内容必须基于实际数据，不要编造数据
+- 板块名和数值必须与数据摘要一致
+- 输出风格必须像游资复盘、私募策略会，而不是财经新闻
+- 必须输出有效的 JSON 对象，不要有其他内容
+
+输出格式：
+{
+  "timelineEvents": [...],
+  "tickerItems": [...],
+  "events": [...]
+}`, dataSummary)
+
+	body := map[string]any{
+		"model":       aiCfg.Model,
+		"messages":    []map[string]string{{"role": "user", "content": prompt}},
+		"temperature": 0.7,
+		"max_tokens":  3000,
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	req, _ := http.NewRequest("POST", aiCfg.BaseURL+"/chat/completions", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+aiCfg.APIKey)
+
+	client := &http.Client{Timeout: 180 * time.Second}
+
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			if attempt == 0 {
+				time.Sleep(time.Second)
+				continue
+			}
+			return nil, nil, nil, lastErr
+		}
+
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		var result struct {
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal(b, &result); err != nil {
+			return nil, nil, nil, fmt.Errorf("parse API response: %w", err)
+		}
+		if len(result.Choices) == 0 {
+			return nil, nil, nil, fmt.Errorf("empty choices from API")
+		}
+
+		content := result.Choices[0].Message.Content
+		jsonStr := extractJSON(content)
+		if jsonStr == "" {
+			logger.Warn("大模型返回格式异常")
+			return nil, nil, nil, nil
+		}
+
+		var data struct {
+			TimelineEvents []TimelineEvent `json:"timelineEvents"`
+			TickerItems    []TickerItem    `json:"tickerItems"`
+			Events         []MarketEvent   `json:"events"`
+		}
+		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
+			logger.Warn("JSON 解析失败", zap.Error(err))
+			return nil, nil, nil, nil
+		}
+
+		timeline := clampTimeline(data.TimelineEvents)
+		logger.Info("游资视角AI分析",
+			zap.Int("events", len(data.Events)),
+			zap.Int("timeline", len(timeline)),
+			zap.Int("ticker", len(data.TickerItems)))
+		return data.Events, timeline, data.TickerItems, nil
+	}
+
+	return nil, nil, nil, lastErr
 }
 
 func AIGenerate(sectors []fetcher.Sector, dateStr string, aiCfg config.AIConfig) ([]MarketEvent, []TimelineEvent, []TickerItem, error) {
@@ -460,7 +1139,7 @@ func AIGenerate(sectors []fetcher.Sector, dateStr string, aiCfg config.AIConfig)
 		content := result.Choices[0].Message.Content
 		jsonStr := extractJSON(content)
 		if jsonStr == "" {
-			fmt.Println("  [事件分析] 大模型返回格式异常")
+			logger.Warn("大模型返回格式异常")
 			return nil, nil, nil, nil
 		}
 
@@ -470,13 +1149,15 @@ func AIGenerate(sectors []fetcher.Sector, dateStr string, aiCfg config.AIConfig)
 			Events         []MarketEvent   `json:"events"`
 		}
 		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
-			fmt.Printf("  [事件分析] JSON 解析失败: %v\n", err)
+			logger.Warn("JSON 解析失败", zap.Error(err))
 			return nil, nil, nil, nil
 		}
 
 		timeline := clampTimeline(data.TimelineEvents)
-		fmt.Printf("  [事件分析] 大模型生成: %d个事件 + %d条时间线 + %d条资讯\n",
-			len(data.Events), len(timeline), len(data.TickerItems))
+		logger.Info("大模型生成",
+			zap.Int("events", len(data.Events)),
+			zap.Int("timeline", len(timeline)),
+			zap.Int("ticker", len(data.TickerItems)))
 		return data.Events, timeline, data.TickerItems, nil
 	}
 
@@ -488,18 +1169,38 @@ func AIGenerate(sectors []fetcher.Sector, dateStr string, aiCfg config.AIConfig)
 func AnalyzeAllContent(sectors []fetcher.Sector, dateStr string, session string) ([]MarketEvent, []TimelineEvent, []TickerItem) {
 	aiCfg := config.GetAIConfig()
 	if aiCfg.APIKey == "" {
-		fmt.Println("  [事件分析] 未设置 AI_API_KEY，使用数据驱动生成")
+		logger.Info("未设置 AI_API_KEY，使用数据驱动生成")
 		return DataDrivenGenerate(sectors, session)
 	}
 
 	events, timeline, ticker, err := AIGenerate(sectors, dateStr, aiCfg)
 	if err != nil {
-		fmt.Printf("  [事件分析] API 请求失败: %v，使用数据驱动生成\n", err)
+		logger.Warn("API 请求失败，使用数据驱动生成", zap.Error(err))
 		return DataDrivenGenerate(sectors, session)
 	}
 	if events == nil && timeline == nil && ticker == nil {
-		fmt.Println("  [事件分析] 大模型分析失败，使用数据驱动生成")
+		logger.Warn("大模型分析失败，使用数据驱动生成")
 		return DataDrivenGenerate(sectors, session)
+	}
+	return filterBySession(events, timeline, ticker, session)
+}
+
+// AnalyzeTickContent Tick 事件分析统一入口：优先尝试 AI 游资复盘生成，失败时自动降级到数据驱动生成。
+func AnalyzeTickContent(points []tickfetcher.TickPoint, dateStr string, session string) ([]MarketEvent, []TimelineEvent, []TickerItem) {
+	aiCfg := config.GetAIConfig()
+	if aiCfg.APIKey == "" {
+		logger.Info("未设置 AI_API_KEY，使用数据驱动生成")
+		return TickDataDrivenGenerate(points, session)
+	}
+
+	events, timeline, ticker, err := AITickGenerate(points, dateStr, session, aiCfg)
+	if err != nil {
+		logger.Warn("API 请求失败，使用数据驱动生成", zap.Error(err))
+		return TickDataDrivenGenerate(points, session)
+	}
+	if events == nil && timeline == nil && ticker == nil {
+		logger.Warn("大模型分析失败，使用数据驱动生成")
+		return TickDataDrivenGenerate(points, session)
 	}
 	return filterBySession(events, timeline, ticker, session)
 }

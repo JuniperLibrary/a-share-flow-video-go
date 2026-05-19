@@ -21,6 +21,7 @@ import (
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/copy"
 	"github.com/a-share-flow-video-go/internal/fetcher"
+	"github.com/a-share-flow-video-go/internal/logger"
 	"github.com/a-share-flow-video-go/internal/renderer"
 	"github.com/a-share-flow-video-go/internal/scheduler"
 	"github.com/a-share-flow-video-go/internal/tickfetcher"
@@ -200,7 +201,9 @@ func jsonStr(s string) string {
 // SetupRouter 注册所有 HTTP 路由。
 func SetupRouter(sched *scheduler.Scheduler, tickSched *tickscheduler.TickScheduler) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
-	r := gin.Default()
+	r := gin.New()
+	r.Use(logger.RecoveryMiddleware())
+	r.Use(logger.RequestLoggerMiddleware())
 
 	r.GET("/api/dates", handleDates)
 	r.GET("/api/data/:date", handleData)
@@ -274,6 +277,20 @@ func SetupRouter(sched *scheduler.Scheduler, tickSched *tickscheduler.TickSchedu
 		}
 		tickSched.SetEnabled(body.Enabled)
 		c.JSON(200, gin.H{"ok": true})
+	})
+	r.GET("/api/tick/interval", func(c *gin.Context) {
+		c.JSON(200, gin.H{"intervalMinutes": tickSched.GetFetcher().GetIntervalMinutes()})
+	})
+	r.POST("/api/tick/interval", func(c *gin.Context) {
+		var body struct {
+			IntervalMinutes int `json:"intervalMinutes"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+		tickSched.GetFetcher().SetIntervalMinutes(body.IntervalMinutes)
+		c.JSON(200, gin.H{"ok": true, "intervalMinutes": body.IntervalMinutes})
 	})
 	r.GET("/api/tick-data/:date", func(c *gin.Context) {
 		dateStr := c.Param("date")
@@ -935,9 +952,10 @@ func roundTo2(x float64) float64 {
 
 func handleGenerateTick(c *gin.Context) {
 	var body struct {
-		Date    string `json:"date"`
-		Format  string `json:"format"`
-		Session string `json:"session"`
+		Date     string `json:"date"`
+		Format   string `json:"format"`
+		Session  string `json:"session"`
+		CopyMode string `json:"copy_mode"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
@@ -965,5 +983,40 @@ func handleGenerateTick(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
+
+	points, err := tickfetcher.LoadTickCSV(body.Date, body.Session)
+	if err == nil && len(points) > 0 {
+		sectors := tickPointsToSectors(points)
+		copyDir := filepath.Join(config.GetCopyDir(), body.Date)
+		os.MkdirAll(copyDir, 0755)
+
+		var text string
+		if body.CopyMode == "ai" {
+			text, err = copy.GenerateCopywritingAI(sectors, body.Date, body.Session)
+			if err != nil {
+				text = copy.GenerateCopywriting(sectors, body.Date, body.Session)
+			}
+		} else {
+			text = copy.GenerateCopywriting(sectors, body.Date, body.Session)
+		}
+		prefix := "文案"
+		if body.CopyMode == "ai" {
+			prefix = "文案_ai"
+		}
+		os.WriteFile(filepath.Join(copyDir, fmt.Sprintf("%s_%s_tick.txt", prefix, sessCfg.TitleSuffix)), []byte(text), 0644)
+	}
+
 	c.JSON(200, gin.H{"ok": true, "output": out})
+}
+
+func tickPointsToSectors(points []tickfetcher.TickPoint) []fetcher.Sector {
+	latest := make(map[string]float64)
+	for _, p := range points {
+		latest[p.Name] = p.Net
+	}
+	var sectors []fetcher.Sector
+	for name, net := range latest {
+		sectors = append(sectors, fetcher.Sector{Name: name, Net: net})
+	}
+	return sectors
 }

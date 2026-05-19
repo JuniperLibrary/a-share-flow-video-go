@@ -11,6 +11,8 @@ import (
 
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/fetcher"
+	"github.com/a-share-flow-video-go/internal/logger"
+	"go.uber.org/zap"
 )
 
 type TickPoint struct {
@@ -20,17 +22,38 @@ type TickPoint struct {
 }
 
 type TickFetcher struct {
-	mu        sync.Mutex
-	running   bool
-	stopCh    chan struct{}
-	dateStr   string
-	tickCount int
-	errCount  int
-	lastTick  string
+	mu              sync.Mutex
+	running         bool
+	stopCh          chan struct{}
+	dateStr         string
+	tickCount       int
+	errCount        int
+	lastTick        string
+	intervalMinutes int
 }
 
 func New() *TickFetcher {
-	return &TickFetcher{}
+	cfg := config.LoadTickConfig()
+	return &TickFetcher{intervalMinutes: cfg.IntervalMinutes}
+}
+
+func (tf *TickFetcher) SetIntervalMinutes(n int) {
+	if n < 1 || n > 30 {
+		n = 10
+	}
+	tf.mu.Lock()
+	tf.intervalMinutes = n
+	tf.mu.Unlock()
+	config.SaveTickConfig(config.TickConfig{IntervalMinutes: n})
+}
+
+func (tf *TickFetcher) GetIntervalMinutes() int {
+	tf.mu.Lock()
+	defer tf.mu.Unlock()
+	if tf.intervalMinutes <= 0 {
+		return 10
+	}
+	return tf.intervalMinutes
 }
 
 func (tf *TickFetcher) Start() error {
@@ -63,12 +86,17 @@ func (tf *TickFetcher) Stop() {
 func (tf *TickFetcher) GetStatus() map[string]any {
 	tf.mu.Lock()
 	defer tf.mu.Unlock()
+	interval := tf.intervalMinutes
+	if interval <= 0 {
+		interval = 10
+	}
 	return map[string]any{
-		"running":   tf.running,
-		"date":      tf.dateStr,
-		"tickCount": tf.tickCount,
-		"errCount":  tf.errCount,
-		"lastTick":  tf.lastTick,
+		"running":         tf.running,
+		"date":            tf.dateStr,
+		"tickCount":       tf.tickCount,
+		"errCount":        tf.errCount,
+		"lastTick":        tf.lastTick,
+		"intervalMinutes": interval,
 	}
 }
 
@@ -76,27 +104,35 @@ func (tf *TickFetcher) run() {
 	tf.mu.Lock()
 	dateStr := tf.dateStr
 	stopCh := tf.stopCh
+	interval := tf.intervalMinutes
+	if interval <= 0 {
+		interval = 10
+	}
 	tf.mu.Unlock()
 
-	allRanges := []tradingRange{{0, 120}, {120, 240}}
 	currentMinute := nowTradingMinute()
+	if currentMinute < 0 {
+		tf.mu.Lock()
+		tf.running = false
+		tf.mu.Unlock()
+		return
+	}
 
-	fmt.Printf("  [tick] 采集启动 | 当前交易分钟=%d | 交易时段: 09:30-11:30, 13:00-15:00\n", currentMinute)
+	allRanges := []tradingRange{{0, 120}, {120, 240}}
 
 	for _, rng := range allRanges {
-		if currentMinute >= 0 && rng.end < currentMinute {
+		if rng.end < currentMinute {
 			continue
 		}
 
 		startMinute := rng.start
-		if currentMinute >= 0 && currentMinute > rng.start {
-			startMinute = ((currentMinute - rng.start) / 10) * 10 + rng.start
+		if currentMinute > rng.start {
+			startMinute = ((currentMinute - rng.start) / interval) * interval + rng.start
 		}
 
-		for minute := startMinute; minute <= rng.end; minute += 10 {
+		for minute := startMinute; minute <= rng.end; minute += interval {
 			select {
 			case <-stopCh:
-				fmt.Println("  [tick] 采集已停止")
 				return
 			default:
 			}
@@ -107,9 +143,8 @@ func (tf *TickFetcher) run() {
 			if minute < rng.end {
 				select {
 				case <-stopCh:
-					fmt.Println("  [tick] 采集已停止")
 					return
-				case <-time.After(10 * time.Minute):
+				case <-time.After(time.Duration(interval) * time.Minute):
 				}
 			}
 		}
@@ -118,7 +153,6 @@ func (tf *TickFetcher) run() {
 	tf.mu.Lock()
 	tf.running = false
 	tf.mu.Unlock()
-	fmt.Printf("  [tick] 采集完成 | 共 %d 个点\n", tf.tickCount)
 }
 
 func nowTradingMinute() int {
@@ -143,14 +177,15 @@ func nowTradingMinute() int {
 }
 
 func (tf *TickFetcher) collectTick(dateStr, timeStr string, minute int) {
-	fmt.Printf("  [tick] 采集 %s\n", timeStr)
+	l := logger.With(zap.String("date", dateStr), zap.String("time", timeStr))
+	l.Info("tick 采集")
 
 	sectors, err := fetcher.FetchTop18HotSectors()
 	if err != nil {
 		tf.mu.Lock()
 		tf.errCount++
 		tf.mu.Unlock()
-		fmt.Printf("  [tick] 采集失败 %s: %v\n", timeStr, err)
+		l.Error("tick 采集失败", zap.Error(err))
 		return
 	}
 
@@ -158,7 +193,7 @@ func (tf *TickFetcher) collectTick(dateStr, timeStr string, minute int) {
 		tf.mu.Lock()
 		tf.errCount++
 		tf.mu.Unlock()
-		fmt.Printf("  [tick] 保存失败 %s: %v\n", timeStr, err)
+		l.Error("tick 保存失败", zap.Error(err))
 		return
 	}
 
@@ -166,11 +201,14 @@ func (tf *TickFetcher) collectTick(dateStr, timeStr string, minute int) {
 	tf.tickCount++
 	tf.lastTick = timeStr
 	tf.mu.Unlock()
-	fmt.Printf("  [tick] %s 已保存 | %d 个板块\n", timeStr, len(sectors))
+	l.Info("tick 已保存", zap.Int("sectors", len(sectors)))
 }
 
 func appendTickCSV(dateStr, timeStr string, sectors []fetcher.Sector) error {
-	fpath := filepath.Join(config.GetDataDir(), dateStr, "ticks.csv")
+	dir := filepath.Join(config.GetDataDir(), dateStr)
+	os.MkdirAll(dir, 0755)
+	fpath := filepath.Join(dir, "ticks.csv")
+	os.MkdirAll(filepath.Dir(fpath), 0755)
 
 	f, err := os.OpenFile(fpath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {

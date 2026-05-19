@@ -14,6 +14,8 @@ import (
 	"github.com/a-share-flow-video-go/internal/analyzer"
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/fetcher"
+	"github.com/a-share-flow-video-go/internal/logger"
+	"go.uber.org/zap"
 )
 
 const (
@@ -116,8 +118,10 @@ func RenderVideo(sectors []fetcher.Sector, dateStr, outputPath string, events []
 		"--frames", fmt.Sprintf("0-%d", TotalFrames-1),
 	}
 
-	fmt.Printf("[remotion] rendering %d sectors → %s (%s)\n", len(sectors), outputPath, format)
-	fmt.Printf("[remotion] %d frames @ %dfps = %.1fs\n", TotalFrames, FPS, float64(TotalFrames)/float64(FPS))
+	logger.Info("remotion 渲染开始",
+		zap.Int("sectors", len(sectors)),
+		zap.String("output", outputPath),
+		zap.String("format", format))
 
 	cmd := exec.Command("npx", args...)
 	cmd.Dir = rendererDir
@@ -128,6 +132,6 @@ func RenderVideo(sectors []fetcher.Sector, dateStr, outputPath string, events []
 		return "", fmt.Errorf("Remotion render failed: %w", err)
 	}
 
-	fmt.Printf("[remotion] done → %s\n", outputPath)
+	logger.Info("remotion 渲染完成", zap.String("output", outputPath))
 	return outputPath, nil
 }

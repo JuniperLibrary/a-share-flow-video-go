@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/a-share-flow-video-go/internal/config"
+	"github.com/a-share-flow-video-go/internal/logger"
+	"go.uber.org/zap"
 )
 
 // MultiDaySectorData 同一板块在多日的资金流向。
@@ -64,7 +66,7 @@ func GetTradingDays(endDate string, n int) ([]string, error) {
 	}
 
 	if len(days) < n {
-		fmt.Printf("  [多日] 警告: 仅找到 %d 个交易日（需要 %d 个）\n", len(days), n)
+		logger.Warn("交易日不足", zap.Int("found", len(days)), zap.Int("need", n))
 	}
 
 	return days, nil
@@ -83,9 +85,9 @@ func LoadMultiDaySectors(dates []string) (map[string][]Sector, error) {
 		if _, err := os.Stat(fullFile); err == nil {
 			sectors, err := LoadFullSectorCSV(fullFile)
 			if err != nil {
-				fmt.Printf("  [多日] 警告: %s 全量数据加载失败: %v，尝试 sectors.csv\n", date, err)
+				logger.Warn("全量数据加载失败", zap.String("date", date), zap.Error(err))
 			} else {
-				fmt.Printf("  [多日] 从全量加载 %s: %d 个板块\n", date, len(sectors))
+				logger.Info("从全量加载", zap.String("date", date), zap.Int("sectors", len(sectors)))
 				result[date] = sectors
 				continue
 			}
@@ -94,17 +96,17 @@ func LoadMultiDaySectors(dates []string) (map[string][]Sector, error) {
 		// 回退到 sectors.csv
 		sectorsFile := filepath.Join(dateDir, "sectors.csv")
 		if _, err := os.Stat(sectorsFile); err != nil {
-			fmt.Printf("  [多日] 警告: %s 数据文件不存在，跳过\n", date)
+			logger.Warn("数据文件不存在", zap.String("date", date))
 			continue
 		}
 
 		sectors, err := LoadSessionData(date, "full")
 		if err != nil {
-			fmt.Printf("  [多日] 警告: %s 数据加载失败: %v，跳过\n", date, err)
+			logger.Warn("数据加载失败", zap.String("date", date), zap.Error(err))
 			continue
 		}
 
-		fmt.Printf("  [多日] 从 sectors.csv 加载 %s: %d 个板块\n", date, len(sectors))
+		logger.Info("从 sectors.csv 加载", zap.String("date", date), zap.Int("sectors", len(sectors)))
 		result[date] = sectors
 	}
 

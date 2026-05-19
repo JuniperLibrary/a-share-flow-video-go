@@ -12,7 +12,9 @@ import (
 	"github.com/a-share-flow-video-go/internal/analyzer"
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/fetcher"
+	"github.com/a-share-flow-video-go/internal/logger"
 	"github.com/a-share-flow-video-go/internal/tickfetcher"
+	"go.uber.org/zap"
 )
 
 const (
@@ -69,8 +71,7 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 	sectorTicks := buildSectorTicks(points)
 
 	if len(timeline) == 0 {
-		sectors := snapshotToSectors(points)
-		_, timeline, ticker = analyzer.DataDrivenGenerate(sectors, session)
+		events, timeline, ticker = analyzer.AnalyzeTickContent(points, dateStr, session)
 	}
 	if len(events) == 0 {
 		events = analyzer.GetFallbackEvents(TotalFrames)
@@ -114,7 +115,10 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 		"--frames", fmt.Sprintf("0-%d", TotalFrames-1),
 	}
 
-	fmt.Printf("[tick-render] rendering %d tick points → %s (%s)\n", len(sectorTicks), outputPath, format)
+	logger.Info("tick 渲染开始",
+		zap.Int("points", len(sectorTicks)),
+		zap.String("output", outputPath),
+		zap.String("format", format))
 
 	cmd := exec.Command("npx", args...)
 	cmd.Dir = rendererDir
@@ -125,7 +129,7 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 		return "", fmt.Errorf("Remotion tick render failed: %w", err)
 	}
 
-	fmt.Printf("[tick-render] done → %s\n", outputPath)
+	logger.Info("tick 渲染完成", zap.String("output", outputPath))
 	return outputPath, nil
 }
 

@@ -5,7 +5,6 @@ package scheduler
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -15,7 +14,9 @@ import (
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/copy"
 	"github.com/a-share-flow-video-go/internal/fetcher"
+	"github.com/a-share-flow-video-go/internal/logger"
 	"github.com/a-share-flow-video-go/internal/renderer"
+	"go.uber.org/zap"
 )
 
 // Scheduler 定时调度器，负责在指定时间自动执行视频生成管道。
@@ -184,7 +185,7 @@ func (s *Scheduler) execute(session string) {
 
 	todayStr := time.Now().Format("2006-01-02")
 	sessCfg := config.SessionConfigs[session]
-	log.Printf("Scheduler: starting %s pipeline for %s", sessCfg.TitleSuffix, todayStr)
+	logger.Info("scheduler 启动", zap.String("session", sessCfg.TitleSuffix), zap.String("date", todayStr))
 
 	defer func() {
 		s.mu.Lock()
@@ -202,12 +203,12 @@ func (s *Scheduler) execute(session string) {
 		s.mu.Lock()
 		s.lastStatus = fmt.Sprintf("error: %v", err)
 		s.mu.Unlock()
-		log.Printf("Scheduler: failed to fetch sectors: %v", err)
+		logger.Error("scheduler 获取数据失败", zap.Error(err))
 		return
 	}
 
 	if err := fetcher.SaveDailyData(sectors, todayStr); err != nil {
-		log.Printf("Scheduler: failed to save data: %v", err)
+		logger.Error("scheduler 保存数据失败", zap.Error(err))
 	}
 
 	allSectors, _ := fetcher.FetchAllRaw()
@@ -227,7 +228,7 @@ func (s *Scheduler) execute(session string) {
 		}
 		outPath := filepath.Join(outputDir, todayStr, fmt.Sprintf("%s%s.mp4", sessCfg.FilenameSuffix, suffix))
 		if _, err := renderer.RenderVideo(sectors, todayStr, outPath, events, timeline, ticker, format, session); err != nil {
-			log.Printf("Scheduler: render failed (%s %s): %v", sessCfg.TitleSuffix, format, err)
+			logger.Error("scheduler 渲染失败", zap.String("session", sessCfg.TitleSuffix+" "+format), zap.Error(err))
 			s.mu.Lock()
 			s.lastStatus = fmt.Sprintf("error: render %s %s: %v", sessCfg.TitleSuffix, format, err)
 			s.mu.Unlock()
@@ -242,7 +243,7 @@ func (s *Scheduler) execute(session string) {
 	if aiCfg.APIKey != "" {
 		aiText, err := copy.GenerateCopywritingAI(sectors, todayStr, session)
 		if err != nil {
-			log.Printf("Scheduler: AI copy failed (%s): %v", sessCfg.TitleSuffix, err)
+			logger.Warn("scheduler AI文案生成失败", zap.String("session", sessCfg.TitleSuffix), zap.Error(err))
 			tplCopy := copy.GenerateCopywriting(sectors, todayStr, session)
 			os.WriteFile(filepath.Join(copyDir, fmt.Sprintf("文案_%s.txt", sessCfg.TitleSuffix)), []byte(tplCopy), 0644)
 		} else {
@@ -251,14 +252,14 @@ func (s *Scheduler) execute(session string) {
 	} else {
 		tplCopy := copy.GenerateCopywriting(sectors, todayStr, session)
 		if err := os.WriteFile(filepath.Join(copyDir, fmt.Sprintf("文案_%s.txt", sessCfg.TitleSuffix)), []byte(tplCopy), 0644); err != nil {
-			log.Printf("Scheduler: failed to save template copy (%s): %v", sessCfg.TitleSuffix, err)
+			logger.Error("scheduler 保存模板文案失败", zap.String("session", sessCfg.TitleSuffix), zap.Error(err))
 		}
 	}
 
 	s.mu.Lock()
 	s.lastStatus = "success"
 	s.mu.Unlock()
-	log.Printf("Scheduler: pipeline complete for %s", todayStr)
+	logger.Info("scheduler 完成", zap.String("date", todayStr))
 }
 
 func parseTime(s string) (int, int) {

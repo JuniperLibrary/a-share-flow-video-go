@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/a-share-flow-video-go/internal/config"
+	"github.com/a-share-flow-video-go/internal/logger"
+	"go.uber.org/zap"
 )
 
 // Sector 表示一个板块的资金流向数据。
@@ -127,7 +129,7 @@ func fetchPrimaryData() ([]Sector, error) {
 		})
 	}
 
-	fmt.Printf("  [东方财富 H5] 板块获取成功: %d 条\n", len(sectors))
+	logger.Info("东方财富 H5 板块获取成功", zap.Int("count", len(sectors)))
 	return sectors, nil
 }
 
@@ -154,8 +156,10 @@ func FetchTop18HotSectors() ([]Sector, error) {
 		return absF(results[i].Net) > absF(results[j].Net)
 	})
 
-	fmt.Printf("  [fetch] 热门板块: 匹配 %d 个 | 流入 1st=%s %+.1f亿\n",
-		len(results), results[0].Name, results[0].Net)
+	logger.Info("热门板块匹配",
+		zap.Int("count", len(results)),
+		zap.String("tick_symbol", results[0].Name),
+		zap.String("session", fmt.Sprintf("%+.1f亿", results[0].Net)))
 
 	return results, nil
 }
@@ -189,7 +193,7 @@ func fetchBKCodes() (map[string]string, error) {
 		}
 	}
 
-	fmt.Printf("  [历史] 获取到 %d 个板块 BK 代码\n", len(mapping))
+	logger.Info("获取板块 BK 代码", zap.Int("count", len(mapping)))
 	return mapping, nil
 }
 
@@ -247,11 +251,11 @@ func fetchSingleSectorHistorical(bkCode, sectorName, dateStr string) (*Sector, b
 
 // FetchHistoricalSectors 获取指定日期的历史板块数据。
 func FetchHistoricalSectors(dateStr string) ([]Sector, error) {
-	fmt.Printf("  [历史] 正在获取 %s 热门板块历史数据...\n", dateStr)
+	logger.Info("获取历史板块数据", zap.String("date", dateStr))
 
 	bkMapping, err := fetchBKCodes()
 	if err != nil || len(bkMapping) == 0 {
-		fmt.Println("  [历史] 无法获取板块 BK 代码")
+		logger.Warn("无法获取板块 BK 代码")
 		return nil, nil
 	}
 
@@ -263,7 +267,7 @@ func FetchHistoricalSectors(dateStr string) ([]Sector, error) {
 	}
 
 	if len(targets) == 0 {
-		fmt.Println("  [历史] 无匹配的历史板块")
+		logger.Warn("无匹配的历史板块")
 		return nil, nil
 	}
 
@@ -282,7 +286,7 @@ func FetchHistoricalSectors(dateStr string) ([]Sector, error) {
 		} else if isErr {
 			consecutiveErrors++
 			if consecutiveErrors >= maxConsecutiveErrors {
-				fmt.Printf("  [历史] 连续 %d 次请求失败，IP 可能被临时封锁\n", maxConsecutiveErrors)
+				logger.Error("连续请求失败，IP 可能被临时封锁", zap.Int("errors", maxConsecutiveErrors))
 				break
 			}
 		} else {
@@ -290,7 +294,7 @@ func FetchHistoricalSectors(dateStr string) ([]Sector, error) {
 		}
 	}
 	if len(results) == 0 {
-		fmt.Printf("  [历史] %s 未找到匹配的交易日数据（可能非交易日）\n", dateStr)
+		logger.Warn("未找到匹配的历史数据", zap.String("date", dateStr))
 		return nil, nil
 	}
 
@@ -314,11 +318,14 @@ func FetchHistoricalSectors(dateStr string) ([]Sector, error) {
 	}
 
 	result := append(inflow, outflow...)
-	fmt.Printf("  [历史] 热门板块 | 净流入 %d + 净流出 %d = %d 个板块\n", len(inflow), len(outflow), len(result))
+	logger.Info("历史热门板块",
+		zap.Int("inflow", len(inflow)),
+		zap.Int("outflow", len(outflow)),
+		zap.Int("total", len(result)))
 	if len(result) > 0 {
-		fmt.Printf("  [历史] 流入 1st=%s %+.1f亿\n", result[0].Name, result[0].Net)
+		logger.Info("流入榜首", zap.String("tick_symbol", result[0].Name), zap.String("session", fmt.Sprintf("%+.1f亿", result[0].Net)))
 		if len(inflow) < len(result) {
-			fmt.Printf("  [历史] 流出 1st=%s %+.1f亿\n", result[len(inflow)].Name, result[len(inflow)].Net)
+			logger.Info("流出榜首", zap.String("tick_symbol", result[len(inflow)].Name), zap.String("session", fmt.Sprintf("%+.1f亿", result[len(inflow)].Net)))
 		}
 	}
 	return result, nil
@@ -348,7 +355,7 @@ func SaveDailyData(sectors []Sector, dateStr string) error {
 		})
 	}
 
-	fmt.Printf("  数据已保存到 %s\n", fpath)
+	logger.Info("数据已保存", zap.String("path", fpath))
 	return nil
 }
 

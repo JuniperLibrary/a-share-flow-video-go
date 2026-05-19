@@ -11,6 +11,8 @@ import (
 	"github.com/a-share-flow-video-go/internal/analyzer"
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/fetcher"
+	"github.com/a-share-flow-video-go/internal/logger"
+	"go.uber.org/zap"
 )
 
 // MultiDayRenderProps 传递给 Remotion 的多日 Bar Chart Race 属性。
@@ -100,8 +102,10 @@ func RenderMultiDayVideo(dayData map[string][]fetcher.Sector, dates []string,
 		"--frames", fmt.Sprintf("0-%d", config.TotalFrames-1),
 	}
 
-	fmt.Printf("[remotion] rendering %d-day bar chart race → %s (%s)\n", len(dates), outputPath, format)
-	fmt.Printf("[remotion] %d frames @ %dfps = %.1fs\n", config.TotalFrames, config.FPS, float64(config.TotalFrames)/float64(config.FPS))
+	logger.Info("remotion 多日渲染开始",
+		zap.Int("days", len(dates)),
+		zap.String("output", outputPath),
+		zap.String("format", format))
 
 	cmd := exec.Command("npx", args...)
 	cmd.Dir = rendererDir
@@ -112,6 +116,6 @@ func RenderMultiDayVideo(dayData map[string][]fetcher.Sector, dates []string,
 		return "", fmt.Errorf("Remotion render failed: %w", err)
 	}
 
-	fmt.Printf("[remotion] done → %s\n", outputPath)
+	logger.Info("remotion 多日渲染完成", zap.String("output", outputPath))
 	return outputPath, nil
 }

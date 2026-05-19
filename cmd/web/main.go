@@ -1,19 +1,24 @@
 package main
 
 import (
-	"fmt"
-	"log"
 	"os"
 
 	"github.com/a-share-flow-video-go/internal/config"
+	"github.com/a-share-flow-video-go/internal/logger"
 	"github.com/a-share-flow-video-go/internal/scheduler"
 	"github.com/a-share-flow-video-go/internal/tickscheduler"
 	"github.com/a-share-flow-video-go/internal/web"
+	"go.uber.org/zap"
 )
 
 func main() {
+	if err := logger.Init("info", "console", "stdout"); err != nil {
+		panic(err)
+	}
+	defer logger.Sync()
+
 	if err := config.LoadEnv(); err != nil {
-		log.Printf("warning: failed to load .env: %v", err)
+		logger.Warn("failed to load .env", zap.Error(err))
 	}
 
 	sched := scheduler.NewScheduler()
@@ -31,8 +36,8 @@ func main() {
 		port = "8084"
 	}
 
-	fmt.Printf("A股情绪流动可视化 Web 服务启动: http://127.0.0.1:%s\n", port)
+	logger.Info("A-share flow video web server started", zap.String("port", port))
 	if err := r.Run("127.0.0.1:" + port); err != nil {
-		log.Fatalf("Web 服务启动失败: %v", err)
+		logger.Fatal("server failed", zap.Error(err))
 	}
 }
