@@ -20,7 +20,7 @@ export function TickPage() {
   const [copyMode, setCopyMode] = useState('template');
   const [genLoading, setGenLoading] = useState(false);
   const [genMsg, setGenMsg] = useState('');
-  const [intervalMin, setIntervalMin] = useState(10);
+  const [intervalMin, setIntervalMin] = useState(5);
   const [tickData, setTickData] = useState<{ Time: string; Name: string; Net: number }[]>([]);
   const [dataSession, setDataSession] = useState('full');
 
@@ -261,7 +261,7 @@ export function TickPage() {
       <div className="card">
         <h2>生成 Tick 视频</h2>
         <p style={{ fontSize: 13, color: '#8892a4', marginBottom: 16 }}>
-          基于已采集的 ticks.csv 真实数据，渲染资金流动曲线视频
+          基于已采集的 Tick 真实数据（SQLite），渲染资金流动曲线视频
         </p>
 
         <div className="form-row">

@@ -22,7 +22,10 @@
 | **AI 文案** | 自动参考前 5 日历史文案，逐板块分析资金动向，标题 ≤20 字，含风险提示 |
 | **事件分析** | AI 优先（180s 超时），自动降级到数据驱动，保证始终有可用内容 |
 | **SSE 实时流** | 数据拉取和视频生成过程通过 Server-Sent Events 实时推送进度 |
-| **全量导出** | 支持异步导出全部板块数据（非仅 Top18），带断点续传 |
+| **实时行情** | Web 端「行情」Tab，SSE 推送实时板块资金流曲线 + AI 异动事件检测 |
+| **全量导出** | 支持异步导出全部板块数据（非仅 Top21），带断点续传 |
+| **SQLite 持久化** | 板块数据、Ticks、文案统一持久化，支持双写 CSV + SQLite |
+| **结构化日志** | 全项目 `zap` 日志系统，彩色终端输出 + 请求追踪 + panic 恢复 |
 
 ---
 
@@ -103,6 +106,50 @@ go build -o cli ./cmd/cli/
 go build -o web-server ./cmd/web/
 ```
 
+### 5. SQLite 数据库初始化
+
+数据库在 Web/CLI 启动时自动初始化。也可手动初始化：
+
+```bash
+# 手动初始化（已存在则提示）
+go run ./cmd/initdb/
+```
+
+---
+
+## SQLite 持久化
+
+板块数据、Tick 时序数据、文案统一持久化到 SQLite，与 CSV 双写兼容。
+
+### Schema
+
+```sql
+CREATE TABLE sectors (
+    datetime TEXT NOT NULL,  -- "2026-05-19 09:30" (tick) 或 "2026-05-19" (全量)
+    name     TEXT NOT NULL,
+    net      REAL NOT NULL,
+    PRIMARY KEY (datetime, name)  -- 唯一索引：防重复
+);
+
+CREATE TABLE copywriting (
+    date    TEXT NOT NULL,
+    session TEXT NOT NULL,
+    type    TEXT NOT NULL,
+    content TEXT NOT NULL,
+    PRIMARY KEY (date, session, type)
+);
+```
+
+### 数据写入
+
+| 来源 | datetime 格式 | 示例 |
+|------|--------------|------|
+| 全量板块 | `YYYY-MM-DD` | `2026-05-19` |
+| Tick 采集 | `YYYY-MM-DD HH:MM` | `2026-05-19 09:30` |
+| 文案 | 独立表 | `date + session + type` 唯一 |
+
+同一时间点同一板块重复采集 → `PRIMARY KEY` 冲突 → `INSERT OR REPLACE` 覆盖旧值。
+
 ---
 
 ## 定时调度
@@ -111,8 +158,8 @@ go build -o web-server ./cmd/web/
 
 | 触发时间 | 维度 | 数据文件 | 输出视频 |
 |----------|------|----------|----------|
-| `11:35`（可配置） | 早盘 | `data/YYYY-MM-DD/ticks.csv` (09:30-11:30) | `早盘.mp4` + `早盘_tv.mp4` |
-| `15:05`（可配置） | 全天 | `data/YYYY-MM-DD/sectors.csv` | `全天.mp4` + `全天_tv.mp4` |
+| `11:35`（可配置） | 早盘 | SQLite: `a-share-flow.db` (09:30-11:30) | `早盘.mp4` + `早盘_tv.mp4` |
+| `15:05`（可配置） | 全天 | `data/YYYY-MM-DD/sectors.csv` + SQLite | `全天.mp4` + `全天_tv.mp4` |
 
 - 跳过周末（周六、周日不执行）
 - 每个维度每日仅执行一次
@@ -178,14 +225,19 @@ output/YYYY-MM-DD/
 
 data/YYYY-MM-DD/
 ├── sectors.csv               # 全天板块数据（21个监控板块）
-├── ticks.csv                 # Tick采集数据（09:30-15:00每10分钟）
 └── 板块全量_YYYY-MM-DD.csv   # 全量板块导出（异步任务）
 
-copy/YYYY-MM-DD/
-├── 文案_早盘.txt             # 模板文案 - 早盘
-├── 文案_ai_早盘.txt          # AI 文案 - 早盘
-├── 文案_全天.txt             # 模板文案 - 全天
-└── 文案_ai_全天.txt          # AI 文案 - 全天
+data/
+└── a-share-flow.db           # SQLite 数据库（板块+Tick+文案统一持久化）
+                              #   sectors 表: datetime+name 唯一索引
+                              #     datetime -- 时间 "2026-05-19 09:30" (tick) 或 "2026-05-19" (全量)
+                              #     name     -- 板块名称
+                              #     net      -- 主力资金净流入（亿）
+                              #   copywriting 表: date+session+type 唯一索引
+                              #     date     -- 日期 "2026-05-19"
+                              #     session  -- 时段 "full" / "morning"
+                              #     type     -- 类型 "template" / "ai" / "template_tick" / "ai_tick"
+                              #     content  -- 文案内容
 ```
 
 ---
@@ -211,7 +263,6 @@ copy/YYYY-MM-DD/
 |------|------|------|
 | `/api/dates` | GET | 获取所有有数据的日期列表 |
 | `/api/data/:date` | GET | 获取指定日期数据（query: `?session=morning/full`） |
-| `/api/fetch` | POST | SSE 流式拉取板块数据（body: `{"date", "force", "session"}`） |
 | `/api/generate` | POST | SSE 流式生成视频（body: `{"date", "format", "session", "copy_mode"}`） |
 | `/api/config` | GET/POST | 获取/保存 AI 配置 |
 | `/api/optimize-copy` | POST | 单独生成 AI 文案（body: `{"date", "session"}`） |
@@ -222,6 +273,14 @@ copy/YYYY-MM-DD/
 | `/api/export-all/status/:task_id` | GET | 查询导出任务状态 |
 | `/api/export-all/file/:task_id` | GET | 下载导出文件 |
 | `/api/export-hot-sectors/:date` | GET | 获取热门板块数据 |
+| `/api/tick/stream` | GET | SSE 实时行情流（推送 tick 数据快照 + 心跳保活） |
+| `/api/tick/status` | GET | 获取 Tick 采集器状态 |
+| `/api/tick/start` | POST | 手动启动 Tick 采集 |
+| `/api/tick/stop` | POST | 停止 Tick 采集 |
+| `/api/tick/enable` | POST | 启用/禁用定时采集 |
+| `/api/tick/interval` | GET/POST | 获取/设置采集频率 |
+| `/api/tick-data/:date` | GET | 获取指定日期 Tick 数据（query: `?session=full/morning`） |
+| `/api/generate-tick` | POST | 基于 Tick 数据生成视频 |
 | `/output/:date/:file` | GET | 下载视频文件 |
 
 ---
@@ -233,9 +292,10 @@ copy/YYYY-MM-DD/
 ```
 东方财富 H5 API
     ↓
-FetchTop18HotSectors() / FetchHistoricalSectors()
+FetchTop21HotSectors() / FetchHistoricalSectors()
     ↓
 SaveSessionData() → data/YYYY-MM-DD/sectors.csv
+                → SQLite: sectors (datetime=date, name, net)
     ↓
 AnalyzeAllContent() → AI 生成（180s 超时）→ 降级 DataDrivenGenerate()
     ├── MarketEvent[]    底部弹窗事件
@@ -244,7 +304,12 @@ AnalyzeAllContent() → AI 生成（180s 超时）→ 降级 DataDrivenGenerate(
     ↓
 RenderVideo() → npx remotion render → MP4
     ↓
-GenerateCopywriting() / GenerateCopywritingAI() → 文案
+GenerateCopywriting() / GenerateCopywritingAI() → 文案 → SQLite: copywriting
+
+Tick 采集（交易时段每 5 分钟）
+    ↓
+TickFetcher.collectTick() → SQLite: sectors (datetime="date time", name, net)
+                        → broadcast() → SSE subscribers → /api/tick/stream
 ```
 
 ### 核心参数
@@ -258,7 +323,7 @@ GenerateCopywriting() / GenerateCopywritingAI() → 文案
 | 早盘 X 轴 | 0-120 分钟 | 09:30-11:30 |
 | 全天 X 轴 | 0-330 分钟 | 09:30-15:00（含 11:30-13:00 午休） |
 
-### 监控板块（Top18HotSectors）
+### 监控板块（Top21HotSectors）
 
 半导体、AI应用、CPO概念、有色金属、锂矿概念、商业航天、电池、机器人、创新药、白酒、消费电子、银行、人工智能、云计算、低空经济、电网设备、通信设备、传媒、国产芯片、元件、通信服务
 
@@ -270,14 +335,20 @@ GenerateCopywriting() / GenerateCopywritingAI() → 文案
 a-share-flow-video-go/
 ├── cmd/
 │   ├── cli/main.go              # CLI 入口：命令行视频生成器
-│   └── web/main.go              # Web 服务入口：gin HTTP 服务器（端口 8084）
+│   ├── web/main.go              # Web 服务入口：gin HTTP 服务器（端口 8084）
+│   └── initdb/main.go           # SQLite 数据库手动初始化脚本
 ├── internal/
 │   ├── config/config.go         # 集中配置：视频参数、SessionConfigs、AI 配置、路径管理
-│   ├── fetcher/fetcher.go       # 东方财富 API：数据获取、CSV 保存/加载、Top18 过滤
+│   ├── fetcher/fetcher.go       # 东方财富 API：数据获取、CSV 保存/加载、Top21 过滤
 │   ├── analyzer/analyzer.go     # 事件分析：AIGenerate + DataDrivenGenerate + filterBySession
 │   ├── copy/copy.go             # 文案生成：模板模式 + AI 模式（含历史文案参考）
 │   ├── renderer/renderer.go     # Remotion 桥接：序列化 props → npx remotion render
 │   ├── scheduler/scheduler.go   # 定时调度器：双时间点触发，跳过周末，独立状态跟踪
+│   ├── storage/storage.go       # SQLite 持久化：板块+Tick+文案统一存储（datetime+name 唯一索引）
+│   ├── logger/                  # zap 结构化日志：彩色终端、请求追踪、panic 恢复
+│   ├── tickfetcher/             # Tick 采集器：观察者模式（Subscribe/GetSnapshot/broadcast）
+│   ├── tickrenderer/            # Tick 视频渲染：基于真实 tick 数据曲线
+│   ├── tickscheduler/           # Tick 定时调度：09:28 早盘 / 12:58 全天自动启动
 │   └── web/handlers.go          # HTTP handlers：SSE 流式响应、全量导出、路由注册
 └── web/frontend/                # Web 前端：React + Vite + Remotion
     ├── src/
@@ -292,6 +363,8 @@ a-share-flow-video-go/
     │   │   ├── Particles.tsx
     │   │   └── types.ts         # TypeScript 类型定义
     │   ├── pages/               # Web 页面
+    │   │   ├── MarketPage.tsx   # 实时行情：SSE 资金流曲线 + AI 异动事件面板
+    │   │   ├── TickPage.tsx     # Tick 采集控制 + 数据表格 + 视频生成
     │   │   ├── SchedulerPage.tsx # 调度器配置（双时间选择器）
     │   │   └── ...
     │   ├── api.ts               # API 客户端
@@ -310,6 +383,9 @@ go build ./...
 # 测试（跳过需要网络的 live 测试）
 go test ./... -skip "Live"
 
+# SQLite 数据库初始化
+go run ./cmd/initdb/
+
 # 前端类型检查
 cd web/frontend && npx tsc --noEmit
 
@@ -319,9 +395,20 @@ cd web/frontend && npm run build
 
 ---
 
+## 日志系统
+
+全项目使用 `go.uber.org/zap` 结构化日志：
+
+- **彩色终端输出**：按级别着色（INFO 绿色、WARN 黄色、ERROR 红色）
+- **请求追踪**：每个 HTTP 请求记录 method、path、status、duration、client IP
+- **Panic 恢复**：自动捕获 panic，记录堆栈，返回 500
+- **业务日志**：数据拉取、视频生成、文案保存等关键节点均有结构化日志
+
+---
+
 ## 已知问题
 
-- `TestFetchTop18HotSectors_Live` 期望 ≥18 个板块
+- `TestFetchTop21HotSectors_Live` 期望 ≥21 个板块
 - 早盘视频使用的是全天累计资金流向数据（定性分析够用，非分时增量）
 - 东方财富 API `f62` 字段是当日累计主力净流入，非分时增量
 
