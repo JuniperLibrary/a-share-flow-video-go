@@ -5,10 +5,11 @@ import { PreviewPage } from './pages/PreviewPage';
 import { ConfigPage } from './pages/ConfigPage';
 import { SchedulerPage } from './pages/SchedulerPage';
 import { TickPage } from './pages/TickPage';
+import { MarketPage } from './pages/MarketPage';
 import { api } from './api';
 import type { Sector, DateItem } from './types';
 
-type Page = 'data' | 'generate' | 'preview' | 'config' | 'scheduler' | 'tick';
+type Page = 'data' | 'generate' | 'preview' | 'config' | 'scheduler' | 'tick' | 'market';
 
 export default function App() {
   const [page, setPage] = useState<Page>('data');
@@ -37,9 +38,10 @@ export default function App() {
     { key: 'data', label: '数据', icon: '📋' },
     { key: 'generate', label: '生成', icon: '🎬' },
     { key: 'preview', label: '预览', icon: '👁' },
+    { key: 'market', label: '行情', icon: '📈' },
     { key: 'config', label: '配置', icon: '⚙' },
     { key: 'scheduler', label: '定时', icon: '⏰' },
-    { key: 'tick', label: 'Tick', icon: '📈' },
+    { key: 'tick', label: 'Tick', icon: '📊' },
   ];
 
   return (
@@ -65,6 +67,9 @@ export default function App() {
       </div>
       <div className={page === 'preview' ? 'page active' : 'page'}>
         <PreviewPage />
+      </div>
+      <div className={page === 'market' ? 'page active' : 'page'}>
+        <MarketPage />
       </div>
       <div className={page === 'config' ? 'page active' : 'page'}>
         <ConfigPage />
