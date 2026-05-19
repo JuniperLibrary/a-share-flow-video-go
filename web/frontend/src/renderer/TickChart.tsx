@@ -50,19 +50,26 @@ function easeOutQuad(t: number): number {
   return 1 - (1 - t) * (1 - t);
 }
 
+/** Convert "HH:MM" to trading minutes from 09:30, accounting for lunch break */
+function timeToTradingMinutes(t: string): number {
+  const [h, m] = t.split(':').map(Number);
+  let val = h * 60 + m - (9 * 60 + 30);
+  if (val < 0) val = 0;
+  if (h >= 13) val -= 90; // lunch break 11:30-13:00
+  return val;
+}
+
 /** Build SVG path d-string for the curve points */
 function buildCurvePath(
   cumValues: number[],
-  times: string[],
-  xMax: number,
+  tradingMinutes: number[],
   xScale: (v: number) => number,
   yScale: (v: number) => number,
 ): string {
   if (cumValues.length === 0) return '';
   let d = '';
   for (let i = 0; i < cumValues.length; i++) {
-    const xVal = times.length > 1 ? (i / (times.length - 1)) * xMax : xMax / 2;
-    const px = xScale(xVal);
+    const px = xScale(tradingMinutes[i]);
     const py = yScale(cumValues[i]);
     d += (i === 0 ? 'M' : 'L') + ` ${px} ${py}`;
   }
@@ -73,21 +80,16 @@ function buildCurvePath(
 function buildAreaPath(
   curvePathD: string,
   cumValues: number[],
-  times: string[],
-  xMax: number,
+  tradingMinutes: number[],
   xScale: (v: number) => number,
   yScale: (v: number) => number,
   yZero: number,
 ): string {
   if (cumValues.length < 2) return '';
-  // Start with the curve path
   let d = curvePathD;
-  // Close down to yZero at the last point
-  const lastXVal = times.length > 1 ? ((cumValues.length - 1) / (times.length - 1)) * xMax : xMax / 2;
-  d += ` L ${xScale(lastXVal)} ${yZero}`;
-  // Go back along yZero to the first point
-  const firstXVal = times.length > 1 ? 0 : xMax / 2;
-  d += ` L ${xScale(firstXVal)} ${yZero} Z`;
+  const lastIdx = cumValues.length - 1;
+  d += ` L ${xScale(tradingMinutes[lastIdx])} ${yZero}`;
+  d += ` L ${xScale(tradingMinutes[0])} ${yZero} Z`;
   return d;
 }
 
@@ -267,8 +269,8 @@ export const TickChart: React.FC<TickChartProps> = ({
 
         // Particle travels from start to current endpoint
         const idx = Math.min(Math.floor(cycleProgress * (visibleLen - 1)), visibleLen - 1);
-        const xVal = visibleLen > 1 ? (idx / (visibleLen - 1)) * xMax : xMax / 2;
-        const cx = xScale(xVal);
+        const xMinutes = sector.times.length > 0 ? timeToTradingMinutes(sector.times[idx]) : 0;
+        const cx = xScale(xMinutes);
         const cy = yScale(sector.cum[idx]);
 
         // Fade in/out at cycle boundaries
@@ -345,13 +347,14 @@ export const TickChart: React.FC<TickChartProps> = ({
 
     const visibleCum = sector.cum.slice(0, currentIdx + 1);
     const visibleTimes = sector.times.slice(0, currentIdx + 1);
+    const visibleMinutes = visibleTimes.map(timeToTradingMinutes);
 
-    const pathD = buildCurvePath(visibleCum, visibleTimes, xMax, xScale, yScale);
-    const areaD = buildAreaPath(pathD, visibleCum, visibleTimes, xMax, xScale, yScale, yZero);
+    const pathD = buildCurvePath(visibleCum, visibleMinutes, xScale, yScale);
+    const areaD = buildAreaPath(pathD, visibleCum, visibleMinutes, xScale, yScale, yZero);
 
-    // Correct endpoint position (use actual last point, not xMax)
+    // Correct endpoint position (use actual trading minute, not even distribution)
     const endX = visibleCum.length > 0
-      ? xScale(visibleTimes.length > 1 ? ((visibleCum.length - 1) / (visibleTimes.length - 1)) * xMax : xMax / 2)
+      ? xScale(visibleMinutes[visibleMinutes.length - 1])
       : 0;
     const endY = visibleCum.length > 0 ? yScale(visibleCum[visibleCum.length - 1]) : 0;
 
@@ -476,7 +479,9 @@ export const TickChart: React.FC<TickChartProps> = ({
       ))}
 
       {/* Progress line */}
-      <line x1={xScale(progress * xMax)} y1={chartTop - 8} x2={xScale(progress * xMax)} y2={chartBottom + 8} stroke="#5a90d0" strokeWidth={1.2} opacity={0.6} strokeDasharray="4 4" />
+      {cumulativeData.length > 0 && cumulativeData[0].times.length > 0 && currentIdx >= 0 && (
+        <line x1={xScale(timeToTradingMinutes(cumulativeData[0].times[currentIdx]))} y1={chartTop - 8} x2={xScale(timeToTradingMinutes(cumulativeData[0].times[currentIdx]))} y2={chartBottom + 8} stroke="#5a90d0" strokeWidth={1.2} opacity={0.6} strokeDasharray="4 4" />
+      )}
     </svg>
   );
 };
