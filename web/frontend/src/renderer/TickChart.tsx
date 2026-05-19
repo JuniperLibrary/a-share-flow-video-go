@@ -45,6 +45,52 @@ function getSectorColor(name: string, fallback: string): string {
   return fallback;
 }
 
+/** Smooth easing for entrance animations */
+function easeOutQuad(t: number): number {
+  return 1 - (1 - t) * (1 - t);
+}
+
+/** Build SVG path d-string for the curve points */
+function buildCurvePath(
+  cumValues: number[],
+  times: string[],
+  xMax: number,
+  xScale: (v: number) => number,
+  yScale: (v: number) => number,
+): string {
+  if (cumValues.length === 0) return '';
+  let d = '';
+  for (let i = 0; i < cumValues.length; i++) {
+    const xVal = times.length > 1 ? (i / (times.length - 1)) * xMax : xMax / 2;
+    const px = xScale(xVal);
+    const py = yScale(cumValues[i]);
+    d += (i === 0 ? 'M' : 'L') + ` ${px} ${py}`;
+  }
+  return d;
+}
+
+/** Build area fill path: curve → down to yZero → back to start */
+function buildAreaPath(
+  curvePathD: string,
+  cumValues: number[],
+  times: string[],
+  xMax: number,
+  xScale: (v: number) => number,
+  yScale: (v: number) => number,
+  yZero: number,
+): string {
+  if (cumValues.length < 2) return '';
+  // Start with the curve path
+  let d = curvePathD;
+  // Close down to yZero at the last point
+  const lastXVal = times.length > 1 ? ((cumValues.length - 1) / (times.length - 1)) * xMax : xMax / 2;
+  d += ` L ${xScale(lastXVal)} ${yZero}`;
+  // Go back along yZero to the first point
+  const firstXVal = times.length > 1 ? 0 : xMax / 2;
+  d += ` L ${xScale(firstXVal)} ${yZero} Z`;
+  return d;
+}
+
 export const TickChart: React.FC<TickChartProps> = ({
   sectorTicks,
   frame,
@@ -140,6 +186,16 @@ export const TickChart: React.FC<TickChartProps> = ({
 
   const yZero = yScale(0);
 
+  // ─── Entrance animation: global curve reveal ───
+  // Curves start appearing from frame 10, fully visible by frame 120
+  const CURVE_REVEAL_START = 10;
+  const CURVE_REVEAL_END = 120;
+  const globalReveal = frame < CURVE_REVEAL_START
+    ? 0
+    : frame >= CURVE_REVEAL_END
+      ? 1
+      : easeOutQuad((frame - CURVE_REVEAL_START) / (CURVE_REVEAL_END - CURVE_REVEAL_START));
+
   const MIN_LABEL_GAP = isTV ? 18 : 22;
   const labelPositions = React.useMemo(() => {
     const positions = new Map<string, { rawY: number; adjY: number }>();
@@ -178,6 +234,59 @@ export const TickChart: React.FC<TickChartProps> = ({
 
     return positions;
   }, [cumulativeData, currentIdx, yScale, chartTop, chartBottom, isTV]);
+
+  // ─── Flow particles: pre-compute particle positions along each curve ───
+  // Each top-12 sector gets 2-3 particles that travel along the curve
+  const flowParticles = useMemo(() => {
+    const particles: Array<{
+      sectorName: string;
+      color: string;
+      cx: number;
+      cy: number;
+      r: number;
+      opacity: number;
+    }> = [];
+
+    for (const sector of cumulativeData) {
+      const rankIdx = sortedByAbs.findIndex(s => s.name === sector.name);
+      if (rankIdx >= 12 || sector.cum.length < 3) continue;
+
+      const numParticles = rankIdx < 5 ? 3 : 2;
+      const particleR = isTV ? (rankIdx < 5 ? 3 : 2) : (rankIdx < 5 ? 4.5 : 3);
+
+      for (let p = 0; p < numParticles; p++) {
+        // Each particle cycles through the visible portion of the curve
+        const cycleLen = 90; // frames per cycle
+        const offset = (p * cycleLen) / numParticles;
+        const cyclePos = ((frame - offset) % cycleLen + cycleLen) % cycleLen;
+        const cycleProgress = cyclePos / cycleLen;
+
+        // Map cycle progress to a position along the visible curve
+        const visibleLen = currentIdx + 1;
+        if (visibleLen < 2) continue;
+
+        // Particle travels from start to current endpoint
+        const idx = Math.min(Math.floor(cycleProgress * (visibleLen - 1)), visibleLen - 1);
+        const xVal = visibleLen > 1 ? (idx / (visibleLen - 1)) * xMax : xMax / 2;
+        const cx = xScale(xVal);
+        const cy = yScale(sector.cum[idx]);
+
+        // Fade in/out at cycle boundaries
+        const edgeFade = Math.sin(cycleProgress * Math.PI);
+
+        particles.push({
+          sectorName: sector.name,
+          color: sector.color,
+          cx,
+          cy,
+          r: particleR,
+          opacity: edgeFade * 0.7 * (rankIdx < 5 ? 0.9 : 0.6),
+        });
+      }
+    }
+
+    return particles;
+  }, [cumulativeData, sortedByAbs, currentIdx, frame, xMax, xScale, yScale, isTV]);
 
   const curvesJSX = cumulativeData.map((sector) => {
     const rankIdx = sortedByAbs.findIndex(s => s.name === sector.name);
@@ -222,59 +331,92 @@ export const TickChart: React.FC<TickChartProps> = ({
 
     const eventPulse = isActiveEvent ? Math.sin(frame * 0.4) * 0.4 + 0.8 : 1;
 
+    // Stagger entrance: top-ranked sectors appear first
+    const staggerDelay = rankIdx * 4; // 4 frames per rank
+    const sectorRevealStart = CURVE_REVEAL_START + staggerDelay;
+    const sectorRevealEnd = CURVE_REVEAL_END + staggerDelay;
+    const sectorReveal = frame < sectorRevealStart
+      ? 0
+      : frame >= sectorRevealEnd
+        ? 1
+        : easeOutQuad((frame - sectorRevealStart) / (sectorRevealEnd - sectorRevealStart));
+
+    const effectiveOpacity = sectorReveal * mainOpacity * eventPulse;
+
     const visibleCum = sector.cum.slice(0, currentIdx + 1);
     const visibleTimes = sector.times.slice(0, currentIdx + 1);
 
-    let pathD = '';
-    for (let i = 0; i < visibleCum.length; i++) {
-      const xVal = visibleTimes.length > 1
-        ? (i / (visibleTimes.length - 1)) * xMax
-        : xMax / 2;
-      const px = xScale(xVal);
-      const py = yScale(visibleCum[i]);
-      pathD += (i === 0 ? 'M' : 'L') + ` ${px} ${py}`;
-    }
+    const pathD = buildCurvePath(visibleCum, visibleTimes, xMax, xScale, yScale);
+    const areaD = buildAreaPath(pathD, visibleCum, visibleTimes, xMax, xScale, yScale, yZero);
 
-    const endX = visibleCum.length > 0 ? xScale(xMax) : 0;
+    // Correct endpoint position (use actual last point, not xMax)
+    const endX = visibleCum.length > 0
+      ? xScale(visibleTimes.length > 1 ? ((visibleCum.length - 1) / (visibleTimes.length - 1)) * xMax : xMax / 2)
+      : 0;
     const endY = visibleCum.length > 0 ? yScale(visibleCum[visibleCum.length - 1]) : 0;
 
-    const showLabel = currentIdx > 2 && rankIdx < 18 && pointR > 0;
-    const showValueLabel = currentIdx > 4 && rankIdx < 18 && pointR > 0;
+    const showLabel = currentIdx > 2 && rankIdx < 18 && pointR > 0 && sectorReveal > 0.3;
+    const showValueLabel = currentIdx > 4 && rankIdx < 18 && pointR > 0 && sectorReveal > 0.5;
     const labelPos = labelPositions.get(sector.name);
     const labelY = labelPos ? labelPos.adjY : endY;
 
+    // Area fill color: green for positive, red for negative
+    const lastVal = visibleCum.length > 0 ? visibleCum[visibleCum.length - 1] : 0;
+    const areaColor = lastVal >= 0 ? '#4ade80' : '#f87171';
+    const areaOpacity = sectorReveal * 0.08 * eventPulse;
+
+    // Pulsing endpoint glow
+    const pulsePhase = Math.sin(frame * 0.15 + rankIdx) * 0.3 + 0.7;
+    const glowR = pointR * (2.5 + pulsePhase * 1.5);
+    const glowOp = pointOpacity * 0.12 * pulsePhase * eventPulse * sectorReveal;
+
     return (
-      <g key={sector.name}>
-        {glowWidth > 0 && (
-          <path d={pathD} fill="none" stroke={sector.color} strokeWidth={glowWidth * eventPulse} opacity={glowOpacity * eventPulse} strokeLinecap="round" strokeLinejoin="round" style={{ filter: 'blur(8px)' }} />
-        )}
-        <path d={pathD} fill="none" stroke={sector.color} strokeWidth={lineWidth * 1.2} opacity={mainOpacity * 0.15 * eventPulse} strokeLinecap="round" strokeLinejoin="round" />
-        <path d={pathD} fill="none" stroke={sector.color} strokeWidth={lineWidth} opacity={mainOpacity * eventPulse} strokeLinecap="round" strokeLinejoin="round" />
-        {isActiveEvent && (
-          <path d={pathD} fill="none" stroke="#ffffff" strokeWidth={lineWidth * 0.4} opacity={0.25 * eventPulse} strokeLinecap="round" strokeLinejoin="round" />
+      <g key={sector.name} opacity={sectorReveal}>
+        {/* Area fill under curve */}
+        {areaD && visibleCum.length > 2 && (
+          <path d={areaD} fill={areaColor} opacity={areaOpacity} />
         )}
 
+        {/* Outer glow */}
+        {glowWidth > 0 && (
+          <path d={pathD} fill="none" stroke={sector.color} strokeWidth={glowWidth * eventPulse} opacity={glowOpacity * eventPulse * sectorReveal} strokeLinecap="round" strokeLinejoin="round" style={{ filter: 'blur(8px)' }} />
+        )}
+
+        {/* Thick background line */}
+        <path d={pathD} fill="none" stroke={sector.color} strokeWidth={lineWidth * 1.2} opacity={mainOpacity * 0.15 * eventPulse * sectorReveal} strokeLinecap="round" strokeLinejoin="round" />
+
+        {/* Main line */}
+        <path d={pathD} fill="none" stroke={sector.color} strokeWidth={lineWidth} opacity={effectiveOpacity} strokeLinecap="round" strokeLinejoin="round" />
+
+        {/* Event highlight */}
+        {isActiveEvent && (
+          <path d={pathD} fill="none" stroke="#ffffff" strokeWidth={lineWidth * 0.4} opacity={0.25 * eventPulse * sectorReveal} strokeLinecap="round" strokeLinejoin="round" />
+        )}
+
+        {/* Endpoint glow + dot */}
         {currentIdx > 1 && pointR > 0 && (
           <>
-            <circle cx={endX} cy={endY} r={pointR * 2.5} fill={sector.color} opacity={pointOpacity * 0.12 * eventPulse} style={{ filter: 'blur(4px)' }} />
-            <circle cx={endX} cy={endY} r={pointR} fill={sector.color} stroke="#ffffff" strokeWidth={rankIdx < 5 ? 1.2 : 0.8} opacity={Math.min((currentIdx - 1) / 4, 1) * pointOpacity * eventPulse} />
+            <circle cx={endX} cy={endY} r={glowR} fill={sector.color} opacity={glowOp} style={{ filter: 'blur(4px)' }} />
+            <circle cx={endX} cy={endY} r={pointR} fill={sector.color} stroke="#ffffff" strokeWidth={rankIdx < 5 ? 1.2 : 0.8} opacity={Math.min((currentIdx - 1) / 4, 1) * pointOpacity * eventPulse * sectorReveal} />
           </>
         )}
 
+        {/* Sector label with connector line */}
         {showLabel && (
           <>
             {Math.abs(labelY - endY) > 2 && (
-              <line x1={endX + pointR + 2} y1={endY} x2={endX + pointR + 8} y2={labelY} stroke={sector.color} strokeWidth={rankIdx < 5 ? 1.5 : 1.0} opacity={Math.min((currentIdx - 2) / 4, 1) * pointOpacity * 0.5 * eventPulse} />
+              <line x1={endX + pointR + 2} y1={endY} x2={endX + pointR + 8} y2={labelY} stroke={sector.color} strokeWidth={rankIdx < 5 ? 1.5 : 1.0} opacity={Math.min((currentIdx - 2) / 4, 1) * pointOpacity * 0.5 * eventPulse * sectorReveal} />
             )}
-            <line x1={endX + pointR + 8} y1={labelY} x2={endX + pointR + 16} y2={labelY} stroke={sector.color} strokeWidth={rankIdx < 5 ? 1.6 : 1.2} opacity={Math.min((currentIdx - 2) / 4, 1) * pointOpacity * 0.5 * eventPulse} />
-            <text x={endX + pointR + 19} y={labelY + 1} fill={sector.color} fontSize={rankIdx < 5 ? (isTV ? 12 : 20) : (isTV ? 10 : 18)} fontWeight={rankIdx < 5 ? 600 : 400} textAnchor="start" dominantBaseline="middle" opacity={Math.min((currentIdx - 2) / 4, 1) * (rankIdx < 5 ? 0.85 : 0.6)} style={{ textShadow: `0 0 4px ${sector.color}33`, fontFamily: '"PingFang SC", "Helvetica Neue", sans-serif' }}>
+            <line x1={endX + pointR + 8} y1={labelY} x2={endX + pointR + 16} y2={labelY} stroke={sector.color} strokeWidth={rankIdx < 5 ? 1.6 : 1.2} opacity={Math.min((currentIdx - 2) / 4, 1) * pointOpacity * 0.5 * eventPulse * sectorReveal} />
+            <text x={endX + pointR + 19} y={labelY + 1} fill={sector.color} fontSize={rankIdx < 5 ? (isTV ? 12 : 20) : (isTV ? 10 : 18)} fontWeight={rankIdx < 5 ? 600 : 400} textAnchor="start" dominantBaseline="middle" opacity={Math.min((currentIdx - 2) / 4, 1) * (rankIdx < 5 ? 0.85 : 0.6) * sectorReveal} style={{ textShadow: `0 0 4px ${sector.color}33`, fontFamily: '"PingFang SC", "Helvetica Neue", sans-serif' }}>
               {sector.name}
             </text>
           </>
         )}
 
+        {/* Value label */}
         {showValueLabel && (
-          <text x={endX + pointR + 19 + (rankIdx < 5 ? 62 : 48)} y={labelY + 1} fill={visibleCum[currentIdx] >= 0 ? '#4ade80' : '#f87171'} fontSize={rankIdx < 5 ? (isTV ? 12 : 20) : (isTV ? 10 : 18)} fontWeight={rankIdx < 5 ? 600 : 400} textAnchor="start" dominantBaseline="middle" opacity={Math.min((currentIdx - 4) / 4, 1) * (rankIdx < 5 ? 0.8 : 0.55)} style={{ fontFamily: '"Helvetica Neue", Arial, sans-serif', fontVariantNumeric: 'tabular-nums' }}>
+          <text x={endX + pointR + 19 + (rankIdx < 5 ? 90 : 72)} y={labelY + 1} fill={visibleCum[currentIdx] >= 0 ? '#4ade80' : '#f87171'} fontSize={rankIdx < 5 ? (isTV ? 12 : 20) : (isTV ? 10 : 18)} fontWeight={rankIdx < 5 ? 600 : 400} textAnchor="start" dominantBaseline="middle" opacity={Math.min((currentIdx - 4) / 4, 1) * (rankIdx < 5 ? 0.8 : 0.55) * sectorReveal} style={{ fontFamily: '"Helvetica Neue", Arial, sans-serif', fontVariantNumeric: 'tabular-nums' }}>
             {visibleCum[currentIdx] >= 0 ? '+' : ''}{visibleCum[currentIdx].toFixed(1)}
           </text>
         )}
@@ -286,23 +428,34 @@ export const TickChart: React.FC<TickChartProps> = ({
     ? [{ pos: 0, label: '09:30' }, { pos: 30, label: '10:00' }, { pos: 60, label: '10:30' }, { pos: 90, label: '11:00' }, { pos: 120, label: '11:30' }]
     : [{ pos: 0, label: '09:30' }, { pos: 60, label: '10:30' }, { pos: 120, label: '11:30' }, { pos: 180, label: '13:00' }, { pos: 240, label: '14:00' }, { pos: 300, label: '15:00' }];
 
+  // Zero line pulse
+  const zeroPulse = Math.sin(frame * 0.08) * 0.15 + 0.7;
+
   return (
     <svg width={width} height={height} style={{ position: 'absolute', top: 0, left: 0, zIndex: 5, pointerEvents: 'none', overflow: 'visible' }}>
+      {/* Grid lines */}
       {XTICKS.map((t, i) => (
         <line key={`xgrid${i}`} x1={xScale(t.pos)} y1={chartTop} x2={xScale(t.pos)} y2={chartBottom} stroke="#1e2d45" strokeWidth={0.8} opacity={0.5} />
       ))}
       {yTicks.map((v) => (
         <line key={`ygrid${v}`} x1={chartLeft} y1={yScale(v)} x2={chartRight} y2={yScale(v)} stroke="#1e2d45" strokeWidth={0.8} opacity={0.6} />
       ))}
+
+      {/* Zero line with glow */}
       {yZero >= chartTop && yZero <= chartBottom && (
         <>
-          <line x1={chartLeft} y1={yZero} x2={chartRight} y2={yZero} stroke="#3a5570" strokeWidth={1.5} opacity={0.7} strokeDasharray="6 4" />
+          <line x1={chartLeft} y1={yZero} x2={chartRight} y2={yZero} stroke="#3a5570" strokeWidth={4 * zeroPulse} opacity={0.08 * zeroPulse} style={{ filter: 'blur(3px)' }} />
+          <line x1={chartLeft} y1={yZero} x2={chartRight} y2={yZero} stroke="#3a5570" strokeWidth={1.5} opacity={0.7 * zeroPulse} strokeDasharray="6 4" />
           <text x={chartRight + 8} y={yZero + 4} fill="#6b7280" fontSize={isTV ? 12 : 16} fontWeight={600} textAnchor="start" fontFamily='"Helvetica Neue", Arial, sans-serif'>0</text>
         </>
       )}
+
+      {/* X-axis labels */}
       {XTICKS.map((t, i) => (
         <text key={`xlabel${i}`} x={xScale(t.pos)} y={chartBottom + 22} fill="#5a6577" fontSize={isTV ? 14 : 20} fontWeight={500} textAnchor="middle" fontFamily='"Helvetica Neue", Arial, sans-serif'>{t.label}</text>
       ))}
+
+      {/* Y-axis labels */}
       {yTicks.map((v) => {
         const y = yScale(v);
         if (y < chartTop || y > chartBottom) return null;
@@ -310,8 +463,19 @@ export const TickChart: React.FC<TickChartProps> = ({
           <text key={`ylabel${v}`} x={chartLeft - 8} y={y + 4} fill={v === 0 ? '#6b7280' : '#4a5568'} fontSize={isTV ? 13 : 18} fontWeight={v === 0 ? 600 : 400} textAnchor="end" fontFamily='"Helvetica Neue", Arial, sans-serif'>{v >= 0 ? `+${v}` : `${v}`}</text>
         );
       })}
+
+      {/* Chart title */}
       <text x={chartLeft} y={chartTop - 12} fill="#6b7280" fontSize={isTV ? 14 : 15} fontWeight={500} textAnchor="start" fontFamily='"Helvetica Neue", Arial, sans-serif'>主力资金净流入（亿）</text>
+
+      {/* Curves with area fills */}
       {curvesJSX}
+
+      {/* Flow particles */}
+      {flowParticles.map((p, i) => (
+        <circle key={`flow-${p.sectorName}-${i}`} cx={p.cx} cy={p.cy} r={p.r} fill={p.color} opacity={p.opacity} style={{ filter: 'blur(1px)' }} />
+      ))}
+
+      {/* Progress line */}
       <line x1={xScale(progress * xMax)} y1={chartTop - 8} x2={xScale(progress * xMax)} y2={chartBottom + 8} stroke="#5a90d0" strokeWidth={1.2} opacity={0.6} strokeDasharray="4 4" />
     </svg>
   );

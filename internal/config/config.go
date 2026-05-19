@@ -5,6 +5,7 @@ package config
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -211,4 +212,47 @@ func SaveAIConfig(cfg AIConfig) error {
 		fmt.Fprintf(f, "%s=%s\n", key, val)
 	}
 	return nil
+}
+
+// TickConfig holds tick collector configuration.
+type TickConfig struct {
+	IntervalMinutes int `json:"intervalMinutes"`
+}
+
+// DefaultTickConfig returns default tick configuration.
+func DefaultTickConfig() TickConfig {
+	return TickConfig{IntervalMinutes: 10}
+}
+
+// GetTickConfigPath returns the tick config file path.
+func GetTickConfigPath() string {
+	return filepath.Join(GetProjectRoot(), ".tick-config.json")
+}
+
+// LoadTickConfig reads tick configuration from disk.
+func LoadTickConfig() TickConfig {
+	cfg := DefaultTickConfig()
+	f, err := os.Open(GetTickConfigPath())
+	if err != nil {
+		return cfg
+	}
+	defer f.Close()
+
+	var data struct {
+		IntervalMinutes int `json:"intervalMinutes"`
+	}
+	if err := json.NewDecoder(f).Decode(&data); err == nil && data.IntervalMinutes > 0 {
+		cfg.IntervalMinutes = data.IntervalMinutes
+	}
+	return cfg
+}
+
+// SaveTickConfig writes tick configuration to disk.
+func SaveTickConfig(cfg TickConfig) error {
+	f, err := os.Create(GetTickConfigPath())
+	if err != nil {
+		return fmt.Errorf("create tick config: %w", err)
+	}
+	defer f.Close()
+	return json.NewEncoder(f).Encode(cfg)
 }
