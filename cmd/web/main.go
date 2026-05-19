@@ -6,6 +6,7 @@ import (
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/logger"
 	"github.com/a-share-flow-video-go/internal/scheduler"
+	"github.com/a-share-flow-video-go/internal/storage"
 	"github.com/a-share-flow-video-go/internal/tickscheduler"
 	"github.com/a-share-flow-video-go/internal/web"
 	"go.uber.org/zap"
@@ -19,6 +20,10 @@ func main() {
 
 	if err := config.LoadEnv(); err != nil {
 		logger.Warn("failed to load .env", zap.Error(err))
+	}
+
+	if _, err := storage.Get(); err != nil {
+		logger.Fatal("SQLite 初始化失败", zap.Error(err))
 	}
 
 	sched := scheduler.NewScheduler()

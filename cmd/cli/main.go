@@ -14,6 +14,7 @@ import (
 	"github.com/a-share-flow-video-go/internal/fetcher"
 	"github.com/a-share-flow-video-go/internal/logger"
 	"github.com/a-share-flow-video-go/internal/renderer"
+	"github.com/a-share-flow-video-go/internal/storage"
 	"github.com/a-share-flow-video-go/internal/tickfetcher"
 	"github.com/a-share-flow-video-go/internal/tickrenderer"
 	"go.uber.org/zap"
@@ -29,6 +30,10 @@ func main() {
 		panic(err)
 	}
 	defer logger.Sync()
+
+	if _, err := storage.Get(); err != nil {
+		logger.Fatal("SQLite 初始化失败", zap.Error(err))
+	}
 
 	useAI := false
 	session := ""
@@ -131,8 +136,10 @@ func processDate(dateStr string, useAI bool, sessionOverride string) bool {
 			sessions = []string{"full"}
 		}
 	} else {
-		if _, err := os.Stat(filepath.Join(dateDir, "ticks.csv")); err == nil {
-			sessions = append(sessions, "morning")
+		if db, err := storage.Get(); err == nil {
+			if pts, _ := db.LoadTickSectors(dateStr); len(pts) > 0 {
+				sessions = append(sessions, "morning")
+			}
 		}
 		if _, err := os.Stat(filepath.Join(dateDir, "sectors.csv")); err == nil {
 			sessions = append(sessions, "full")
@@ -156,7 +163,7 @@ func processDate(dateStr string, useAI bool, sessionOverride string) bool {
 			printSectorsTable(sectors)
 		} else if dateStr == today {
 			sl.Info("获取实时热门板块数据")
-			sectors, err = fetcher.FetchTop18HotSectors()
+			sectors, err = fetcher.FetchTop21HotSectors()
 			if err != nil || len(sectors) == 0 {
 				sl.Error("无法获取热门板块数据", zap.Error(err))
 				continue
@@ -210,9 +217,6 @@ func generateSession(sectors []fetcher.Sector, dateStr, dateDir string, useAI bo
 		l.Info("视频已保存", zap.String("output", "output/"+dateStr+"/"+sessCfg.FilenameSuffix+formatSuffix+".mp4"))
 	}
 
-	copyDir := filepath.Join(config.GetCopyDir(), dateStr)
-	os.MkdirAll(copyDir, 0755)
-
 	var text string
 	if useAI {
 		var err error
@@ -224,11 +228,19 @@ func generateSession(sectors []fetcher.Sector, dateStr, dateDir string, useAI bo
 	} else {
 		text = copy.GenerateCopywriting(sectors, dateStr, session)
 	}
-	prefix := "文案"
+	cwType := "template"
 	if useAI {
-		prefix = "文案_ai"
+		cwType = "ai"
 	}
-	os.WriteFile(filepath.Join(copyDir, fmt.Sprintf("%s_%s.txt", prefix, sessCfg.TitleSuffix)), []byte(text), 0644)
+
+	if db, err := storage.Get(); err == nil {
+		_ = db.SaveCopywriting(storage.Copywriting{
+			Date:    dateStr,
+			Session: session,
+			Type:    cwType,
+			Content: text,
+		})
+	}
 	l.Info("文案已保存", zap.String("session", sessCfg.TitleSuffix))
 }
 
@@ -288,9 +300,6 @@ func processTickDate(dateStr string, sessionOverride string, useAI bool) bool {
 		}
 		sectors := snapshotToSectors(points)
 
-		copyDir := filepath.Join(config.GetCopyDir(), dateStr)
-		os.MkdirAll(copyDir, 0755)
-
 		var text string
 		if useAI {
 			text, err = copy.GenerateCopywritingAI(sectors, dateStr, sess)
@@ -301,11 +310,19 @@ func processTickDate(dateStr string, sessionOverride string, useAI bool) bool {
 		} else {
 			text = copy.GenerateCopywriting(sectors, dateStr, sess)
 		}
-		prefix := "文案"
+		cwType := "template"
 		if useAI {
-			prefix = "文案_ai"
+			cwType = "ai"
 		}
-		os.WriteFile(filepath.Join(copyDir, fmt.Sprintf("%s_%s_tick.txt", prefix, sessCfg.TitleSuffix)), []byte(text), 0644)
+
+		if db, err := storage.Get(); err == nil {
+			_ = db.SaveCopywriting(storage.Copywriting{
+				Date:    dateStr,
+				Session: sess,
+				Type:    cwType + "_tick",
+				Content: text,
+			})
+		}
 		sl.Info("文案已保存", zap.String("session", sessCfg.TitleSuffix+" (tick)"))
 	}
 	return success

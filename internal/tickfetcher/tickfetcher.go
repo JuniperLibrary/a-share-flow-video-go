@@ -1,19 +1,25 @@
 package tickfetcher
 
 import (
-	"encoding/csv"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strconv"
 	"sync"
 	"time"
 
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/fetcher"
 	"github.com/a-share-flow-video-go/internal/logger"
+	"github.com/a-share-flow-video-go/internal/storage"
 	"go.uber.org/zap"
 )
+
+// TickSnapshot is the full state pushed to SSE subscribers on each tick.
+type TickSnapshot struct {
+	Points   []TickPoint `json:"points"`
+	Date     string      `json:"date"`
+	Running  bool        `json:"running"`
+	Count    int         `json:"count"`
+	LastTime string      `json:"lastTime"`
+}
 
 type TickPoint struct {
 	Time string
@@ -30,11 +36,53 @@ type TickFetcher struct {
 	errCount        int
 	lastTick        string
 	intervalMinutes int
+
+	// SSE observer: subscribers receive TickSnapshot on each successful tick.
+	subsMu      sync.RWMutex
+	subscribers map[chan TickSnapshot]bool
 }
 
 func New() *TickFetcher {
 	cfg := config.LoadTickConfig()
-	return &TickFetcher{intervalMinutes: cfg.IntervalMinutes}
+	return &TickFetcher{
+		intervalMinutes: cfg.IntervalMinutes,
+		subscribers:     make(map[chan TickSnapshot]bool),
+	}
+}
+
+// Subscribe registers a channel to receive TickSnapshot updates.
+// Returns the channel and an unsubscribe function.
+func (tf *TickFetcher) Subscribe() (chan TickSnapshot, func()) {
+	ch := make(chan TickSnapshot, 1)
+	tf.subsMu.Lock()
+	tf.subscribers[ch] = true
+	tf.subsMu.Unlock()
+
+	return ch, func() {
+		tf.subsMu.Lock()
+		delete(tf.subscribers, ch)
+		close(ch)
+		tf.subsMu.Unlock()
+	}
+}
+
+// GetSnapshot returns the current accumulated tick data.
+func (tf *TickFetcher) GetSnapshot() TickSnapshot {
+	tf.mu.Lock()
+	dateStr := tf.dateStr
+	running := tf.running
+	count := tf.tickCount
+	lastTime := tf.lastTick
+	tf.mu.Unlock()
+
+	points, _ := LoadTickCSV(dateStr, "full")
+	return TickSnapshot{
+		Points:   points,
+		Date:     dateStr,
+		Running:  running,
+		Count:    count,
+		LastTime: lastTime,
+	}
 }
 
 func (tf *TickFetcher) SetIntervalMinutes(n int) {
@@ -180,7 +228,7 @@ func (tf *TickFetcher) collectTick(dateStr, timeStr string, minute int) {
 	l := logger.With(zap.String("date", dateStr), zap.String("time", timeStr))
 	l.Info("tick 采集")
 
-	sectors, err := fetcher.FetchTop18HotSectors()
+	sectors, err := fetcher.FetchTop21HotSectors()
 	if err != nil {
 		tf.mu.Lock()
 		tf.errCount++
@@ -189,7 +237,7 @@ func (tf *TickFetcher) collectTick(dateStr, timeStr string, minute int) {
 		return
 	}
 
-	if err := appendTickCSV(dateStr, timeStr, sectors); err != nil {
+	if err := saveTickToDB(dateStr, timeStr, sectors); err != nil {
 		tf.mu.Lock()
 		tf.errCount++
 		tf.mu.Unlock()
@@ -202,37 +250,58 @@ func (tf *TickFetcher) collectTick(dateStr, timeStr string, minute int) {
 	tf.lastTick = timeStr
 	tf.mu.Unlock()
 	l.Info("tick 已保存", zap.Int("sectors", len(sectors)))
+
+	// Notify SSE subscribers
+	tf.broadcast(sectors, dateStr, timeStr)
 }
 
-func appendTickCSV(dateStr, timeStr string, sectors []fetcher.Sector) error {
-	dir := filepath.Join(config.GetDataDir(), dateStr)
-	os.MkdirAll(dir, 0755)
-	fpath := filepath.Join(dir, "ticks.csv")
-	os.MkdirAll(filepath.Dir(fpath), 0755)
+func (tf *TickFetcher) broadcast(sectors []fetcher.Sector, dateStr, timeStr string) {
+	tf.mu.Lock()
+	count := tf.tickCount
+	running := tf.running
+	tf.mu.Unlock()
 
-	f, err := os.OpenFile(fpath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	stat, _ := f.Stat()
-	w := csv.NewWriter(f)
-	defer w.Flush()
-
-	if stat.Size() == 0 {
-		w.Write([]string{"time", "name", "net"})
-	}
-
+	points := make([]TickPoint, 0, len(sectors))
 	for _, s := range sectors {
-		w.Write([]string{
-			timeStr,
-			s.Name,
-			strconv.FormatFloat(s.Net, 'f', 2, 64),
+		points = append(points, TickPoint{
+			Time: timeStr,
+			Name: s.Name,
+			Net:  s.Net,
 		})
 	}
 
-	return nil
+	snapshot := TickSnapshot{
+		Points:   points,
+		Date:     dateStr,
+		Running:  running,
+		Count:    count,
+		LastTime: timeStr,
+	}
+
+	tf.subsMu.RLock()
+	for ch := range tf.subscribers {
+		select {
+		case ch <- snapshot:
+		default: // drop if subscriber is slow
+		}
+	}
+	tf.subsMu.RUnlock()
+}
+
+func saveTickToDB(dateStr, timeStr string, sectors []fetcher.Sector) error {
+	db, err := storage.Get()
+	if err != nil {
+		return err
+	}
+	records := make([]storage.Sector, 0, len(sectors))
+	for _, s := range sectors {
+		records = append(records, storage.Sector{
+			Datetime: storage.DateToDatetimeTick(dateStr, timeStr),
+			Name:     s.Name,
+			Net:      s.Net,
+		})
+	}
+	return db.SaveSectors(records)
 }
 
 type tradingRange struct {
@@ -252,44 +321,31 @@ func minutesToTime(minutes int) string {
 }
 
 func LoadTickCSV(dateStr, session string) ([]TickPoint, error) {
-	fpath := filepath.Join(config.GetDataDir(), dateStr, "ticks.csv")
-
-	f, err := os.Open(fpath)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	r := csv.NewReader(f)
-	records, err := r.ReadAll()
+	db, err := storage.Get()
 	if err != nil {
 		return nil, err
 	}
 
-	if len(records) < 2 {
-		return nil, nil
+	sectors, err := db.LoadTickSectors(dateStr)
+	if err != nil {
+		return nil, err
 	}
 
 	var points []TickPoint
-	for _, rec := range records[1:] {
-		if len(rec) < 3 {
+	for _, s := range sectors {
+		timeStr := storage.ExtractTime(s.Datetime)
+		if timeStr == "" {
 			continue
 		}
-		timeStr := rec[0]
-		name := rec[1]
-		net, _ := strconv.ParseFloat(rec[2], 64)
-
 		if session == "morning" && !isMorningTime(timeStr) {
 			continue
 		}
-
 		points = append(points, TickPoint{
 			Time: timeStr,
-			Name: name,
-			Net:  net,
+			Name: s.Name,
+			Net:  s.Net,
 		})
 	}
-
 	return points, nil
 }
 

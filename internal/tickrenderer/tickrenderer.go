@@ -178,9 +178,7 @@ func uniqueTimes(points []tickfetcher.TickPoint) []string {
 			times = append(times, p.Time)
 		}
 	}
-	sort.Slice(times, func(i, j int) bool {
-		return timeMinutes(times[i]) < timeMinutes(times[j])
-	})
+	sort.Strings(times)
 	return times
 }
 

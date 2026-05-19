@@ -16,6 +16,7 @@ import (
 	"github.com/a-share-flow-video-go/internal/fetcher"
 	"github.com/a-share-flow-video-go/internal/logger"
 	"github.com/a-share-flow-video-go/internal/renderer"
+	"github.com/a-share-flow-video-go/internal/storage"
 	"go.uber.org/zap"
 )
 
@@ -198,7 +199,7 @@ func (s *Scheduler) execute(session string) {
 		s.mu.Unlock()
 	}()
 
-	sectors, err := fetcher.FetchTop18HotSectors()
+	sectors, err := fetcher.FetchTop21HotSectors()
 	if err != nil || len(sectors) == 0 {
 		s.mu.Lock()
 		s.lastStatus = fmt.Sprintf("error: %v", err)
@@ -236,23 +237,39 @@ func (s *Scheduler) execute(session string) {
 		}
 	}
 
-	copyDir := filepath.Join(config.GetCopyDir(), todayStr)
-	os.MkdirAll(copyDir, 0755)
-
 	aiCfg := config.GetAIConfig()
 	if aiCfg.APIKey != "" {
 		aiText, err := copy.GenerateCopywritingAI(sectors, todayStr, session)
 		if err != nil {
 			logger.Warn("scheduler AI文案生成失败", zap.String("session", sessCfg.TitleSuffix), zap.Error(err))
 			tplCopy := copy.GenerateCopywriting(sectors, todayStr, session)
-			os.WriteFile(filepath.Join(copyDir, fmt.Sprintf("文案_%s.txt", sessCfg.TitleSuffix)), []byte(tplCopy), 0644)
+			if db, err := storage.Get(); err == nil {
+				_ = db.SaveCopywriting(storage.Copywriting{
+					Date:    todayStr,
+					Session: session,
+					Type:    "template",
+					Content: tplCopy,
+				})
+			}
 		} else {
-			os.WriteFile(filepath.Join(copyDir, fmt.Sprintf("文案_ai_%s.txt", sessCfg.TitleSuffix)), []byte(aiText), 0644)
+			if db, err := storage.Get(); err == nil {
+				_ = db.SaveCopywriting(storage.Copywriting{
+					Date:    todayStr,
+					Session: session,
+					Type:    "ai",
+					Content: aiText,
+				})
+			}
 		}
 	} else {
 		tplCopy := copy.GenerateCopywriting(sectors, todayStr, session)
-		if err := os.WriteFile(filepath.Join(copyDir, fmt.Sprintf("文案_%s.txt", sessCfg.TitleSuffix)), []byte(tplCopy), 0644); err != nil {
-			logger.Error("scheduler 保存模板文案失败", zap.String("session", sessCfg.TitleSuffix), zap.Error(err))
+		if db, err := storage.Get(); err == nil {
+			_ = db.SaveCopywriting(storage.Copywriting{
+				Date:    todayStr,
+				Session: session,
+				Type:    "template",
+				Content: tplCopy,
+			})
 		}
 	}
 

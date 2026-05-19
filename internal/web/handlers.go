@@ -24,6 +24,7 @@ import (
 	"github.com/a-share-flow-video-go/internal/logger"
 	"github.com/a-share-flow-video-go/internal/renderer"
 	"github.com/a-share-flow-video-go/internal/scheduler"
+	"github.com/a-share-flow-video-go/internal/storage"
 	"github.com/a-share-flow-video-go/internal/tickfetcher"
 	"github.com/a-share-flow-video-go/internal/tickrenderer"
 	"github.com/a-share-flow-video-go/internal/tickscheduler"
@@ -211,7 +212,6 @@ func SetupRouter(sched *scheduler.Scheduler, tickSched *tickscheduler.TickSchedu
 	r.GET("/api/export-all/status/:task_id", handleExportStatus)
 	r.GET("/api/export-all/file/:task_id", handleExportFile)
 	r.GET("/api/export-hot-sectors/:date", handleExportHotSectors)
-	r.POST("/api/fetch", handleFetch)
 	r.POST("/api/generate", handleGenerate)
 	r.POST("/api/generate-multiday", handleGenerateMultiDay)
 	r.GET("/api/config", handleGetConfig)
@@ -303,6 +303,9 @@ func SetupRouter(sched *scheduler.Scheduler, tickSched *tickscheduler.TickSchedu
 		c.JSON(200, gin.H{"date": dateStr, "session": session, "points": points})
 	})
 	r.POST("/api/generate-tick", handleGenerateTick)
+	r.GET("/api/tick/stream", func(c *gin.Context) {
+		handleTickStream(c, tickSched.GetFetcher())
+	})
 
 	r.GET("/output/:date/:file", serveVideo)
 
@@ -424,7 +427,7 @@ func handleExportHotSectors(c *gin.Context) {
 		dateStr = time.Now().Format("2006-01-02")
 	}
 
-	sectors, err := fetcher.FetchTop18HotSectors()
+	sectors, err := fetcher.FetchTop21HotSectors()
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -452,102 +455,6 @@ func handleFiles(c *gin.Context) {
 	})
 }
 
-func handleFetch(c *gin.Context) {
-	var body struct {
-		Date    string `json:"date"`
-		Force   bool   `json:"force"`
-		Session string `json:"session"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		body.Date = time.Now().Format("2006-01-02")
-	}
-	if body.Date == "" {
-		body.Date = time.Now().Format("2006-01-02")
-	}
-	if body.Session == "" {
-		body.Session = "full"
-	}
-
-	sse := NewSSEWriter(c)
-
-	runPipeline := func() {
-		today := time.Now().Format("2006-01-02")
-		cacheFile := "sectors.csv"
-		if body.Session == "morning" {
-			cacheFile = "ticks.csv"
-		}
-		cachePath := filepath.Join(config.GetDataDir(), body.Date, cacheFile)
-
-		if !body.Force {
-			if _, err := os.Stat(cachePath); err == nil {
-				sectors, err := fetcher.LoadSessionData(body.Date, body.Session)
-				if err == nil && len(sectors) > 0 {
-					sessCfg := config.SessionConfigs[body.Session]
-					sse.Send("log", fmt.Sprintf("缓存命中，加载 %s %s数据", body.Date, sessCfg.TitleSuffix))
-					data, _ := json.Marshal(map[string]any{
-						"sectors": sectors,
-						"source":  "cache",
-					})
-					sse.Send("data", string(data))
-					sse.Send("__done__", "")
-					return
-				}
-			}
-		}
-
-		if body.Force {
-			sse.Send("log", "已跳过缓存，强制从东方财富远程拉取...")
-		} else {
-			sse.Send("log", "检查东方财富本地缓存中...")
-		}
-
-		var sectors []fetcher.Sector
-		var err error
-
-		if body.Date == today {
-			sse.Send("log", "正在获取热门板块数据（东方财富）...")
-			sectors, err = fetcher.FetchTop18HotSectors()
-			if err != nil {
-				sse.Send("error", err.Error())
-				sse.Send("__done__", "")
-				return
-			}
-			sse.Send("log", fmt.Sprintf("热门板块获取完成：%d 个", len(sectors)))
-		} else {
-			sse.Send("log", fmt.Sprintf("正在获取 %s 历史数据...", body.Date))
-			sectors, err = fetcher.FetchHistoricalSectors(body.Date)
-			if err != nil || len(sectors) == 0 {
-				sse.Send("error", fmt.Sprintf("%s 无有效交易数据，该日期可能非交易日", body.Date))
-				sse.Send("__done__", "")
-				return
-			}
-			sse.Send("log", fmt.Sprintf("历史数据获取完成：%d 个", len(sectors)))
-		}
-
-		sse.Send("log", "保存数据到本地缓存...")
-		fetcher.SaveDailyData(sectors, body.Date)
-		sse.Send("log", "数据已保存")
-
-		data, _ := json.Marshal(map[string]any{
-			"sectors": sectors,
-			"source":  "eastmoney",
-		})
-		sse.Send("data", string(data))
-		sse.Send("__done__", "")
-	}
-
-	done := make(chan struct{})
-	go func() {
-		runPipeline()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-c.Request.Context().Done():
-	}
-}
-
 func handleGenerate(c *gin.Context) {
 	var body struct {
 		Date     string `json:"date"`
@@ -571,12 +478,20 @@ func handleGenerate(c *gin.Context) {
 
 	sse := NewSSEWriter(c)
 
-	cacheFile := "sectors.csv"
+	var hasData bool
 	if body.Session == "morning" {
-		cacheFile = "ticks.csv"
+		if db, err := storage.Get(); err == nil {
+			if pts, _ := db.LoadTickSectors(body.Date); len(pts) > 0 {
+				hasData = true
+			}
+		}
+	} else {
+		cachePath := filepath.Join(config.GetDataDir(), body.Date, "sectors.csv")
+		if _, err := os.Stat(cachePath); err == nil {
+			hasData = true
+		}
 	}
-	cachePath := filepath.Join(config.GetDataDir(), body.Date, cacheFile)
-	if _, err := os.Stat(cachePath); err != nil {
+	if !hasData {
 		sse.Send("log", fmt.Sprintf("❌ %s 无%s数据，请先拉取", body.Date, config.SessionConfigs[body.Session].TitleSuffix))
 		sse.Send("error", fmt.Sprintf("%s 无数据，请先拉取", body.Date))
 		return
@@ -634,9 +549,6 @@ func handleGenerate(c *gin.Context) {
 	sse.Send("log", fmt.Sprintf("✅ %s视频生成完成", sessCfg.TitleSuffix))
 
 	fn := copy.GenerateCopywriting
-	copyDir := filepath.Join(config.GetCopyDir(), body.Date)
-	os.MkdirAll(copyDir, 0755)
-
 	sessions := []string{"full", "morning"}
 	if body.CopyMode == "ai" {
 		sse.Send("log", "✍️ 生成文案（AI模式）...")
@@ -646,16 +558,29 @@ func handleGenerate(c *gin.Context) {
 			if err != nil {
 				sse.Send("log", fmt.Sprintf("⚠️ AI文案(%s)生成失败: %v", sessCfg.TitleSuffix, err))
 			} else {
-				os.WriteFile(filepath.Join(copyDir, fmt.Sprintf("文案_ai_%s.txt", sessCfg.TitleSuffix)), []byte(aiText), 0644)
+				if db, err := storage.Get(); err == nil {
+					_ = db.SaveCopywriting(storage.Copywriting{
+						Date:    body.Date,
+						Session: sess,
+						Type:    "ai",
+						Content: aiText,
+					})
+				}
 				sse.Send("log", fmt.Sprintf("✅ %s文案已保存", sessCfg.TitleSuffix))
 			}
 		}
 	} else {
 		sse.Send("log", "✍️ 生成文案（模板模式）...")
 		for _, sess := range sessions {
-			sessCfg := config.SessionConfigs[sess]
 			text := fn(sectors, body.Date, sess)
-			os.WriteFile(filepath.Join(copyDir, fmt.Sprintf("文案_%s.txt", sessCfg.TitleSuffix)), []byte(text), 0644)
+			if db, err := storage.Get(); err == nil {
+				_ = db.SaveCopywriting(storage.Copywriting{
+					Date:    body.Date,
+					Session: sess,
+					Type:    "template",
+					Content: text,
+				})
+			}
 		}
 		sse.Send("log", "✅ 文案已保存")
 	}
@@ -796,13 +721,14 @@ func handleOptimizeCopy(c *gin.Context) {
 		return
 	}
 
-	sessCfg, ok := config.SessionConfigs[body.Session]
-	label := body.Session
-	if ok {
-		label = sessCfg.TitleSuffix
+	if db, err := storage.Get(); err == nil {
+		_ = db.SaveCopywriting(storage.Copywriting{
+			Date:    body.Date,
+			Session: body.Session,
+			Type:    "ai",
+			Content: aiText,
+		})
 	}
-	os.MkdirAll(filepath.Join(config.GetCopyDir(), body.Date), 0755)
-	os.WriteFile(filepath.Join(config.GetCopyDir(), body.Date, fmt.Sprintf("copy_ai_%s.txt", label)), []byte(aiText), 0644)
 
 	c.JSON(200, gin.H{"text": aiText})
 }
@@ -849,6 +775,15 @@ func getDates() []string {
 		}
 	}
 
+	// Also check SQLite for tick data
+	if db, err := storage.Get(); err == nil {
+		if dates, err := db.ListTickDates(); err == nil {
+			for _, d := range dates {
+				seen[d] = true
+			}
+		}
+	}
+
 	var dates []string
 	for d := range seen {
 		dates = append(dates, d)
@@ -873,30 +808,27 @@ func getVideos(dateStr string) []string {
 }
 
 func getCopy(dateStr string) map[string]map[string]string {
-	d := filepath.Join(config.GetCopyDir(), dateStr)
 	result := map[string]map[string]string{
 		"template": {},
 		"ai":       {},
 	}
-	entries, err := os.ReadDir(d)
+	db, err := storage.Get()
 	if err != nil {
 		return result
 	}
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
+	cwList, err := db.LoadCopywriting(dateStr)
+	if err != nil {
+		return result
+	}
+	for _, cw := range cwList {
+		label := cw.Session
+		if strings.HasSuffix(cw.Type, "_tick") {
+			label = cw.Session + "_tick"
 		}
-		name := e.Name()
-		if strings.HasPrefix(name, "文案_ai_") && strings.HasSuffix(name, ".txt") {
-			label := strings.TrimSuffix(strings.TrimPrefix(name, "文案_ai_"), ".txt")
-			if b, err := os.ReadFile(filepath.Join(d, name)); err == nil {
-				result["ai"][label] = string(b)
-			}
-		} else if strings.HasPrefix(name, "文案_") && !strings.HasPrefix(name, "文案_ai_") && strings.HasSuffix(name, ".txt") {
-			label := strings.TrimSuffix(strings.TrimPrefix(name, "文案_"), ".txt")
-			if b, err := os.ReadFile(filepath.Join(d, name)); err == nil {
-				result["template"][label] = string(b)
-			}
+		if cw.Type == "ai" || cw.Type == "ai_tick" {
+			result["ai"][label] = cw.Content
+		} else {
+			result["template"][label] = cw.Content
 		}
 	}
 	return result
@@ -987,23 +919,28 @@ func handleGenerateTick(c *gin.Context) {
 	points, err := tickfetcher.LoadTickCSV(body.Date, body.Session)
 	if err == nil && len(points) > 0 {
 		sectors := tickPointsToSectors(points)
-		copyDir := filepath.Join(config.GetCopyDir(), body.Date)
-		os.MkdirAll(copyDir, 0755)
 
 		var text string
+		cwType := "template_tick"
 		if body.CopyMode == "ai" {
 			text, err = copy.GenerateCopywritingAI(sectors, body.Date, body.Session)
 			if err != nil {
 				text = copy.GenerateCopywriting(sectors, body.Date, body.Session)
+			} else {
+				cwType = "ai_tick"
 			}
 		} else {
 			text = copy.GenerateCopywriting(sectors, body.Date, body.Session)
 		}
-		prefix := "文案"
-		if body.CopyMode == "ai" {
-			prefix = "文案_ai"
+
+		if db, err := storage.Get(); err == nil {
+			_ = db.SaveCopywriting(storage.Copywriting{
+				Date:    body.Date,
+				Session: body.Session,
+				Type:    cwType,
+				Content: text,
+			})
 		}
-		os.WriteFile(filepath.Join(copyDir, fmt.Sprintf("%s_%s_tick.txt", prefix, sessCfg.TitleSuffix)), []byte(text), 0644)
 	}
 
 	c.JSON(200, gin.H{"ok": true, "output": out})
@@ -1019,4 +956,37 @@ func tickPointsToSectors(points []tickfetcher.TickPoint) []fetcher.Sector {
 		sectors = append(sectors, fetcher.Sector{Name: name, Net: net})
 	}
 	return sectors
+}
+
+func handleTickStream(c *gin.Context, tf *tickfetcher.TickFetcher) {
+	sse := NewSSEWriter(c)
+
+	// 先推送当前快照（历史数据）
+	snapshot := tf.GetSnapshot()
+	b, _ := json.Marshal(snapshot)
+	sse.Send("tick", string(b))
+
+	// 订阅新 tick
+	ch, unsubscribe := tf.Subscribe()
+	defer unsubscribe()
+
+	// 心跳：每 15 秒发一次，防止连接超时
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+
+	ctx := c.Request.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-heartbeat.C:
+			sse.Send("heartbeat", "")
+		case snap, ok := <-ch:
+			if !ok {
+				return
+			}
+			b, _ := json.Marshal(snap)
+			sse.Send("tick", string(b))
+		}
+	}
 }

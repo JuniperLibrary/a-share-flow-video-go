@@ -221,7 +221,12 @@ type TickConfig struct {
 
 // DefaultTickConfig returns default tick configuration.
 func DefaultTickConfig() TickConfig {
-	return TickConfig{IntervalMinutes: 10}
+	return TickConfig{IntervalMinutes: 5}
+}
+
+// GetDBPath returns the SQLite database file path.
+func GetDBPath() string {
+	return filepath.Join(GetProjectRoot(), "data", "a-share-flow.db")
 }
 
 // GetTickConfigPath returns the tick config file path.

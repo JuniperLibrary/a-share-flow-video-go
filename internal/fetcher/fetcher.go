@@ -16,6 +16,7 @@ import (
 
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/logger"
+	"github.com/a-share-flow-video-go/internal/storage"
 	"go.uber.org/zap"
 )
 
@@ -26,8 +27,8 @@ type Sector struct {
 	Color string  `json:"color"` // 运行时由前端/渲染层分配，不持久化到 CSV
 }
 
-// Top18HotSectors 当前市场最热门的板块。
-var Top18HotSectors = []string{
+// Top21HotSectors 当前市场最热门的 21 个板块。
+var Top21HotSectors = []string{
 	"半导体", "AI应用", "CPO概念", "有色金属", "锂矿概念",
 	"商业航天", "电池", "机器人", "创新药", "白酒",
 	"消费电子", "银行", "人工智能", "云计算", "低空经济",
@@ -133,15 +134,15 @@ func fetchPrimaryData() ([]Sector, error) {
 	return sectors, nil
 }
 
-// FetchTop18HotSectors 获取 Top18HotSectors 的实时资金流数据。
-func FetchTop18HotSectors() ([]Sector, error) {
+// FetchTop21HotSectors 获取 Top21HotSectors 的实时资金流数据。
+func FetchTop21HotSectors() ([]Sector, error) {
 	all, err := fetchPrimaryData()
 	if err != nil {
 		return nil, err
 	}
 
-	targetSet := make(map[string]bool, len(Top18HotSectors))
-	for _, t := range Top18HotSectors {
+	targetSet := make(map[string]bool, len(Top21HotSectors))
+	for _, t := range Top21HotSectors {
 		targetSet[t] = true
 	}
 
@@ -260,7 +261,7 @@ func FetchHistoricalSectors(dateStr string) ([]Sector, error) {
 	}
 
 	var targets []string
-	for _, name := range Top18HotSectors {
+	for _, name := range Top21HotSectors {
 		if _, ok := bkMapping[name]; ok {
 			targets = append(targets, name)
 		}
@@ -355,6 +356,19 @@ func SaveDailyData(sectors []Sector, dateStr string) error {
 		})
 	}
 
+	// Also persist to SQLite
+	if db, err := storage.Get(); err == nil {
+		records := make([]storage.Sector, 0, len(sectors))
+		for _, s := range sectors {
+			records = append(records, storage.Sector{
+				Datetime: storage.DateToDatetime(dateStr),
+				Name:     s.Name,
+				Net:      s.Net,
+			})
+		}
+		_ = db.SaveSectors(records)
+	}
+
 	logger.Info("数据已保存", zap.String("path", fpath))
 	return nil
 }
@@ -394,44 +408,31 @@ func LoadMorningFromTick(dateStr string) ([]Sector, error) {
 }
 
 func loadTickCSV(dateStr, session string) ([]TickPoint, error) {
-	fpath := filepath.Join(config.GetDataDir(), dateStr, "ticks.csv")
-
-	f, err := os.Open(fpath)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	r := csv.NewReader(f)
-	records, err := r.ReadAll()
+	db, err := storage.Get()
 	if err != nil {
 		return nil, err
 	}
 
-	if len(records) < 2 {
-		return nil, nil
+	sectors, err := db.LoadTickSectors(dateStr)
+	if err != nil {
+		return nil, err
 	}
 
 	var points []TickPoint
-	for _, rec := range records[1:] {
-		if len(rec) < 3 {
+	for _, s := range sectors {
+		timeStr := storage.ExtractTime(s.Datetime)
+		if timeStr == "" {
 			continue
 		}
-		timeStr := rec[0]
-		name := rec[1]
-		net, _ := strconv.ParseFloat(rec[2], 64)
-
 		if session == "morning" && !isMorningTime(timeStr) {
 			continue
 		}
-
 		points = append(points, TickPoint{
 			Time: timeStr,
-			Name: name,
-			Net:  net,
+			Name: s.Name,
+			Net:  s.Net,
 		})
 	}
-
 	return points, nil
 }
 
