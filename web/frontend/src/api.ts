@@ -13,13 +13,6 @@ export const api = {
   getData: (date: string) =>
     request<{ sectors: Sector[]; videos: string[]; 文案: Record<string, Record<string, string>> }>(`/api/data/${date}`),
 
-  fetchSectors: (date: string, force: boolean) =>
-    fetch('/api/fetch', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ date, force }),
-    }),
-
   generate: (date: string, copy_mode: string, format: string, session: string) =>
     fetch('/api/generate', {
       method: 'POST',

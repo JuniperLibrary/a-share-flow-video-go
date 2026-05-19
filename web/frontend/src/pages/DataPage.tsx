@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../api';
-import { useSSE } from '../hooks/useSSE';
-import type { Sector, DateItem, SSEMessage } from '../types';
+import type { Sector, DateItem } from '../types';
 import { fmtNet, trendInfo, trendClass, netColor } from '../utils';
 
 interface DataPageProps {
@@ -11,12 +10,9 @@ interface DataPageProps {
 
 export function DataPage({ onSectorData, sectorData }: DataPageProps) {
   const [fetchDate, setFetchDate] = useState(new Date().toISOString().slice(0, 10));
-  const [force, setForce] = useState(false);
   const [dates, setDates] = useState<DateItem[]>([]);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [search, setSearch] = useState('');
-  const { logs, progress, isRunning, startStream } = useSSE();
-  const [fetchStatus, setFetchStatus] = useState('');
   const [exportStatus, setExportStatus] = useState('');
   const [hot15Status, setHot15Status] = useState('');
 
@@ -29,35 +25,12 @@ export function DataPage({ onSectorData, sectorData }: DataPageProps) {
     } catch { void 0; }
   }
 
-  async function handleFetch() {
-    if (!fetchDate) { alert('请选择日期'); return; }
-    setFetchStatus('');
-    try {
-      await startStream(
-        () => api.fetchSectors(fetchDate, force),
-        (msg: SSEMessage) => {
-          if (msg.type === 'data') {
-            try {
-              const data = JSON.parse(msg.text);
-              if (data.sectors) onSectorData(data.sectors);
-              setFetchStatus(`✅ 拉取成功 (${(data.sectors || []).length}个板块)`);
-              loadDates();
-            } catch { void 0; }
-          }
-        }
-      );
-    } catch (e: unknown) {
-      setFetchStatus(`❌ ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }
-
   async function selectDate(date: string) {
     setSelectedDate(date);
     setFetchDate(date);
     try {
       const data = await api.getData(date);
       if (data.sectors) onSectorData(data.sectors);
-      setFetchStatus('📂 已加载缓存数据');
     } catch { void 0; }
   }
 
@@ -130,34 +103,6 @@ export function DataPage({ onSectorData, sectorData }: DataPageProps) {
 
   return (
     <div>
-      <div className="card">
-        <h2>拉取数据</h2>
-        <div className="form-row" style={{ alignItems: 'center' }}>
-          <div className="form-group">
-            <label>日期</label>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <input type="date" className="date-input" value={fetchDate} onChange={e => setFetchDate(e.target.value)} />
-              <button className="btn btn-sm" onClick={() => setFetchDate(new Date().toISOString().slice(0, 10))} title="设为今天">今天</button>
-            </div>
-          </div>
-          <div className="form-group" style={{ alignSelf: 'center' }}>
-            <label>&nbsp;</label>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <button className="btn btn-primary" onClick={handleFetch} disabled={isRunning}>⬇ 拉取数据</button>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 13, color: '#8a8580', cursor: 'pointer', userSelect: 'none' }}>
-                <input type="checkbox" checked={force} onChange={e => setForce(e.target.checked)} style={{ width: 'auto', accentColor: '#8ea4b0', transform: 'scale(1.1)' }} /> 强制刷新
-              </label>
-            </div>
-          </div>
-        </div>
-        {fetchStatus && <div style={{ marginTop: 8, fontSize: 13, color: '#8892a4' }}>{fetchStatus}</div>}
-        {logs.length > 0 && (
-          <div className="log-panel" style={{ marginTop: 8 }}>
-            {logs.map((l, i) => <div key={i}>{l}</div>)}
-          </div>
-        )}
-      </div>
-
       <div className="card">
         <h2>下载CSV</h2>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
