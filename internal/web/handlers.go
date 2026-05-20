@@ -28,6 +28,7 @@ import (
 	"github.com/a-share-flow-video-go/internal/tickfetcher"
 	"github.com/a-share-flow-video-go/internal/tickrenderer"
 	"github.com/a-share-flow-video-go/internal/tickscheduler"
+	"go.uber.org/zap"
 )
 
 // ExportTask 异步全量下载任务
@@ -335,12 +336,12 @@ func handleDates(c *gin.Context) {
 		sectorsFull, _ := fetcher.LoadSessionData(d, "full")
 		sectorsMorning, _ := fetcher.LoadSessionData(d, "morning")
 		items = append(items, map[string]any{
-			"date":           d,
-			"videos":         videos,
-			"sector_count":   len(sectorsFull),
-			"morning_count":  len(sectorsMorning),
-			"文案_count":     len(cpy["template"]),
-			"ai_count":       len(cpy["ai"]),
+			"date":          d,
+			"videos":        videos,
+			"sector_count":  len(sectorsFull),
+			"morning_count": len(sectorsMorning),
+			"文案_count":      len(cpy["template"]),
+			"ai_count":      len(cpy["ai"]),
 		})
 	}
 	c.JSON(200, gin.H{"dates": items})
@@ -356,7 +357,7 @@ func handleData(c *gin.Context) {
 	c.JSON(200, gin.H{
 		"sectors": sectors,
 		"videos":  getVideos(dateStr),
-		"文案":    getCopy(dateStr),
+		"文案":      getCopy(dateStr),
 	})
 }
 
@@ -451,7 +452,7 @@ func handleFiles(c *gin.Context) {
 
 	c.JSON(200, gin.H{
 		"videos": videoMap,
-		"文案":   cpy,
+		"文案":     cpy,
 	})
 }
 
@@ -912,6 +913,7 @@ func handleGenerateTick(c *gin.Context) {
 
 	out, err := tickrenderer.RenderTickVideo(body.Date, outPath, body.Format, body.Session, nil, nil, nil)
 	if err != nil {
+		logger.Error("tick 视频生成失败", zap.Error(err))
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}

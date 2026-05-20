@@ -166,7 +166,7 @@ func (tf *TickFetcher) run() {
 		return
 	}
 
-	allRanges := []tradingRange{{0, 120}, {120, 240}}
+	allRanges := []tradingRange{{0, 119}, {120, 240}}
 
 	for _, rng := range allRanges {
 		if rng.end < currentMinute {
@@ -175,7 +175,7 @@ func (tf *TickFetcher) run() {
 
 		startMinute := rng.start
 		if currentMinute > rng.start {
-			startMinute = ((currentMinute - rng.start) / interval) * interval + rng.start
+			startMinute = ((currentMinute-rng.start)/interval)*interval + rng.start
 		}
 
 		for minute := startMinute; minute <= rng.end; minute += interval {
