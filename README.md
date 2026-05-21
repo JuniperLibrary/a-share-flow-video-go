@@ -87,17 +87,18 @@ go run ./cmd/cli/ --ai 2026-05-12 2026-05-13 2026-05-14
 
 #### Web 控制台方式
 
-```bash
-# ⚠️ 修改前端代码后，需重新构建才能生效
-cd web/frontend && npm run build
+前端已分离为独立项目 [a-share-flow-video-web](../a-share-flow-video-web)，通过 CORS 跨域通信。
 
+```bash
+# 1. 启动 Go 后端
 go run ./cmd/web/
-# 浏览器打开 http://localhost:8084
+
+# 2. 在另一个终端启动前端
+cd ../a-share-flow-video-web && npm run dev
+# 浏览器打开 http://localhost:5173
 ```
 
-Web 控制台提供：数据拉取、视频生成、文案优化、调度器配置、AI 参数设置、历史数据浏览。
-
-> **注意**：Go Web 服务直接读取 `web/frontend/dist/` 下的静态文件。修改前端源码（`src/`）后，必须执行 `npm run build` 重新编译，重启 Go 服务才能看到最新变化。
+> **注意**：前后端通过跨域通信，前端直接请求后端 API。后端需在 `.env` 中配置 `CORS_ALLOWED_ORIGINS` 允许前端域名。
 
 ### 4. 编译二进制
 
@@ -349,28 +350,11 @@ a-share-flow-video-go/
 │   ├── tickfetcher/             # Tick 采集器：观察者模式（Subscribe/GetSnapshot/broadcast）
 │   ├── tickrenderer/            # Tick 视频渲染：基于真实 tick 数据曲线
 │   ├── tickscheduler/           # Tick 定时调度：09:28 早盘 / 12:58 全天自动启动
-│   └── web/handlers.go          # HTTP handlers：SSE 流式响应、全量导出、路由注册
-└── web/frontend/                # Web 前端：React + Vite + Remotion
-    ├── src/
-    │   ├── renderer/            # Remotion 视频组件
-    │   │   ├── Root.tsx         # 根组件，注册 BloombergVideo 和 BloombergVideoTV
-    │   │   ├── BloombergVideo.tsx
-    │   │   ├── Chart.tsx        # 资金流图表（动态 X 轴）
-    │   │   ├── Timeline.tsx     # 时间线（动态归一化）
-    │   │   ├── Header.tsx
-    │   │   ├── Ticker.tsx
-    │   │   ├── RankingPanel.tsx
-    │   │   ├── Particles.tsx
-    │   │   └── types.ts         # TypeScript 类型定义
-    │   ├── pages/               # Web 页面
-    │   │   ├── MarketPage.tsx   # 实时行情：SSE 资金流曲线 + AI 异动事件面板
-    │   │   ├── TickPage.tsx     # Tick 采集控制 + 数据表格 + 视频生成
-    │   │   ├── SchedulerPage.tsx # 调度器配置（双时间选择器）
-    │   │   └── ...
-    │   ├── api.ts               # API 客户端
-    │   └── types.ts             # 前端类型
-    └── dist/                    # 构建产物（Web 服务静态文件）
+│   └── web/handlers.go          # HTTP handlers：SSE 流式响应、全量导出、路由注册、CORS 中间件
+└── data/                        # 数据目录：CSV + SQLite 数据库
 ```
+
+> 前端已分离为独立项目：[a-share-flow-video-web](../a-share-flow-video-web)，通过 CORS 跨域与后端通信。
 
 ---
 
@@ -386,11 +370,10 @@ go test ./... -skip "Live"
 # SQLite 数据库初始化
 go run ./cmd/initdb/
 
-# 前端类型检查
-cd web/frontend && npx tsc --noEmit
-
-# 前端构建
-cd web/frontend && npm run build
+# 前端操作（在独立项目中）
+cd ../a-share-flow-video-web && npm run dev       # 开发模式
+cd ../a-share-flow-video-web && npm run build     # 生产构建
+cd ../a-share-flow-video-web && npm run typecheck # 类型检查
 ```
 
 ---

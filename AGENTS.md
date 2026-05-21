@@ -21,14 +21,10 @@ go run ./cmd/web/
 # SQLite: manual database initialization
 go run ./cmd/initdb/
 
-# Frontend dev (Vite proxies /api, /output to :8084)
-cd web/frontend && npm run dev
-
-# Frontend typecheck
-cd web/frontend && npx tsc --noEmit
-
-# Frontend build
-cd web/frontend && npm run build
+# Frontend (separate project: a-share-flow-video-web)
+# cd ../a-share-flow-video-web && npm run dev
+# cd ../a-share-flow-video-web && npx tsc --noEmit
+# cd ../a-share-flow-video-web && npm run build
 ```
 
 ## Architecture
@@ -56,13 +52,13 @@ Go backend + React/Remotion frontend. Data flows: 东方财富 API → Go fetche
 | `internal/tickrenderer/` | Tick video rendering based on real tick data curves |
 | `internal/tickscheduler/` | Tick auto-start scheduler: 09:28 morning / 12:58 full |
 
-### Frontend (Remotion)
-- Entry: `web/frontend/src/renderer/index.ts` → `Root.tsx`
+### Frontend (Remotion) — separate project: `a-share-flow-video-web`
+- Entry: `src/renderer/index.ts` → `Root.tsx`
 - Two compositions: `BloombergVideo` (1080×1920 mobile) and `BloombergVideoTV` (1920×1080)
 - Components: Background, Header, Chart, Timeline, RankingPanel, Ticker, Particles, Disclaimer
-- Types: `web/frontend/src/renderer/types.ts` — must stay in sync with Go `RenderProps`
+- Types: `src/renderer/types.ts` — must stay in sync with Go `RenderProps`
 
-### Frontend (Web Pages)
+### Frontend (Web Pages) — separate project: `a-share-flow-video-web`
 - `MarketPage.tsx` — Real-time market chart: SSE fund flow curves + AI anomaly events
 - `TickPage.tsx` — Tick collection control + data table + video generation
 - `SchedulerPage.tsx` — Dual-time scheduler configuration
@@ -138,7 +134,7 @@ Hardcoded in `fetcher.go`: 半导体, AI应用, CPO概念, 有色金属, 锂矿�
 
 - Requires Node.js + npm installed
 - Render command: `npx remotion render <entry> <compID> <output> --props '<json>' --overwrite --fps 30 --frames 0-899`
-- Entry file: `web/frontend/src/renderer/index.ts`
+- Entry file: `../a-share-flow-video-web/src/renderer/index.ts`
 - Cache: `.remotion-cache/` (gitignored)
 
 ## Known Patterns

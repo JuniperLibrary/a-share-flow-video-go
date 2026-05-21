@@ -151,17 +151,26 @@ func runExportTask(task *ExportTask) {
 		task.Page = 0
 	}
 
-	f, _ := os.Create(filepath.Join(dateDir, fmt.Sprintf("板块全量_%s.csv", task.Date)))
-	defer f.Close()
-	w := csv.NewWriter(f)
-	defer w.Flush()
-	w.Write([]string{"板块名称", "主力资金净流入(亿)", "时间", "趋势"})
-	for _, s := range task.Data {
-		trend := "↓ 净流出"
-		if s.Net > 0 {
-			trend = "↑ 净流入"
+	if db, err := storage.Get(); err == nil {
+		task.mu.Lock()
+		task.Progress = "正在保存到数据库..."
+		task.mu.Unlock()
+
+		records := make([]storage.Sector, 0, len(task.Data))
+		for _, s := range task.Data {
+			records = append(records, storage.Sector{
+				Datetime: storage.DateToDatetime(task.Date),
+				Name:     s.Name,
+				Net:      s.Net,
+			})
 		}
-		w.Write([]string{s.Name, fmt.Sprintf("%.2f", s.Net), task.Date, trend})
+		if err := db.SaveSectors(records); err != nil {
+			task.mu.Lock()
+			task.Status = "error"
+			task.Err = fmt.Sprintf("保存数据库失败: %v", err)
+			task.mu.Unlock()
+			return
+		}
 	}
 
 	os.Remove(checkpointPath)
@@ -206,6 +215,7 @@ func SetupRouter(sched *scheduler.Scheduler, tickSched *tickscheduler.TickSchedu
 	r := gin.New()
 	r.Use(logger.RecoveryMiddleware())
 	r.Use(logger.RequestLoggerMiddleware())
+	r.Use(corsMiddleware())
 
 	r.GET("/api/dates", handleDates)
 	r.GET("/api/data/:date", handleData)
@@ -213,6 +223,7 @@ func SetupRouter(sched *scheduler.Scheduler, tickSched *tickscheduler.TickSchedu
 	r.GET("/api/export-all/status/:task_id", handleExportStatus)
 	r.GET("/api/export-all/file/:task_id", handleExportFile)
 	r.GET("/api/export-hot-sectors/:date", handleExportHotSectors)
+	r.POST("/api/sectors-all/save/:date", handleSaveAllSectors)
 	r.POST("/api/generate", handleGenerate)
 	r.POST("/api/generate-multiday", handleGenerateMultiDay)
 	r.GET("/api/config", handleGetConfig)
@@ -309,20 +320,6 @@ func SetupRouter(sched *scheduler.Scheduler, tickSched *tickscheduler.TickSchedu
 	})
 
 	r.GET("/output/:date/:file", serveVideo)
-
-	distDir := filepath.Join(config.GetProjectRoot(), "web", "frontend", "dist")
-	if _, err := os.Stat(distDir); err == nil {
-		r.Static("/assets", filepath.Join(distDir, "assets"))
-		r.StaticFile("/favicon.ico", filepath.Join(distDir, "favicon.ico"))
-		r.NoRoute(func(c *gin.Context) {
-			path := c.Request.URL.Path
-			if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/output/") {
-				c.JSON(404, gin.H{"error": "not found"})
-				return
-			}
-			c.File(filepath.Join(distDir, "index.html"))
-		})
-	}
 
 	return r
 }
@@ -437,6 +434,88 @@ func handleExportHotSectors(c *gin.Context) {
 	c.JSON(200, gin.H{
 		"date":    dateStr,
 		"sectors": sectors,
+	})
+}
+
+func handleSaveAllSectors(c *gin.Context) {
+	dateStr := c.Param("date")
+	if dateStr == "" {
+		dateStr = time.Now().Format("2006-01-02")
+	}
+
+	db, err := storage.Get()
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	var allSectors []fetcher.Sector
+	allFS := []string{"m:90+t:2", "m:90+t:3"}
+	for _, fs := range allFS {
+		for pn := 1; ; pn++ {
+			url := fmt.Sprintf("https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData?fields=f12,f14,f62&pn=%d&pz=500&fid=f62&po=1&fs=%s&ut=b2884a39ad64002292a3e90d46a5", pn, fs)
+			req, err := http.NewRequest("GET", url, nil)
+			if err != nil {
+				c.JSON(500, gin.H{"error": err.Error()})
+				return
+			}
+			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+			req.Header.Set("Referer", "https://emdatah5.eastmoney.com/dc/zjlx/index")
+
+			resp, err := exportHTTPClient.Do(req)
+			if err != nil {
+				c.JSON(500, gin.H{"error": err.Error()})
+				return
+			}
+
+			var result struct {
+				Data struct {
+					Diff []map[string]any `json:"diff"`
+				} `json:"data"`
+			}
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			json.Unmarshal(b, &result)
+
+			for _, item := range result.Data.Diff {
+				name, _ := item["f14"].(string)
+				netVal := item["f62"]
+				if name == "" || netVal == nil {
+					continue
+				}
+				if f, ok := toFloat64(netVal); ok && f != 0 {
+					allSectors = append(allSectors, fetcher.Sector{
+						Name: name,
+						Net:  roundTo2(f / 1e8),
+					})
+				}
+			}
+
+			if len(result.Data.Diff) < 500 {
+				break
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+
+	records := make([]storage.Sector, 0, len(allSectors))
+	for _, s := range allSectors {
+		records = append(records, storage.Sector{
+			Datetime: storage.DateToDatetime(dateStr),
+			Name:     s.Name,
+			Net:      s.Net,
+		})
+	}
+
+	if err := db.SaveSectors(records); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"date":   dateStr,
+		"count":  len(records),
+		"status": "saved",
 	})
 }
 
@@ -990,5 +1069,27 @@ func handleTickStream(c *gin.Context, tf *tickfetcher.TickFetcher) {
 			b, _ := json.Marshal(snap)
 			sse.Send("tick", string(b))
 		}
+	}
+}
+
+func corsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		origin := os.Getenv("CORS_ALLOWED_ORIGINS")
+		if origin == "" {
+			c.Next()
+			return
+		}
+
+		c.Header("Access-Control-Allow-Origin", origin)
+		c.Header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Content-Type, Accept")
+		c.Header("Access-Control-Max-Age", "86400")
+
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
+
+		c.Next()
 	}
 }
