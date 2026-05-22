@@ -24,7 +24,6 @@ import (
 	"github.com/a-share-flow-video-go/internal/renderer"
 	"github.com/a-share-flow-video-go/internal/storage"
 	"github.com/a-share-flow-video-go/internal/tickfetcher"
-	"github.com/a-share-flow-video-go/internal/tickrenderer"
 	"github.com/a-share-flow-video-go/internal/tickscheduler"
 	"go.uber.org/zap"
 )
@@ -280,7 +279,6 @@ func SetupRouter(tickSched *tickscheduler.TickScheduler) *gin.Engine {
 		}
 		c.JSON(200, gin.H{"date": dateStr, "session": session, "points": points})
 	})
-	r.POST("/api/generate-tick", handleGenerateTick)
 	r.GET("/api/tick/stream", func(c *gin.Context) {
 		handleTickStream(c, tickSched.GetFetcher())
 	})
@@ -963,83 +961,6 @@ func toFloat64(v any) (float64, bool) {
 
 func roundTo2(x float64) float64 {
 	return math.Round(x*100) / 100
-}
-
-func handleGenerateTick(c *gin.Context) {
-	var body struct {
-		Date     string `json:"date"`
-		Format   string `json:"format"`
-		Session  string `json:"session"`
-		CopyMode string `json:"copy_mode"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
-		return
-	}
-	if body.Date == "" {
-		body.Date = time.Now().Format("2006-01-02")
-	}
-	if body.Format == "" {
-		body.Format = "mobile"
-	}
-	if body.Session == "" {
-		body.Session = "full"
-	}
-
-	sessCfg := config.SessionConfigs[body.Session]
-	formatSuffix := ""
-	if body.Format == "tv" {
-		formatSuffix = "_tv"
-	}
-	outPath := filepath.Join(config.GetOutputDir(), body.Date, fmt.Sprintf("%s_tick%s.mp4", sessCfg.FilenameSuffix, formatSuffix))
-
-	out, err := tickrenderer.RenderTickVideo(body.Date, outPath, body.Format, body.Session, nil, nil, nil)
-	if err != nil {
-		logger.Error("tick 视频生成失败", zap.Error(err))
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
-
-	points, err := tickfetcher.LoadTickCSV(body.Date, body.Session)
-	if err == nil && len(points) > 0 {
-		sectors := tickPointsToSectors(points)
-
-		var text string
-		cwType := "template_tick"
-		if body.CopyMode == "ai" {
-			text, err = copy.GenerateCopywritingAI(sectors, body.Date, body.Session)
-			if err != nil {
-				text = copy.GenerateCopywriting(sectors, body.Date, body.Session)
-			} else {
-				cwType = "ai_tick"
-			}
-		} else {
-			text = copy.GenerateCopywriting(sectors, body.Date, body.Session)
-		}
-
-		if db, err := storage.Get(); err == nil {
-			_ = db.SaveCopywriting(storage.Copywriting{
-				Date:    body.Date,
-				Session: body.Session,
-				Type:    cwType,
-				Content: text,
-			})
-		}
-	}
-
-	c.JSON(200, gin.H{"ok": true, "output": out})
-}
-
-func tickPointsToSectors(points []tickfetcher.TickPoint) []fetcher.Sector {
-	latest := make(map[string]float64)
-	for _, p := range points {
-		latest[p.Name] = p.Net
-	}
-	var sectors []fetcher.Sector
-	for name, net := range latest {
-		sectors = append(sectors, fetcher.Sector{Name: name, Net: net})
-	}
-	return sectors
 }
 
 func handleTickStream(c *gin.Context, tf *tickfetcher.TickFetcher) {

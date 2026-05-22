@@ -309,7 +309,6 @@ data/
 | `/api/tick/enable` | POST | 启用/禁用定时采集 |
 | `/api/tick/interval` | GET/POST | 获取/设置采集频率 |
 | `/api/tick-data/:date` | GET | 获取指定日期 Tick 数据（query: `?session=full/morning`） |
-| `/api/generate-tick` | POST | 基于 Tick 数据生成视频 |
 | `/api/tick/dates` | GET | 获取所有有 Tick 数据的日期 |
 | `/api/tick/replay-stream` | GET | SSE 回放指定日期的历史 Tick 数据 |
 | `/api/tick/events/:date` | GET | 获取 Tick 事件分析数据 |
@@ -387,7 +386,6 @@ a-share-flow-video-go/
 │   ├── storage/storage.go       # SQLite 持久化：板块+Tick+文案统一存储（datetime+name 唯一索引）
 │   ├── logger/                  # zap 结构化日志：彩色终端、请求追踪、panic 恢复
 │   ├── tickfetcher/             # Tick 采集器：观察者模式 + 时区固定 Asia/Shanghai + 采集去重
-│   ├── tickrenderer/            # Tick 视频渲染：基于真实 tick 数据曲线
 │   ├── tickscheduler/           # Tick 定时调度：09:28 早盘 / 12:58 全天自动启动，loop 常驻运行
 │   └── web/handlers.go          # HTTP handlers：SSE 流式响应、全量导出、路由注册、CORS 中间件
 └── data/                        # 数据目录：CSV + SQLite 数据库
