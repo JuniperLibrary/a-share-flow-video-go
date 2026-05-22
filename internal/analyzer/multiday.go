@@ -56,20 +56,26 @@ type MultiDayTicker struct {
 }
 
 // MultiDayAnalyze 统一入口：优先 AI，失败降级数据驱动。
-func MultiDayAnalyze(dayData map[string][]fetcher.Sector, dates []string) MultiDayAnalysis {
+// copyMode: "ai" 优先 AI（失败降级模板），"template" 直接使用模板。
+func MultiDayAnalyze(dayData map[string][]fetcher.Sector, dates []string, copyMode string) MultiDayAnalysis {
+	if copyMode == "template" {
+		logger.Info("多日分析：用户选择模板文案", zap.String("copyMode", copyMode))
+		return DataDrivenMultiDay(dayData, dates)
+	}
+
 	aiCfg := config.GetAIConfig()
 	if aiCfg.APIKey == "" {
-		logger.Info("多日分析：未设置 AI_API_KEY，使用数据驱动生成")
+		logger.Warn("多日分析：用户选择 AI 文案但未配置 AI_API_KEY，降级使用模板")
 		return DataDrivenMultiDay(dayData, dates)
 	}
 
 	result, err := AIGenerateMultiDay(dayData, dates, aiCfg)
 	if err != nil {
-		logger.Warn("多日分析：API 请求失败，使用数据驱动生成", zap.Error(err))
+		logger.Warn("多日分析：AI 请求失败，降级使用模板生成", zap.Error(err))
 		return DataDrivenMultiDay(dayData, dates)
 	}
 	if result.TrendInsights == nil && result.SummaryText.Title == "" {
-		logger.Warn("多日分析：大模型分析失败，使用数据驱动生成")
+		logger.Warn("多日分析：AI 返回空结果，降级使用模板生成")
 		return DataDrivenMultiDay(dayData, dates)
 	}
 	return result

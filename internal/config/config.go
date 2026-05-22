@@ -16,7 +16,7 @@ import (
 // Video parameters
 const (
 	FPS         = 30
-	TotalFrames = 900
+	TotalFrames = 1800
 
 	// MobileWidth Mobile dimensions (9:16)
 	MobileWidth  = 1080
@@ -120,7 +120,7 @@ func GetCopyDir() string {
 
 // GetRendererDir returns the Remotion renderer directory path.
 func GetRendererDir() string {
-	return filepath.Join(GetProjectRoot(), "web", "frontend")
+	return filepath.Join(GetProjectRoot(), "..", "a-share-flow-video-web")
 }
 
 // GetEnvPath returns the .env file path.

@@ -222,19 +222,13 @@ func (s *Scheduler) execute(session string) {
 		events = analyzer.GetFallbackEvents(config.TotalFrames)
 	}
 
-	for _, format := range []string{"mobile", "tv"} {
-		suffix := ""
-		if format == "tv" {
-			suffix = "_tv"
-		}
-		outPath := filepath.Join(outputDir, todayStr, fmt.Sprintf("%s%s.mp4", sessCfg.FilenameSuffix, suffix))
-		if _, err := renderer.RenderVideo(sectors, todayStr, outPath, events, timeline, ticker, format, session); err != nil {
-			logger.Error("scheduler 渲染失败", zap.String("session", sessCfg.TitleSuffix+" "+format), zap.Error(err))
-			s.mu.Lock()
-			s.lastStatus = fmt.Sprintf("error: render %s %s: %v", sessCfg.TitleSuffix, format, err)
-			s.mu.Unlock()
-			return
-		}
+	outPath := filepath.Join(outputDir, todayStr, fmt.Sprintf("%s.mp4", sessCfg.FilenameSuffix))
+	if _, err := renderer.RenderVideo(sectors, todayStr, outPath, events, timeline, ticker, "tv", session); err != nil {
+		logger.Error("scheduler 渲染失败", zap.String("session", sessCfg.TitleSuffix), zap.Error(err))
+		s.mu.Lock()
+		s.lastStatus = fmt.Sprintf("error: render %s: %v", sessCfg.TitleSuffix, err)
+		s.mu.Unlock()
+		return
 	}
 
 	aiCfg := config.GetAIConfig()
