@@ -88,6 +88,12 @@ func (s *TickScheduler) checkAndRun() {
 		return
 	}
 
+	// 15:00 之后自动关闭采集
+	if s.shouldStop(now) {
+		s.fetcher.Stop()
+		return
+	}
+
 	if s.shouldRun(now) {
 		s.fetcher.Start()
 	}
@@ -104,6 +110,21 @@ func (s *TickScheduler) shouldRun(now time.Time) bool {
 		return true
 	}
 	if currentMin >= fullStart && currentMin < fullStart+2 {
+		return true
+	}
+	return false
+}
+
+func (s *TickScheduler) shouldStop(now time.Time) bool {
+	h, m := now.Hour(), now.Minute()
+	currentMin := h*60 + m
+
+	// 11:31 - 12:57 停止早盘采集
+	if currentMin >= 11*60+31 && currentMin < 12*60+58 {
+		return true
+	}
+	// 15:01 之后停止全天采集
+	if currentMin >= 15*60+1 {
 		return true
 	}
 	return false
