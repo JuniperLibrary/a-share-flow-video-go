@@ -18,7 +18,8 @@
 |------|------|
 | **双维度** | 早盘（09:30-11:30）和全天（09:30-15:00）独立生成，各自匹配对应时间轴 |
 | **双端输出** | 每个维度同时输出移动端 1080×1920（9:16）和 TV端 1920×1080（16:9） |
-| **定时调度** | 11:35 自动拉取早盘、15:05 自动拉取全天，时间可在 Web 控制台修改，自动跳过周末 |
+| **定时调度** | 09:28 早盘自动采集、12:58 全天自动采集，时区固定 Asia/Shanghai，自动跳过周末 |
+| **采集去重** | Tick 采集前自动检查数据库，已存在的时间点自动跳过，避免重复采集 |
 | **AI 文案** | 自动参考前 5 日历史文案，逐板块分析资金动向，标题 ≤20 字，含风险提示 |
 | **事件分析** | AI 优先（180s 超时），自动降级到数据驱动，保证始终有可用内容 |
 | **SSE 实时流** | 数据拉取和视频生成过程通过 Server-Sent Events 实时推送进度 |
@@ -126,9 +127,10 @@ go run ./cmd/initdb/
 
 ```sql
 CREATE TABLE sectors (
-    datetime TEXT NOT NULL,  -- "2026-05-19 09:30" (tick) 或 "2026-05-19" (全量)
-    name     TEXT NOT NULL,
-    net      REAL NOT NULL,
+    datetime   TEXT NOT NULL,  -- "2026-05-19 09:30" (tick) 或 "2026-05-19" (全量)
+    name       TEXT NOT NULL,
+    net        REAL NOT NULL,
+    input_date TEXT NOT NULL DEFAULT '',  -- 录入时间 "2026-05-22 13:14:19"
     PRIMARY KEY (datetime, name)  -- 唯一索引：防重复
 );
 
@@ -139,15 +141,31 @@ CREATE TABLE copywriting (
     content TEXT NOT NULL,
     PRIMARY KEY (date, session, type)
 );
+
+CREATE TABLE sectors_all (
+    date TEXT NOT NULL,  -- 日期 "2026-05-19"
+    code TEXT NOT NULL,  -- 板块代码 BKxxxx
+    name TEXT NOT NULL,  -- 板块名称
+    net  REAL NOT NULL,  -- 主力资金净流入（亿）
+    PRIMARY KEY (date, name)
+);
+
+CREATE TABLE tick_events (
+    date    TEXT NOT NULL,
+    session TEXT NOT NULL,
+    type    TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    PRIMARY KEY (date, session, type)
+);
 ```
 
 ### 数据写入
 
-| 来源 | datetime 格式 | 示例 |
-|------|--------------|------|
-| 全量板块 | `YYYY-MM-DD` | `2026-05-19` |
-| Tick 采集 | `YYYY-MM-DD HH:MM` | `2026-05-19 09:30` |
-| 文案 | 独立表 | `date + session + type` 唯一 |
+| 来源 | datetime 格式 | input_date 格式 | 示例 |
+|------|--------------|-----------------|------|
+| 全量板块 | `YYYY-MM-DD` | `YYYY-MM-DD HH:MM:SS` | `2026-05-19` |
+| Tick 采集 | `YYYY-MM-DD HH:MM` | `YYYY-MM-DD HH:MM:SS` | `2026-05-19 09:30` |
+| 文案 | 独立表 | - | `date + session + type` 唯一 |
 
 同一时间点同一板块重复采集 → `PRIMARY KEY` 冲突 → `INSERT OR REPLACE` 覆盖旧值。
 
@@ -155,17 +173,28 @@ CREATE TABLE copywriting (
 
 ## 定时调度
 
-调度器每天在两个时间点自动执行，各自独立跟踪状态：
+### Tick 采集调度
+
+Tick 采集调度器在交易时段自动采集板块资金流数据：
+
+| 触发时间 | 说明 |
+|----------|------|
+| `09:28-09:30` | 早盘自动启动采集 |
+| `12:58-13:00` | 全天自动启动采集 |
+
+特性：
+- 时区固定为 `Asia/Shanghai`（UTC+8），不受系统时区影响
+- 跳过周末（周六、周日不执行）
+- 采集前自动检查数据库，已存在的时间点自动跳过
+- 采集间隔默认 10 分钟，可在 Web 控制台修改（1-30 分钟）
+- 调度器 loop 常驻运行，`Stop()` 只暂停采集，`Shutdown()` 才真正退出
+
+### 全量数据调度
 
 | 触发时间 | 维度 | 数据文件 | 输出视频 |
 |----------|------|----------|----------|
 | `11:35`（可配置） | 早盘 | SQLite: `a-share-flow.db` (09:30-11:30) | `早盘.mp4` + `早盘_tv.mp4` |
 | `15:05`（可配置） | 全天 | `data/YYYY-MM-DD/sectors.csv` + SQLite | `全天.mp4` + `全天_tv.mp4` |
-
-- 跳过周末（周六、周日不执行）
-- 每个维度每日仅执行一次
-- 可在 Web 控制台 → 定时任务页面修改触发时间
-- 支持「立即执行」按钮（执行全天维度）
 
 ---
 
@@ -231,14 +260,13 @@ data/YYYY-MM-DD/
 data/
 └── a-share-flow.db           # SQLite 数据库（板块+Tick+文案统一持久化）
                               #   sectors 表: datetime+name 唯一索引
-                              #     datetime -- 时间 "2026-05-19 09:30" (tick) 或 "2026-05-19" (全量)
-                              #     name     -- 板块名称
-                              #     net      -- 主力资金净流入（亿）
+                              #     datetime   -- 时间 "2026-05-19 09:30" (tick) 或 "2026-05-19" (全量)
+                              #     name       -- 板块名称
+                              #     net        -- 主力资金净流入（亿）
+                              #     input_date -- 录入时间 "2026-05-22 13:14:19"
+                              #   sectors_all 表: date+name 唯一索引（全量板块数据）
                               #   copywriting 表: date+session+type 唯一索引
-                              #     date     -- 日期 "2026-05-19"
-                              #     session  -- 时段 "full" / "morning"
-                              #     type     -- 类型 "template" / "ai" / "template_tick" / "ai_tick"
-                              #     content  -- 文案内容
+                              #   tick_events 表: date+session+type 唯一索引（Tick 事件缓存）
 ```
 
 ---
@@ -282,6 +310,17 @@ data/
 | `/api/tick/interval` | GET/POST | 获取/设置采集频率 |
 | `/api/tick-data/:date` | GET | 获取指定日期 Tick 数据（query: `?session=full/morning`） |
 | `/api/generate-tick` | POST | 基于 Tick 数据生成视频 |
+| `/api/tick/dates` | GET | 获取所有有 Tick 数据的日期 |
+| `/api/tick/replay-stream` | GET | SSE 回放指定日期的历史 Tick 数据 |
+| `/api/tick/events/:date` | GET | 获取 Tick 事件分析数据 |
+| `/api/dashboard` | GET | 获取仪表盘聚合数据（单次请求） |
+| `/api/sectors-all/save/:date` | POST | 异步获取全量板块并保存到 SQLite |
+| `/api/sectors-all/status/:task_id` | GET | 查询全量板块获取任务状态 |
+| `/api/sectors-all/dates` | GET | 获取所有有全量板块数据的日期 |
+| `/api/sectors-all/trend` | GET | 获取板块资金流向趋势数据 |
+| `/api/sectors-all/range` | GET | 获取指定日期范围的全量板块数据 |
+| `/api/sectors-all/names` | GET | 获取所有板块名称列表 |
+| `/api/generate-multiday` | POST | 多日视频生成（Bar Chart Race） |
 | `/output/:date/:file` | GET | 下载视频文件 |
 
 ---
@@ -307,9 +346,9 @@ RenderVideo() → npx remotion render → MP4
     ↓
 GenerateCopywriting() / GenerateCopywritingAI() → 文案 → SQLite: copywriting
 
-Tick 采集（交易时段每 5 分钟）
+Tick 采集（交易时段每 5-10 分钟）
     ↓
-TickFetcher.collectTick() → SQLite: sectors (datetime="date time", name, net)
+TickFetcher.collectTick() → 检查数据库是否已存在 → SQLite: sectors (datetime="date time", name, net, input_date)
                         → broadcast() → SSE subscribers → /api/tick/stream
 ```
 
@@ -347,9 +386,9 @@ a-share-flow-video-go/
 │   ├── scheduler/scheduler.go   # 定时调度器：双时间点触发，跳过周末，独立状态跟踪
 │   ├── storage/storage.go       # SQLite 持久化：板块+Tick+文案统一存储（datetime+name 唯一索引）
 │   ├── logger/                  # zap 结构化日志：彩色终端、请求追踪、panic 恢复
-│   ├── tickfetcher/             # Tick 采集器：观察者模式（Subscribe/GetSnapshot/broadcast）
+│   ├── tickfetcher/             # Tick 采集器：观察者模式 + 时区固定 Asia/Shanghai + 采集去重
 │   ├── tickrenderer/            # Tick 视频渲染：基于真实 tick 数据曲线
-│   ├── tickscheduler/           # Tick 定时调度：09:28 早盘 / 12:58 全天自动启动
+│   ├── tickscheduler/           # Tick 定时调度：09:28 早盘 / 12:58 全天自动启动，loop 常驻运行
 │   └── web/handlers.go          # HTTP handlers：SSE 流式响应、全量导出、路由注册、CORS 中间件
 └── data/                        # 数据目录：CSV + SQLite 数据库
 ```

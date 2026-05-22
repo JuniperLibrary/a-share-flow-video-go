@@ -12,6 +12,16 @@ import (
 	"go.uber.org/zap"
 )
 
+// shanghaiTZ is the Asia/Shanghai timezone used for all trading time calculations.
+var shanghaiTZ = func() *time.Location {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		// Fallback to UTC+8 if location data is unavailable.
+		return time.FixedZone("CST", 8*60*60)
+	}
+	return loc
+}()
+
 // TickSnapshot is the full state pushed to SSE subscribers on each tick.
 type TickSnapshot struct {
 	Points   []TickPoint `json:"points"`
@@ -71,11 +81,23 @@ func (tf *TickFetcher) GetSnapshot() TickSnapshot {
 	tf.mu.Lock()
 	dateStr := tf.dateStr
 	running := tf.running
-	count := tf.tickCount
 	lastTime := tf.lastTick
 	tf.mu.Unlock()
 
 	points, _ := LoadTickCSV(dateStr, "full")
+
+	timeSet := make(map[string]struct{})
+	for _, p := range points {
+		timeSet[p.Time] = struct{}{}
+	}
+	count := len(timeSet)
+
+	tf.mu.Lock()
+	if tf.tickCount > count {
+		count = tf.tickCount
+	}
+	tf.mu.Unlock()
+
 	return TickSnapshot{
 		Points:   points,
 		Date:     dateStr,
@@ -112,7 +134,7 @@ func (tf *TickFetcher) Start() error {
 	}
 	tf.running = true
 	tf.stopCh = make(chan struct{})
-	tf.dateStr = time.Now().Format("2006-01-02")
+	tf.dateStr = time.Now().In(shanghaiTZ).Format("2006-01-02")
 	tf.tickCount = 0
 	tf.errCount = 0
 	tf.mu.Unlock()
@@ -204,7 +226,7 @@ func (tf *TickFetcher) run() {
 }
 
 func nowTradingMinute() int {
-	now := time.Now()
+	now := time.Now().In(shanghaiTZ)
 	wallMin := now.Hour()*60 + now.Minute()
 
 	morningStart := 9*60 + 30
@@ -226,6 +248,16 @@ func nowTradingMinute() int {
 
 func (tf *TickFetcher) collectTick(dateStr, timeStr string, minute int) {
 	l := logger.With(zap.String("date", dateStr), zap.String("time", timeStr))
+
+	datetime := storage.DateToDatetimeTick(dateStr, timeStr)
+	db, err := storage.Get()
+	if err == nil {
+		if exists, _ := db.HasTickData(datetime); exists {
+			l.Info("tick 已存在，跳过")
+			return
+		}
+	}
+
 	l.Info("tick 采集")
 
 	sectors, err := fetcher.FetchTop21HotSectors()
@@ -251,38 +283,17 @@ func (tf *TickFetcher) collectTick(dateStr, timeStr string, minute int) {
 	tf.mu.Unlock()
 	l.Info("tick 已保存", zap.Int("sectors", len(sectors)))
 
-	// Notify SSE subscribers
-	tf.broadcast(sectors, dateStr, timeStr)
+	tf.broadcast()
 }
 
-func (tf *TickFetcher) broadcast(sectors []fetcher.Sector, dateStr, timeStr string) {
-	tf.mu.Lock()
-	count := tf.tickCount
-	running := tf.running
-	tf.mu.Unlock()
-
-	points := make([]TickPoint, 0, len(sectors))
-	for _, s := range sectors {
-		points = append(points, TickPoint{
-			Time: timeStr,
-			Name: s.Name,
-			Net:  s.Net,
-		})
-	}
-
-	snapshot := TickSnapshot{
-		Points:   points,
-		Date:     dateStr,
-		Running:  running,
-		Count:    count,
-		LastTime: timeStr,
-	}
+func (tf *TickFetcher) broadcast() {
+	snapshot := tf.GetSnapshot()
 
 	tf.subsMu.RLock()
 	for ch := range tf.subscribers {
 		select {
 		case ch <- snapshot:
-		default: // drop if subscriber is slow
+		default:
 		}
 	}
 	tf.subsMu.RUnlock()
@@ -293,12 +304,14 @@ func saveTickToDB(dateStr, timeStr string, sectors []fetcher.Sector) error {
 	if err != nil {
 		return err
 	}
+	inputDate := time.Now().In(shanghaiTZ).Format("2006-01-02 15:04:05")
 	records := make([]storage.Sector, 0, len(sectors))
 	for _, s := range sectors {
 		records = append(records, storage.Sector{
-			Datetime: storage.DateToDatetimeTick(dateStr, timeStr),
-			Name:     s.Name,
-			Net:      s.Net,
+			Datetime:  storage.DateToDatetimeTick(dateStr, timeStr),
+			Name:      s.Name,
+			Net:       s.Net,
+			InputDate: inputDate,
 		})
 	}
 	return db.SaveSectors(records)

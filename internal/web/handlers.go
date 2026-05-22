@@ -1,7 +1,6 @@
 package web
 
 import (
-	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -23,7 +22,6 @@ import (
 	"github.com/a-share-flow-video-go/internal/fetcher"
 	"github.com/a-share-flow-video-go/internal/logger"
 	"github.com/a-share-flow-video-go/internal/renderer"
-	"github.com/a-share-flow-video-go/internal/scheduler"
 	"github.com/a-share-flow-video-go/internal/storage"
 	"github.com/a-share-flow-video-go/internal/tickfetcher"
 	"github.com/a-share-flow-video-go/internal/tickrenderer"
@@ -38,7 +36,7 @@ type ExportTask struct {
 	Status   string
 	Progress string
 	Page     int
-	Data     []fetcher.Sector
+	Data     []storage.SectorAll
 	Err      string
 	mu       sync.Mutex
 }
@@ -82,7 +80,7 @@ func runExportTask(task *ExportTask) {
 		os.WriteFile(checkpointPath, data, 0644)
 	}
 
-	fetchPage := func(fs string, pn int) ([]fetcher.Sector, bool, error) {
+	fetchPage := func(fs string, pn int) ([]storage.SectorAll, bool, error) {
 		url := fmt.Sprintf("https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData?fields=f12,f14,f62&pn=%d&pz=500&fid=f62&po=1&fs=%s&ut=b2884a393a59ad64002292a3e90d46a5", pn, fs)
 		req, err := http.NewRequest("GET", url, nil)
 		if err != nil {
@@ -105,15 +103,18 @@ func runExportTask(task *ExportTask) {
 		b, _ := io.ReadAll(resp.Body)
 		json.Unmarshal(b, &result)
 
-		var page []fetcher.Sector
+		var page []storage.SectorAll
 		for _, item := range result.Data.Diff {
 			name, _ := item["f14"].(string)
+			code, _ := item["f12"].(string)
 			netVal := item["f62"]
 			if name == "" || netVal == nil {
 				continue
 			}
 			if f, ok := toFloat64(netVal); ok && f != 0 {
-				page = append(page, fetcher.Sector{
+				page = append(page, storage.SectorAll{
+					Date: task.Date,
+					Code: code,
 					Name: name,
 					Net:  roundTo2(f / 1e8),
 				})
@@ -156,15 +157,7 @@ func runExportTask(task *ExportTask) {
 		task.Progress = "正在保存到数据库..."
 		task.mu.Unlock()
 
-		records := make([]storage.Sector, 0, len(task.Data))
-		for _, s := range task.Data {
-			records = append(records, storage.Sector{
-				Datetime: storage.DateToDatetime(task.Date),
-				Name:     s.Name,
-				Net:      s.Net,
-			})
-		}
-		if err := db.SaveSectors(records); err != nil {
+		if err := db.SaveSectorsAll(task.Data); err != nil {
 			task.mu.Lock()
 			task.Status = "error"
 			task.Err = fmt.Sprintf("保存数据库失败: %v", err)
@@ -191,7 +184,9 @@ func NewSSEWriter(c *gin.Context) *SSEWriter {
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.WriteHeaderNow()
+	c.Writer.Flush()
 	return &SSEWriter{w: c.Writer}
 }
 
@@ -210,7 +205,7 @@ func jsonStr(s string) string {
 }
 
 // SetupRouter 注册所有 HTTP 路由。
-func SetupRouter(sched *scheduler.Scheduler, tickSched *tickscheduler.TickScheduler) *gin.Engine {
+func SetupRouter(tickSched *tickscheduler.TickScheduler) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(logger.RecoveryMiddleware())
@@ -224,46 +219,17 @@ func SetupRouter(sched *scheduler.Scheduler, tickSched *tickscheduler.TickSchedu
 	r.GET("/api/export-all/file/:task_id", handleExportFile)
 	r.GET("/api/export-hot-sectors/:date", handleExportHotSectors)
 	r.POST("/api/sectors-all/save/:date", handleSaveAllSectors)
-	r.POST("/api/generate", handleGenerate)
+	r.GET("/api/sectors-all/save/status/:task_id", handleSaveAllStatus)
+	r.GET("/api/sectors-all/:date", handleGetAllSectors)
+	r.GET("/api/sectors-all/names", handleGetSectorsAllNames)
+	r.GET("/api/sectors-all/dates", handleGetSectorsAllDates)
+	r.GET("/api/sectors-all/trend", handleGetSectorsTrend)
+	r.GET("/api/sectors-all/range", handleGetSectorsAllRange)
 	r.POST("/api/generate-multiday", handleGenerateMultiDay)
 	r.GET("/api/config", handleGetConfig)
 	r.POST("/api/config", handleSaveConfig)
 	r.POST("/api/optimize-copy", handleOptimizeCopy)
 	r.GET("/api/files/:date", handleFiles)
-	r.GET("/api/scheduler", func(c *gin.Context) {
-		c.JSON(200, sched.GetStatus())
-	})
-	r.POST("/api/scheduler", func(c *gin.Context) {
-		var body map[string]any
-		if err := c.ShouldBindJSON(&body); err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
-			return
-		}
-		if v, ok := body["enabled"]; ok {
-			sched.Enabled = v == true
-		}
-		if v, ok := body["run_time"]; ok {
-			if s, ok := v.(string); ok {
-				sched.RunTime = s
-				if sched.Enabled {
-					sched.Start()
-				}
-			}
-		}
-		if v, ok := body["morning_run_time"]; ok {
-			if s, ok := v.(string); ok {
-				sched.MorningRunTime = s
-				if sched.Enabled {
-					sched.Start()
-				}
-			}
-		}
-		c.JSON(200, sched.GetStatus())
-	})
-	r.POST("/api/scheduler/run-now", func(c *gin.Context) {
-		sched.RunNow()
-		c.JSON(200, gin.H{"ok": true, "message": "已触发立即执行"})
-	})
 
 	r.GET("/api/tick/status", func(c *gin.Context) {
 		c.JSON(200, tickSched.GetStatus())
@@ -318,6 +284,10 @@ func SetupRouter(sched *scheduler.Scheduler, tickSched *tickscheduler.TickSchedu
 	r.GET("/api/tick/stream", func(c *gin.Context) {
 		handleTickStream(c, tickSched.GetFetcher())
 	})
+	r.GET("/api/tick/dates", handleTickDates)
+	r.GET("/api/tick/replay-stream", handleTickReplayStream)
+	r.GET("/api/tick/events/:date", handleTickEvents)
+	r.GET("/api/dashboard", handleDashboard)
 
 	r.GET("/output/:date/:file", serveVideo)
 
@@ -437,26 +407,95 @@ func handleExportHotSectors(c *gin.Context) {
 	})
 }
 
+type SaveAllTask struct {
+	mu       sync.Mutex
+	Date     string    `json:"date"`
+	Status   string    `json:"status"`
+	Progress string    `json:"progress"`
+	Count    int       `json:"count"`
+	Err      string    `json:"error,omitempty"`
+	Created  time.Time `json:"created"`
+}
+
+var (
+	saveAllTasks      = make(map[string]*SaveAllTask)
+	saveAllTasksMu    sync.Mutex
+	saveAllTaskCounter int
+)
+
 func handleSaveAllSectors(c *gin.Context) {
 	dateStr := c.Param("date")
 	if dateStr == "" {
 		dateStr = time.Now().Format("2006-01-02")
 	}
 
-	db, err := storage.Get()
-	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+	saveAllTasksMu.Lock()
+	saveAllTaskCounter++
+	taskID := fmt.Sprintf("save_%s_%d", dateStr, saveAllTaskCounter)
+	task := &SaveAllTask{
+		Date:    dateStr,
+		Status:  "pending",
+		Created: time.Now(),
+	}
+	saveAllTasks[taskID] = task
+	saveAllTasksMu.Unlock()
+
+	go runSaveAllTask(task)
+
+	c.JSON(200, gin.H{
+		"task_id": taskID,
+		"message": "已启动后台获取任务",
+	})
+}
+
+func handleSaveAllStatus(c *gin.Context) {
+	taskID := c.Param("task_id")
+	saveAllTasksMu.Lock()
+	task, ok := saveAllTasks[taskID]
+	saveAllTasksMu.Unlock()
+
+	if !ok {
+		c.JSON(404, gin.H{"error": "任务不存在"})
 		return
 	}
 
-	var allSectors []fetcher.Sector
+	task.mu.Lock()
+	resp := gin.H{
+		"task_id":  taskID,
+		"date":     task.Date,
+		"status":   task.Status,
+		"progress": task.Progress,
+		"count":    task.Count,
+	}
+	if task.Err != "" {
+		resp["error"] = task.Err
+	}
+	task.mu.Unlock()
+
+	c.JSON(200, resp)
+}
+
+func runSaveAllTask(task *SaveAllTask) {
+	task.mu.Lock()
+	task.Status = "running"
+	task.Progress = "开始获取板块数据..."
+	task.mu.Unlock()
+
+	var allSectors []storage.SectorAll
 	allFS := []string{"m:90+t:2", "m:90+t:3"}
 	for _, fs := range allFS {
 		for pn := 1; ; pn++ {
+			task.mu.Lock()
+			task.Progress = fmt.Sprintf("获取第%d页...", pn)
+			task.mu.Unlock()
+
 			url := fmt.Sprintf("https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData?fields=f12,f14,f62&pn=%d&pz=500&fid=f62&po=1&fs=%s&ut=b2884a39ad64002292a3e90d46a5", pn, fs)
 			req, err := http.NewRequest("GET", url, nil)
 			if err != nil {
-				c.JSON(500, gin.H{"error": err.Error()})
+				task.mu.Lock()
+				task.Status = "error"
+				task.Err = err.Error()
+				task.mu.Unlock()
 				return
 			}
 			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
@@ -464,7 +503,10 @@ func handleSaveAllSectors(c *gin.Context) {
 
 			resp, err := exportHTTPClient.Do(req)
 			if err != nil {
-				c.JSON(500, gin.H{"error": err.Error()})
+				task.mu.Lock()
+				task.Status = "error"
+				task.Err = fmt.Sprintf("API请求失败: %v", err)
+				task.mu.Unlock()
 				return
 			}
 
@@ -479,12 +521,15 @@ func handleSaveAllSectors(c *gin.Context) {
 
 			for _, item := range result.Data.Diff {
 				name, _ := item["f14"].(string)
+				code, _ := item["f12"].(string)
 				netVal := item["f62"]
 				if name == "" || netVal == nil {
 					continue
 				}
 				if f, ok := toFloat64(netVal); ok && f != 0 {
-					allSectors = append(allSectors, fetcher.Sector{
+					allSectors = append(allSectors, storage.SectorAll{
+						Date: task.Date,
+						Code: code,
 						Name: name,
 						Net:  roundTo2(f / 1e8),
 					})
@@ -498,24 +543,146 @@ func handleSaveAllSectors(c *gin.Context) {
 		}
 	}
 
-	records := make([]storage.Sector, 0, len(allSectors))
-	for _, s := range allSectors {
-		records = append(records, storage.Sector{
-			Datetime: storage.DateToDatetime(dateStr),
-			Name:     s.Name,
-			Net:      s.Net,
-		})
+	task.mu.Lock()
+	task.Progress = "正在保存到数据库..."
+	task.Count = len(allSectors)
+	task.mu.Unlock()
+
+	db, err := storage.Get()
+	if err != nil {
+		task.mu.Lock()
+		task.Status = "error"
+		task.Err = fmt.Sprintf("数据库连接失败: %v", err)
+		task.mu.Unlock()
+		return
 	}
 
-	if err := db.SaveSectors(records); err != nil {
+	if err := db.SaveSectorsAll(allSectors); err != nil {
+		task.mu.Lock()
+		task.Status = "error"
+		task.Err = fmt.Sprintf("保存数据库失败: %v", err)
+		task.mu.Unlock()
+		return
+	}
+
+	task.mu.Lock()
+	task.Status = "done"
+	task.Progress = fmt.Sprintf("完成: 已保存 %d 个板块数据", len(allSectors))
+	task.Count = len(allSectors)
+	task.mu.Unlock()
+}
+
+func handleGetAllSectors(c *gin.Context) {
+	dateStr := c.Param("date")
+	if dateStr == "" {
+		dateStr = time.Now().Format("2006-01-02")
+	}
+
+	db, err := storage.Get()
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	sectors, err := db.LoadSectorsAll(dateStr)
+	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
 
 	c.JSON(200, gin.H{
-		"date":   dateStr,
-		"count":  len(records),
-		"status": "saved",
+		"date":    dateStr,
+		"sectors": sectors,
+	})
+}
+
+func handleGetSectorsTrend(c *gin.Context) {
+	name := c.Query("name")
+	startDate := c.Query("start_date")
+	endDate := c.Query("end_date")
+
+	if name == "" || startDate == "" || endDate == "" {
+		c.JSON(400, gin.H{"error": "缺少参数: name, start_date, end_date"})
+		return
+	}
+
+	db, err := storage.Get()
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	sectors, err := db.LoadSectorTrend(name, startDate, endDate)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"name":    name,
+		"sectors": sectors,
+	})
+}
+
+func handleGetSectorsAllRange(c *gin.Context) {
+	startDate := c.Query("start_date")
+	endDate := c.Query("end_date")
+
+	if startDate == "" || endDate == "" {
+		c.JSON(400, gin.H{"error": "缺少参数: start_date, end_date"})
+		return
+	}
+
+	db, err := storage.Get()
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	sectors, err := db.LoadSectorsAllRange(startDate, endDate)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"sectors": sectors,
+	})
+}
+
+func handleGetSectorsAllNames(c *gin.Context) {
+	db, err := storage.Get()
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	names, err := db.ListSectorsAllNames()
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"names": names,
+	})
+}
+
+func handleGetSectorsAllDates(c *gin.Context) {
+	db, err := storage.Get()
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	dates, err := db.ListSectorsAllDates()
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"dates": dates,
 	})
 }
 
@@ -533,140 +700,6 @@ func handleFiles(c *gin.Context) {
 		"videos": videoMap,
 		"文案":     cpy,
 	})
-}
-
-func handleGenerate(c *gin.Context) {
-	var body struct {
-		Date     string `json:"date"`
-		CopyMode string `json:"copy_mode"`
-		Format   string `json:"format"`
-		Session  string `json:"session"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
-		return
-	}
-	if body.Date == "" {
-		body.Date = time.Now().Format("2006-01-02")
-	}
-	if body.Format == "" {
-		body.Format = "mobile"
-	}
-	if body.Session == "" {
-		body.Session = "full"
-	}
-
-	sse := NewSSEWriter(c)
-
-	var hasData bool
-	if body.Session == "morning" {
-		if db, err := storage.Get(); err == nil {
-			if pts, _ := db.LoadTickSectors(body.Date); len(pts) > 0 {
-				hasData = true
-			}
-		}
-	} else {
-		cachePath := filepath.Join(config.GetDataDir(), body.Date, "sectors.csv")
-		if _, err := os.Stat(cachePath); err == nil {
-			hasData = true
-		}
-	}
-	if !hasData {
-		sse.Send("log", fmt.Sprintf("❌ %s 无%s数据，请先拉取", body.Date, config.SessionConfigs[body.Session].TitleSuffix))
-		sse.Send("error", fmt.Sprintf("%s 无数据，请先拉取", body.Date))
-		return
-	}
-
-	sectors, err := fetcher.LoadSessionData(body.Date, body.Session)
-	if err != nil || len(sectors) == 0 {
-		sse.Send("error", "加载板块数据失败")
-		return
-	}
-	sse.Send("log", fmt.Sprintf("✅ 已加载 %d 个板块", len(sectors)))
-	sse.Send("progress", fmt.Sprintf("已加载 %d 个板块", len(sectors)))
-
-	var events, timeline, ticker any
-	if len(sectors) > 0 {
-		ev, tl, tk := analyzer.AnalyzeAllContent(sectors, body.Date, body.Session)
-		events, timeline, ticker = ev, tl, tk
-		if len(ev) == 0 {
-			events = analyzer.GetFallbackEvents(config.TotalFrames)
-			sse.Send("log", "⚠️ 大模型分析失败，使用默认事件")
-		} else {
-			sse.Send("log", fmt.Sprintf("✅ 大模型生成 %d 个市场事件", len(ev)))
-		}
-	} else {
-		events = analyzer.GetFallbackEvents(config.TotalFrames)
-		sse.Send("log", "⚠️ 无数据，使用默认事件")
-	}
-
-	sessCfg := config.SessionConfigs[body.Session]
-	fmtLabel := sessCfg.TitleSuffix + " "
-	if body.Format == "mobile" {
-		fmtLabel += "App (9:16)"
-	} else {
-		fmtLabel += "TV (16:9)"
-	}
-	sse.Send("log", fmt.Sprintf("🎬 开始渲染: %s", fmtLabel))
-	sse.Send("log", fmt.Sprintf("▶️ 开始生成 %s %s视频 (%s)...", body.Date, sessCfg.TitleSuffix, fmtLabel))
-	sse.Send("progress", "生成视频...")
-
-	outputDir := config.GetOutputDir()
-	formatSuffix := ""
-	if body.Format == "tv" {
-		formatSuffix = "_tv"
-	}
-	outPath := filepath.Join(outputDir, body.Date, fmt.Sprintf("%s%s.mp4", sessCfg.FilenameSuffix, formatSuffix))
-
-	evSlice := toMarketEvents(events)
-	tlSlice := toTimelineEvents(timeline)
-	tkSlice := toTickerItems(ticker)
-
-	if _, err := renderer.RenderVideo(sectors, body.Date, outPath, evSlice, tlSlice, tkSlice, body.Format, body.Session); err != nil {
-		sse.Send("error", fmt.Sprintf("渲染失败: %v", err))
-		return
-	}
-	sse.Send("log", fmt.Sprintf("✅ %s视频生成完成", sessCfg.TitleSuffix))
-
-	fn := copy.GenerateCopywriting
-	sessions := []string{"full", "morning"}
-	if body.CopyMode == "ai" {
-		sse.Send("log", "✍️ 生成文案（AI模式）...")
-		for _, sess := range sessions {
-			sessCfg := config.SessionConfigs[sess]
-			aiText, err := copy.GenerateCopywritingAI(sectors, body.Date, sess)
-			if err != nil {
-				sse.Send("log", fmt.Sprintf("⚠️ AI文案(%s)生成失败: %v", sessCfg.TitleSuffix, err))
-			} else {
-				if db, err := storage.Get(); err == nil {
-					_ = db.SaveCopywriting(storage.Copywriting{
-						Date:    body.Date,
-						Session: sess,
-						Type:    "ai",
-						Content: aiText,
-					})
-				}
-				sse.Send("log", fmt.Sprintf("✅ %s文案已保存", sessCfg.TitleSuffix))
-			}
-		}
-	} else {
-		sse.Send("log", "✍️ 生成文案（模板模式）...")
-		for _, sess := range sessions {
-			text := fn(sectors, body.Date, sess)
-			if db, err := storage.Get(); err == nil {
-				_ = db.SaveCopywriting(storage.Copywriting{
-					Date:    body.Date,
-					Session: sess,
-					Type:    "template",
-					Content: text,
-				})
-			}
-		}
-		sse.Send("log", "✅ 文案已保存")
-	}
-
-	sse.Send("progress", "完成")
-	sse.Send("done", "生成完毕")
 }
 
 func handleGenerateMultiDay(c *gin.Context) {
@@ -914,36 +947,6 @@ func getCopy(dateStr string) map[string]map[string]string {
 	return result
 }
 
-func toMarketEvents(v any) []analyzer.MarketEvent {
-	if v == nil {
-		return nil
-	}
-	if s, ok := v.([]analyzer.MarketEvent); ok {
-		return s
-	}
-	return nil
-}
-
-func toTimelineEvents(v any) []analyzer.TimelineEvent {
-	if v == nil {
-		return nil
-	}
-	if s, ok := v.([]analyzer.TimelineEvent); ok {
-		return s
-	}
-	return nil
-}
-
-func toTickerItems(v any) []analyzer.TickerItem {
-	if v == nil {
-		return nil
-	}
-	if s, ok := v.([]analyzer.TickerItem); ok {
-		return s
-	}
-	return nil
-}
-
 func toFloat64(v any) (float64, bool) {
 	switch val := v.(type) {
 	case float64:
@@ -1070,6 +1073,368 @@ func handleTickStream(c *gin.Context, tf *tickfetcher.TickFetcher) {
 			sse.Send("tick", string(b))
 		}
 	}
+}
+
+// handleTickDates 返回所有有 tick 数据的日期
+func handleTickDates(c *gin.Context) {
+	db, err := storage.Get()
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	dates, err := db.ListTickDates()
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{"dates": dates})
+}
+
+// handleTickReplayStream 回放指定日期的历史 tick 数据
+func handleTickReplayStream(c *gin.Context) {
+	date := c.Query("date")
+	if date == "" {
+		c.JSON(400, gin.H{"error": "缺少参数 date"})
+		return
+	}
+
+	l := logger.With(zap.String("date", date))
+	l.Info("tick 回放请求")
+
+	db, err := storage.Get()
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	sectors, err := db.LoadTickSectors(date)
+	if err != nil || len(sectors) == 0 {
+		l.Warn("无 tick 数据")
+		c.JSON(404, gin.H{"error": "该日期无 tick 数据"})
+		return
+	}
+	l.Info("加载 tick 数据", zap.Int("records", len(sectors)))
+
+	sse := NewSSEWriter(c)
+
+	// 按时间分组
+	type timeSlice struct {
+		time    string
+		sectors []fetcher.Sector
+	}
+	timeMap := make(map[string][]fetcher.Sector)
+	var timeOrder []string
+	for _, s := range sectors {
+		t := storage.ExtractTime(s.Datetime)
+		if t == "" {
+			continue
+		}
+		if _, ok := timeMap[t]; !ok {
+			timeOrder = append(timeOrder, t)
+		}
+		timeMap[t] = append(timeMap[t], fetcher.Sector{Name: s.Name, Net: s.Net})
+	}
+	sort.Strings(timeOrder)
+	l.Info("时间分组完成", zap.Int("timePoints", len(timeOrder)))
+
+	// 去重（同一时间同一板块只保留最后一条）
+	deduped := make([]timeSlice, 0, len(timeOrder))
+	for _, t := range timeOrder {
+		seen := make(map[string]int)
+		var unique []fetcher.Sector
+		for i, s := range timeMap[t] {
+			if _, ok := seen[s.Name]; ok {
+				seen[s.Name] = i
+				continue
+			}
+			seen[s.Name] = i
+			unique = append(unique, s)
+		}
+		deduped = append(deduped, timeSlice{time: t, sectors: unique})
+	}
+	l.Info("去重完成", zap.Int("dedupedPoints", len(deduped)))
+
+	// 推送初始空快照
+	snapshot := tickfetcher.TickSnapshot{
+		Points:   []tickfetcher.TickPoint{},
+		Date:     date,
+		Running:  true,
+		Count:    0,
+		LastTime: "",
+	}
+	b, _ := json.Marshal(snapshot)
+	sse.Send("tick", string(b))
+	l.Info("推送初始快照")
+
+	// 加速回放：每个时间点间隔 200ms
+	replayInterval := 200 * time.Millisecond
+	ticker := time.NewTicker(replayInterval)
+	defer ticker.Stop()
+
+	ctx := c.Request.Context()
+	for i, ts := range deduped {
+		select {
+		case <-ctx.Done():
+			l.Info("客户端断开，回放中断", zap.Int("played", i))
+			return
+		case <-ticker.C:
+		}
+
+		points := make([]tickfetcher.TickPoint, 0, len(ts.sectors))
+		for _, s := range ts.sectors {
+			points = append(points, tickfetcher.TickPoint{
+				Time: ts.time,
+				Name: s.Name,
+				Net:  s.Net,
+			})
+		}
+
+		snapshot := tickfetcher.TickSnapshot{
+			Points:   points,
+			Date:     date,
+			Running:  i < len(deduped)-1,
+			Count:    i + 1,
+			LastTime: ts.time,
+		}
+		b, _ := json.Marshal(snapshot)
+		sse.Send("tick", string(b))
+	}
+
+	// 回放完成，发送最终状态
+	finalPoints := make([]tickfetcher.TickPoint, 0, len(deduped[len(deduped)-1].sectors))
+	for _, s := range deduped[len(deduped)-1].sectors {
+		finalPoints = append(finalPoints, tickfetcher.TickPoint{
+			Time: deduped[len(deduped)-1].time,
+			Name: s.Name,
+			Net:  s.Net,
+		})
+	}
+	snapshot = tickfetcher.TickSnapshot{
+		Points:   finalPoints,
+		Date:     date,
+		Running:  false,
+		Count:    len(deduped),
+		LastTime: deduped[len(deduped)-1].time,
+	}
+	b, _ = json.Marshal(snapshot)
+	sse.Send("tick", string(b))
+	sse.Send("replay_done", "回放完成")
+	l.Info("回放完成", zap.Int("totalPoints", len(deduped)))
+}
+
+func handleTickEvents(c *gin.Context) {
+	date := c.Param("date")
+	if date == "" {
+		date = time.Now().Format("2006-01-02")
+	}
+	session := c.DefaultQuery("session", "full")
+
+	db, err := storage.Get()
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	cached, err := db.LoadTickEvents(date, session)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if cached != nil {
+		c.Data(200, "application/json", cached)
+		return
+	}
+
+	points, err := tickfetcher.LoadTickCSV(date, session)
+	if err != nil || len(points) == 0 {
+		c.JSON(404, gin.H{"error": "该日期无 tick 数据"})
+		return
+	}
+
+	events, timeline, ticker := analyzer.AnalyzeTickContent(points, date, session)
+
+	payload := map[string]any{
+		"timeline": timeline,
+		"events":   events,
+		"ticker":   ticker,
+	}
+	payloadJSON, _ := json.Marshal(payload)
+
+	_ = db.SaveTickEvents(date, session, payloadJSON)
+
+	l := logger.With(zap.String("date", date), zap.String("session", session))
+	l.Info("tick 事件已生成并落库", zap.Int("events", len(events)), zap.Int("timeline", len(timeline)), zap.Int("ticker", len(ticker)))
+
+	c.JSON(200, payload)
+}
+
+// handleDashboard 返回仪表盘所需的全量聚合数据（单次请求）。
+func handleDashboard(c *gin.Context) {
+	dates := getDates()
+	var allDates []string
+	for _, d := range dates {
+		allDates = append(allDates, d)
+	}
+
+	resp := gin.H{
+		"dates":               allDates,
+		"marketOverview":      gin.H{"totalSectors": 0, "inflowCount": 0, "outflowCount": 0, "totalNet": 0, "topSector": nil, "worstSector": nil},
+		"ranking":             []gin.H{},
+		"events":              []gin.H{},
+		"trend":               map[string][]gin.H{},
+		"trendDates":          []string{},
+	}
+
+	if len(allDates) == 0 {
+		c.JSON(200, resp)
+		return
+	}
+
+	latestDate := allDates[0]
+	var sectors []fetcher.Sector
+	var err error
+
+	sectors, err = fetcher.LoadSessionData(latestDate, "full")
+	if err != nil || len(sectors) == 0 {
+		if db, dbErr := storage.Get(); dbErr == nil {
+			if records, loadErr := db.LoadSectorsAll(latestDate); loadErr == nil && len(records) > 0 {
+				for _, r := range records {
+					sectors = append(sectors, fetcher.Sector{Name: r.Name, Net: r.Net})
+				}
+			}
+		}
+	}
+
+	netValues := make([]gin.H, 0, len(sectors))
+	inflowCount := 0
+	outflowCount := 0
+	totalNet := 0.0
+	for _, s := range sectors {
+		netValues = append(netValues, gin.H{"name": s.Name, "net": s.Net})
+		if s.Net >= 0 {
+			inflowCount++
+		} else {
+			outflowCount++
+		}
+		totalNet += s.Net
+	}
+	totalNet = roundTo2(totalNet)
+
+	sort.Slice(netValues, func(i, j int) bool {
+		ni, _ := netValues[i]["net"].(float64)
+		nj, _ := netValues[j]["net"].(float64)
+		return ni > nj
+	})
+
+	var topSector *gin.H
+	var worstSector *gin.H
+	if len(netValues) > 0 {
+		top := netValues[0]
+		topSector = &top
+		w := netValues[len(netValues)-1]
+		worstSector = &w
+	}
+
+	resp["marketOverview"] = gin.H{
+		"totalSectors": len(sectors),
+		"inflowCount":  inflowCount,
+		"outflowCount": outflowCount,
+		"totalNet":     totalNet,
+		"topSector":    topSector,
+		"worstSector":  worstSector,
+	}
+	resp["ranking"] = netValues
+
+	if eventsData, evErr := fetchTickEventsData(latestDate, "full"); evErr == nil {
+		limited := eventsData
+		if len(limited) > 20 {
+			limited = limited[:20]
+		}
+		resp["events"] = limited
+	}
+
+	top5Names := make([]string, 0, 5)
+	for i, item := range netValues {
+		if i >= 5 {
+			break
+		}
+		if name, ok := item["name"].(string); ok {
+			top5Names = append(top5Names, name)
+		}
+	}
+
+	if len(top5Names) > 0 && len(allDates) >= 2 {
+		startDate := allDates[len(allDates)-1]
+		endDate := allDates[0]
+		trendData := make(map[string][]gin.H)
+		var allTrendDates []string
+
+		if db, dbErr := storage.Get(); dbErr == nil {
+			for _, name := range top5Names {
+				if records, loadErr := db.LoadSectorTrend(name, startDate, endDate); loadErr == nil {
+					points := make([]gin.H, 0, len(records))
+					for _, r := range records {
+						points = append(points, gin.H{"date": r.Date, "net": r.Net})
+					}
+					trendData[name] = points
+				}
+			}
+
+			dateSet := make(map[string]bool)
+			for _, points := range trendData {
+				for _, p := range points {
+					if d, ok := p["date"].(string); ok {
+						dateSet[d] = true
+					}
+				}
+			}
+			for d := range dateSet {
+				allTrendDates = append(allTrendDates, d)
+			}
+			sort.Strings(allTrendDates)
+			resp["trendDates"] = allTrendDates
+		}
+		resp["trend"] = trendData
+	}
+
+	c.JSON(200, resp)
+}
+
+func fetchTickEventsData(date, session string) ([]gin.H, error) {
+	db, err := storage.Get()
+	if err != nil {
+		return nil, err
+	}
+
+	cached, err := db.LoadTickEvents(date, session)
+	if err == nil && cached != nil {
+		var payload struct {
+			Timeline []gin.H `json:"timeline"`
+		}
+		if json.Unmarshal(cached, &payload) == nil {
+			return payload.Timeline, nil
+		}
+	}
+
+	points, err := tickfetcher.LoadTickCSV(date, session)
+	if err != nil || len(points) == 0 {
+		return nil, fmt.Errorf("no tick data for %s", date)
+	}
+
+	_, timeline, _ := analyzer.AnalyzeTickContent(points, date, session)
+	result := make([]gin.H, 0, len(timeline))
+	for _, ev := range timeline {
+		result = append(result, gin.H{
+			"time":        ev.Time,
+			"sector":      ev.Sector,
+			"title":       ev.Title,
+			"description": ev.Description,
+			"sentiment":   ev.Sentiment,
+		})
+	}
+	return result, nil
 }
 
 func corsMiddleware() gin.HandlerFunc {

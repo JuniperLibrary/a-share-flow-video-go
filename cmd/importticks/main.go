@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/storage"
@@ -45,6 +46,7 @@ func main() {
 	}
 	defer db.Close()
 
+	inputDate := time.Now().Format("2006-01-02 15:04:05")
 	var count int
 	for _, rec := range records[1:] {
 		if len(rec) < 3 {
@@ -59,7 +61,7 @@ func main() {
 
 		datetime := storage.DateToDatetimeTick(dateStr, timeStr)
 		if err := db.SaveSectors([]storage.Sector{
-			{Datetime: datetime, Name: name, Net: net},
+			{Datetime: datetime, Name: name, Net: net, InputDate: inputDate},
 		}); err != nil {
 			fmt.Fprintf(os.Stderr, "写入失败 [%s %s]: %v\n", datetime, name, err)
 			continue

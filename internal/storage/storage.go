@@ -2,6 +2,7 @@ package storage
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,9 +18,17 @@ type DB struct {
 }
 
 type Sector struct {
-	Datetime string  `json:"datetime"` // "2026-05-19 09:30" (tick) or "2026-05-19" (full)
-	Name     string  `json:"name"`
-	Net      float64 `json:"net"`
+	Datetime   string  `json:"datetime"`   // "2026-05-19 09:30" (tick) or "2026-05-19" (full)
+	Name       string  `json:"name"`
+	Net        float64 `json:"net"`
+	InputDate  string  `json:"input_date"` // 录入时间 "2026-05-22 13:14:19"
+}
+
+type SectorAll struct {
+	Date string  `json:"date"` // "2026-05-19"
+	Code string  `json:"code"` // 板块代码 BKxxxx
+	Name string  `json:"name"` // 板块名称
+	Net  float64 `json:"net"`  // 主力资金净流入（亿）
 }
 
 type Copywriting struct {
@@ -61,9 +70,10 @@ func (db *DB) Close() error {
 func (db *DB) initSchema() error {
 	schema := `
 	CREATE TABLE IF NOT EXISTS sectors (
-		datetime TEXT    NOT NULL,  -- 时间 "2026-05-19 09:30" (tick) 或 "2026-05-19" (全量)
-		name     TEXT    NOT NULL,  -- 板块名称
-		net      REAL    NOT NULL,  -- 主力资金净流入（亿）
+		datetime   TEXT    NOT NULL,  -- 时间 "2026-05-19 09:30" (tick) 或 "2026-05-19" (全量)
+		name       TEXT    NOT NULL,  -- 板块名称
+		net        REAL    NOT NULL,  -- 主力资金净流入（亿）
+		input_date TEXT    NOT NULL DEFAULT '',  -- 录入时间 "2026-05-22 13:14:19"
 		PRIMARY KEY (datetime, name)
 	);
 
@@ -75,11 +85,35 @@ func (db *DB) initSchema() error {
 		PRIMARY KEY (date, session, type)
 	);
 
+	CREATE TABLE IF NOT EXISTS sectors_all (
+		date TEXT    NOT NULL,  -- 日期 "2026-05-19"
+		code TEXT    NOT NULL,  -- 板块代码 BKxxxx
+		name TEXT    NOT NULL,  -- 板块名称
+		net  REAL    NOT NULL,  -- 主力资金净流入（亿）
+		PRIMARY KEY (date, name)
+	);
+
+	CREATE TABLE IF NOT EXISTS tick_events (
+		date    TEXT    NOT NULL,  -- 日期 "2026-05-19"
+		session TEXT    NOT NULL,  -- 时段 "full" / "morning"
+		type    TEXT    NOT NULL,  -- 类型 "timeline" / "market" / "ticker"
+		payload TEXT    NOT NULL,  -- JSON 数据
+		PRIMARY KEY (date, session, type)
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_sectors_date ON sectors(datetime);
 	CREATE INDEX IF NOT EXISTS idx_copywriting_date ON copywriting(date);
+	CREATE INDEX IF NOT EXISTS idx_sectors_all_date ON sectors_all(date);
+	CREATE INDEX IF NOT EXISTS idx_tick_events_date ON tick_events(date);
 	`
-	_, err := db.db.Exec(schema)
-	return err
+	if _, err := db.db.Exec(schema); err != nil {
+		return err
+	}
+
+	// Migration: add input_date column to existing databases
+	_, _ = db.db.Exec("ALTER TABLE sectors ADD COLUMN input_date TEXT NOT NULL DEFAULT ''")
+
+	return nil
 }
 
 func (db *DB) SaveSectors(sectors []Sector) error {
@@ -96,14 +130,14 @@ func (db *DB) SaveSectors(sectors []Sector) error {
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO sectors (datetime, name, net) VALUES (?, ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO sectors (datetime, name, net, input_date) VALUES (?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
 	for _, s := range sectors {
-		if _, err := stmt.Exec(s.Datetime, s.Name, s.Net); err != nil {
+		if _, err := stmt.Exec(s.Datetime, s.Name, s.Net, s.InputDate); err != nil {
 			return err
 		}
 	}
@@ -115,7 +149,7 @@ func (db *DB) LoadFullSectors(date string) ([]Sector, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	rows, err := db.db.Query("SELECT datetime, name, net FROM sectors WHERE datetime = ? ORDER BY ABS(net) DESC", date)
+	rows, err := db.db.Query("SELECT datetime, name, net, input_date FROM sectors WHERE datetime = ? ORDER BY ABS(net) DESC", date)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +158,7 @@ func (db *DB) LoadFullSectors(date string) ([]Sector, error) {
 	var sectors []Sector
 	for rows.Next() {
 		var s Sector
-		if err := rows.Scan(&s.Datetime, &s.Name, &s.Net); err != nil {
+		if err := rows.Scan(&s.Datetime, &s.Name, &s.Net, &s.InputDate); err != nil {
 			return nil, err
 		}
 		sectors = append(sectors, s)
@@ -136,7 +170,7 @@ func (db *DB) LoadTickSectors(date string) ([]Sector, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	rows, err := db.db.Query("SELECT datetime, name, net FROM sectors WHERE datetime LIKE ? AND datetime != ? ORDER BY datetime, ABS(net) DESC", date+" %", date)
+	rows, err := db.db.Query("SELECT datetime, name, net, input_date FROM sectors WHERE datetime LIKE ? AND datetime != ? ORDER BY datetime, ABS(net) DESC", date+" %", date)
 	if err != nil {
 		return nil, err
 	}
@@ -145,12 +179,24 @@ func (db *DB) LoadTickSectors(date string) ([]Sector, error) {
 	var sectors []Sector
 	for rows.Next() {
 		var s Sector
-		if err := rows.Scan(&s.Datetime, &s.Name, &s.Net); err != nil {
+		if err := rows.Scan(&s.Datetime, &s.Name, &s.Net, &s.InputDate); err != nil {
 			return nil, err
 		}
 		sectors = append(sectors, s)
 	}
 	return sectors, rows.Err()
+}
+
+func (db *DB) HasTickData(datetime string) (bool, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	var count int
+	err := db.db.QueryRow("SELECT COUNT(*) FROM sectors WHERE datetime = ?", datetime).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 func (db *DB) DeleteSectorsByDate(date string) error {
@@ -159,6 +205,140 @@ func (db *DB) DeleteSectorsByDate(date string) error {
 
 	_, err := db.db.Exec("DELETE FROM sectors WHERE datetime = ? OR datetime LIKE ?", date, date+" %")
 	return err
+}
+
+func (db *DB) SaveSectorsAll(sectors []SectorAll) error {
+	if len(sectors) == 0 {
+		return nil
+	}
+
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	tx, err := db.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO sectors_all (date, code, name, net) VALUES (?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, s := range sectors {
+		if _, err := stmt.Exec(s.Date, s.Code, s.Name, s.Net); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+func (db *DB) LoadSectorsAll(date string) ([]SectorAll, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	rows, err := db.db.Query("SELECT date, code, name, net FROM sectors_all WHERE date = ? ORDER BY ABS(net) DESC", date)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sectors []SectorAll
+	for rows.Next() {
+		var s SectorAll
+		if err := rows.Scan(&s.Date, &s.Code, &s.Name, &s.Net); err != nil {
+			return nil, err
+		}
+		sectors = append(sectors, s)
+	}
+	return sectors, rows.Err()
+}
+
+func (db *DB) ListSectorsAllDates() ([]string, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	rows, err := db.db.Query("SELECT DISTINCT date FROM sectors_all ORDER BY date DESC")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var dates []string
+	for rows.Next() {
+		var d string
+		if err := rows.Scan(&d); err != nil {
+			return nil, err
+		}
+		dates = append(dates, d)
+	}
+	return dates, rows.Err()
+}
+
+func (db *DB) LoadSectorsAllRange(startDate, endDate string) ([]SectorAll, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	rows, err := db.db.Query("SELECT date, code, name, net FROM sectors_all WHERE date >= ? AND date <= ? ORDER BY date, ABS(net) DESC", startDate, endDate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sectors []SectorAll
+	for rows.Next() {
+		var s SectorAll
+		if err := rows.Scan(&s.Date, &s.Code, &s.Name, &s.Net); err != nil {
+			return nil, err
+		}
+		sectors = append(sectors, s)
+	}
+	return sectors, rows.Err()
+}
+
+func (db *DB) LoadSectorTrend(name, startDate, endDate string) ([]SectorAll, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	rows, err := db.db.Query("SELECT date, code, name, net FROM sectors_all WHERE name = ? AND date >= ? AND date <= ? ORDER BY date", name, startDate, endDate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sectors []SectorAll
+	for rows.Next() {
+		var s SectorAll
+		if err := rows.Scan(&s.Date, &s.Code, &s.Name, &s.Net); err != nil {
+			return nil, err
+		}
+		sectors = append(sectors, s)
+	}
+	return sectors, rows.Err()
+}
+
+func (db *DB) ListSectorsAllNames() ([]string, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	rows, err := db.db.Query("SELECT DISTINCT name FROM sectors_all ORDER BY name")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		names = append(names, n)
+	}
+	return names, rows.Err()
 }
 
 func (db *DB) SaveCopywriting(cw Copywriting) error {
@@ -265,4 +445,29 @@ func ExtractTime(datetime string) string {
 		return datetime[idx+1:]
 	}
 	return ""
+}
+
+func (db *DB) SaveTickEvents(date, session string, payload json.RawMessage) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	_, err := db.db.Exec(`INSERT OR REPLACE INTO tick_events (date, session, type, payload) VALUES (?, ?, 'combined', ?)`,
+		date, session, string(payload))
+	return err
+}
+
+func (db *DB) LoadTickEvents(date, session string) (json.RawMessage, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	var payloadStr string
+	err := db.db.QueryRow("SELECT payload FROM tick_events WHERE date = ? AND session = ? AND type = 'combined'",
+		date, session).Scan(&payloadStr)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(payloadStr), nil
 }

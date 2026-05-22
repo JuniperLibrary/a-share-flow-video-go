@@ -13,6 +13,7 @@ import (
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/fetcher"
 	"github.com/a-share-flow-video-go/internal/logger"
+	"github.com/a-share-flow-video-go/internal/storage"
 	"github.com/a-share-flow-video-go/internal/tickfetcher"
 	"go.uber.org/zap"
 )
@@ -71,7 +72,24 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 	sectorTicks := buildSectorTicks(points)
 
 	if len(timeline) == 0 {
-		events, timeline, ticker = analyzer.AnalyzeTickContent(points, dateStr, session)
+		db, dbErr := storage.Get()
+		if dbErr == nil {
+			cached, _ := db.LoadTickEvents(dateStr, session)
+			if cached != nil {
+				var payload struct {
+					Timeline []analyzer.TimelineEvent `json:"timeline"`
+					Events   []analyzer.MarketEvent   `json:"events"`
+					Ticker   []analyzer.TickerItem    `json:"ticker"`
+				}
+				if err := json.Unmarshal(cached, &payload); err == nil && len(payload.Events) > 0 {
+					events, timeline, ticker = payload.Events, payload.Timeline, payload.Ticker
+					logger.Info("tick 事件从缓存加载", zap.String("date", dateStr), zap.String("session", session))
+				}
+			}
+		}
+		if len(events) == 0 {
+			events, timeline, ticker = analyzer.AnalyzeTickContent(points, dateStr, session)
+		}
 	}
 	if len(events) == 0 {
 		events = analyzer.GetFallbackEvents(TotalFrames)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -41,7 +42,17 @@ type emResponse struct {
 	} `json:"data"`
 }
 
-var httpClient = &http.Client{Timeout: 15 * time.Second}
+var httpClient = &http.Client{
+	Timeout: 30 * time.Second,
+	Transport: &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 20 * time.Second,
+	},
+}
 
 func newRequest(method, url string) (*http.Request, error) {
 	req, err := http.NewRequest(method, url, nil)
@@ -59,28 +70,48 @@ func fetchEMRaw(fs string) ([]map[string]any, error) {
 	pn := 1
 
 	for {
-		url := fmt.Sprintf("https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData?fields=f12,f14,f62&pn=%d&pz=500&fid=f62&po=1&fs=%s&ut=b2884a393a59ad64002292a3e90d46a5", pn, fs)
-
-		req, err := newRequest("GET", url)
-		if err != nil {
-			return nil, err
-		}
-		resp, err := httpClient.Do(req)
-		if err != nil {
-			return nil, err
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
-			return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
-		}
-
 		var result emResponse
-		if err := decodeJSON(resp.Body, &result); err != nil {
+		var err error
+
+		for attempt := 1; attempt <= 3; attempt++ {
+			url := fmt.Sprintf("https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData?fields=f12,f14,f62&pn=%d&pz=500&fid=f62&po=1&fs=%s&ut=b2884a393a59ad64002292a3e90d46a5", pn, fs)
+
+			req, reqErr := newRequest("GET", url)
+			if reqErr != nil {
+				return nil, reqErr
+			}
+			resp, reqErr := httpClient.Do(req)
+			if reqErr != nil {
+				if attempt < 3 {
+					time.Sleep(time.Duration(attempt) * 2 * time.Second)
+					continue
+				}
+				return nil, reqErr
+			}
+
+			if resp.StatusCode != http.StatusOK {
+				resp.Body.Close()
+				if attempt < 3 {
+					time.Sleep(time.Duration(attempt) * 2 * time.Second)
+					continue
+				}
+				return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+			}
+
+			if reqErr = decodeJSON(resp.Body, &result); reqErr != nil {
+				resp.Body.Close()
+				if attempt < 3 {
+					time.Sleep(time.Duration(attempt) * 2 * time.Second)
+					continue
+				}
+				return nil, reqErr
+			}
 			resp.Body.Close()
+			break
+		}
+		if err != nil {
 			return nil, err
 		}
-		resp.Body.Close()
 
 		if result.Data.Diff == nil {
 			break
@@ -358,12 +389,14 @@ func SaveDailyData(sectors []Sector, dateStr string) error {
 
 	// Also persist to SQLite
 	if db, err := storage.Get(); err == nil {
+		inputDate := time.Now().Format("2006-01-02 15:04:05")
 		records := make([]storage.Sector, 0, len(sectors))
 		for _, s := range sectors {
 			records = append(records, storage.Sector{
-				Datetime: storage.DateToDatetime(dateStr),
-				Name:     s.Name,
-				Net:      s.Net,
+				Datetime:  storage.DateToDatetime(dateStr),
+				Name:      s.Name,
+				Net:       s.Net,
+				InputDate: inputDate,
 			})
 		}
 		_ = db.SaveSectors(records)

@@ -7,37 +7,56 @@ import (
 	"github.com/a-share-flow-video-go/internal/tickfetcher"
 )
 
+// shanghaiTZ is the Asia/Shanghai timezone, matching tickfetcher.
+var shanghaiTZ = func() *time.Location {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		return time.FixedZone("CST", 8*60*60)
+	}
+	return loc
+}()
+
 type TickScheduler struct {
-	mu      sync.Mutex
-	enabled bool
-	fetcher *tickfetcher.TickFetcher
-	stopCh  chan struct{}
+	mu       sync.Mutex
+	enabled  bool
+	fetcher  *tickfetcher.TickFetcher
+	stopCh   chan struct{}
+	running  bool
 }
 
 func New() *TickScheduler {
-	return &TickScheduler{
+	s := &TickScheduler{
 		fetcher: tickfetcher.New(),
+		stopCh:  make(chan struct{}),
 	}
+	return s
 }
 
 func (s *TickScheduler) Start() {
 	s.mu.Lock()
 	s.enabled = true
-	if s.stopCh == nil {
-		s.stopCh = make(chan struct{})
-	}
+	shouldStart := !s.running
+	s.running = true
 	s.mu.Unlock()
-	go s.loop()
+
+	if shouldStart {
+		go s.loop()
+	}
 }
 
 func (s *TickScheduler) Stop() {
 	s.mu.Lock()
 	s.enabled = false
 	s.fetcher.Stop()
-	if s.stopCh != nil {
-		close(s.stopCh)
-		s.stopCh = nil
-	}
+	s.mu.Unlock()
+}
+
+func (s *TickScheduler) Shutdown() {
+	s.mu.Lock()
+	s.enabled = false
+	s.fetcher.Stop()
+	close(s.stopCh)
+	s.running = false
 	s.mu.Unlock()
 }
 
@@ -64,7 +83,7 @@ func (s *TickScheduler) checkAndRun() {
 		return
 	}
 
-	now := time.Now()
+	now := time.Now().In(shanghaiTZ)
 	if now.Weekday() >= time.Saturday {
 		return
 	}
