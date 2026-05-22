@@ -20,7 +20,8 @@ type DB struct {
 type Sector struct {
 	Datetime   string  `json:"datetime"`   // "2026-05-19 09:30" (tick) or "2026-05-19" (full)
 	Name       string  `json:"name"`
-	Net        float64 `json:"net"`
+	Net        float64 `json:"net"`        // 主力净流入（亿）
+	Rate       float64 `json:"rate"`       // 主力净占比（%）
 	InputDate  string  `json:"input_date"` // 录入时间 "2026-05-22 13:14:19"
 }
 
@@ -29,6 +30,7 @@ type SectorAll struct {
 	Code string  `json:"code"` // 板块代码 BKxxxx
 	Name string  `json:"name"` // 板块名称
 	Net  float64 `json:"net"`  // 主力资金净流入（亿）
+	Rate float64 `json:"rate"` // 主力净占比（%）
 }
 
 type Copywriting struct {
@@ -73,6 +75,7 @@ func (db *DB) initSchema() error {
 		datetime   TEXT    NOT NULL,  -- 时间 "2026-05-19 09:30" (tick) 或 "2026-05-19" (全量)
 		name       TEXT    NOT NULL,  -- 板块名称
 		net        REAL    NOT NULL,  -- 主力资金净流入（亿）
+		rate       REAL    NOT NULL DEFAULT 0,  -- 主力净占比（%）
 		input_date TEXT    NOT NULL DEFAULT '',  -- 录入时间 "2026-05-22 13:14:19"
 		PRIMARY KEY (datetime, name)
 	);
@@ -90,6 +93,7 @@ func (db *DB) initSchema() error {
 		code TEXT    NOT NULL,  -- 板块代码 BKxxxx
 		name TEXT    NOT NULL,  -- 板块名称
 		net  REAL    NOT NULL,  -- 主力资金净流入（亿）
+		rate REAL    NOT NULL DEFAULT 0,  -- 主力净占比（%）
 		PRIMARY KEY (date, name)
 	);
 
@@ -110,8 +114,10 @@ func (db *DB) initSchema() error {
 		return err
 	}
 
-	// Migration: add input_date column to existing databases
+	// Migrations for existing databases
 	_, _ = db.db.Exec("ALTER TABLE sectors ADD COLUMN input_date TEXT NOT NULL DEFAULT ''")
+	_, _ = db.db.Exec("ALTER TABLE sectors ADD COLUMN rate REAL NOT NULL DEFAULT 0")
+	_, _ = db.db.Exec("ALTER TABLE sectors_all ADD COLUMN rate REAL NOT NULL DEFAULT 0")
 
 	return nil
 }
@@ -130,14 +136,14 @@ func (db *DB) SaveSectors(sectors []Sector) error {
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO sectors (datetime, name, net, input_date) VALUES (?, ?, ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO sectors (datetime, name, net, rate, input_date) VALUES (?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
 	for _, s := range sectors {
-		if _, err := stmt.Exec(s.Datetime, s.Name, s.Net, s.InputDate); err != nil {
+		if _, err := stmt.Exec(s.Datetime, s.Name, s.Net, s.Rate, s.InputDate); err != nil {
 			return err
 		}
 	}
@@ -149,7 +155,7 @@ func (db *DB) LoadFullSectors(date string) ([]Sector, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	rows, err := db.db.Query("SELECT datetime, name, net, input_date FROM sectors WHERE datetime = ? ORDER BY ABS(net) DESC", date)
+	rows, err := db.db.Query("SELECT datetime, name, net, rate, input_date FROM sectors WHERE datetime = ? ORDER BY ABS(net) DESC", date)
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +164,7 @@ func (db *DB) LoadFullSectors(date string) ([]Sector, error) {
 	var sectors []Sector
 	for rows.Next() {
 		var s Sector
-		if err := rows.Scan(&s.Datetime, &s.Name, &s.Net, &s.InputDate); err != nil {
+		if err := rows.Scan(&s.Datetime, &s.Name, &s.Net, &s.Rate, &s.InputDate); err != nil {
 			return nil, err
 		}
 		sectors = append(sectors, s)
@@ -170,7 +176,7 @@ func (db *DB) LoadTickSectors(date string) ([]Sector, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	rows, err := db.db.Query("SELECT datetime, name, net, input_date FROM sectors WHERE datetime LIKE ? AND datetime != ? ORDER BY datetime, ABS(net) DESC", date+" %", date)
+	rows, err := db.db.Query("SELECT datetime, name, net, rate, input_date FROM sectors WHERE datetime LIKE ? AND datetime != ? ORDER BY datetime, ABS(net) DESC", date+" %", date)
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +185,7 @@ func (db *DB) LoadTickSectors(date string) ([]Sector, error) {
 	var sectors []Sector
 	for rows.Next() {
 		var s Sector
-		if err := rows.Scan(&s.Datetime, &s.Name, &s.Net, &s.InputDate); err != nil {
+		if err := rows.Scan(&s.Datetime, &s.Name, &s.Net, &s.Rate, &s.InputDate); err != nil {
 			return nil, err
 		}
 		sectors = append(sectors, s)
@@ -221,14 +227,14 @@ func (db *DB) SaveSectorsAll(sectors []SectorAll) error {
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO sectors_all (date, code, name, net) VALUES (?, ?, ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO sectors_all (date, code, name, net, rate) VALUES (?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
 	for _, s := range sectors {
-		if _, err := stmt.Exec(s.Date, s.Code, s.Name, s.Net); err != nil {
+		if _, err := stmt.Exec(s.Date, s.Code, s.Name, s.Net, s.Rate); err != nil {
 			return err
 		}
 	}
@@ -240,7 +246,7 @@ func (db *DB) LoadSectorsAll(date string) ([]SectorAll, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	rows, err := db.db.Query("SELECT date, code, name, net FROM sectors_all WHERE date = ? ORDER BY ABS(net) DESC", date)
+	rows, err := db.db.Query("SELECT date, code, name, net, rate FROM sectors_all WHERE date = ? ORDER BY ABS(net) DESC", date)
 	if err != nil {
 		return nil, err
 	}
@@ -249,7 +255,7 @@ func (db *DB) LoadSectorsAll(date string) ([]SectorAll, error) {
 	var sectors []SectorAll
 	for rows.Next() {
 		var s SectorAll
-		if err := rows.Scan(&s.Date, &s.Code, &s.Name, &s.Net); err != nil {
+		if err := rows.Scan(&s.Date, &s.Code, &s.Name, &s.Net, &s.Rate); err != nil {
 			return nil, err
 		}
 		sectors = append(sectors, s)
@@ -282,7 +288,7 @@ func (db *DB) LoadSectorsAllRange(startDate, endDate string) ([]SectorAll, error
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	rows, err := db.db.Query("SELECT date, code, name, net FROM sectors_all WHERE date >= ? AND date <= ? ORDER BY date, ABS(net) DESC", startDate, endDate)
+	rows, err := db.db.Query("SELECT date, code, name, net, rate FROM sectors_all WHERE date >= ? AND date <= ? ORDER BY date, ABS(net) DESC", startDate, endDate)
 	if err != nil {
 		return nil, err
 	}
@@ -291,7 +297,7 @@ func (db *DB) LoadSectorsAllRange(startDate, endDate string) ([]SectorAll, error
 	var sectors []SectorAll
 	for rows.Next() {
 		var s SectorAll
-		if err := rows.Scan(&s.Date, &s.Code, &s.Name, &s.Net); err != nil {
+		if err := rows.Scan(&s.Date, &s.Code, &s.Name, &s.Net, &s.Rate); err != nil {
 			return nil, err
 		}
 		sectors = append(sectors, s)
@@ -303,7 +309,7 @@ func (db *DB) LoadSectorTrend(name, startDate, endDate string) ([]SectorAll, err
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	rows, err := db.db.Query("SELECT date, code, name, net FROM sectors_all WHERE name = ? AND date >= ? AND date <= ? ORDER BY date", name, startDate, endDate)
+	rows, err := db.db.Query("SELECT date, code, name, net, rate FROM sectors_all WHERE name = ? AND date >= ? AND date <= ? ORDER BY date", name, startDate, endDate)
 	if err != nil {
 		return nil, err
 	}
@@ -312,7 +318,7 @@ func (db *DB) LoadSectorTrend(name, startDate, endDate string) ([]SectorAll, err
 	var sectors []SectorAll
 	for rows.Next() {
 		var s SectorAll
-		if err := rows.Scan(&s.Date, &s.Code, &s.Name, &s.Net); err != nil {
+		if err := rows.Scan(&s.Date, &s.Code, &s.Name, &s.Net, &s.Rate); err != nil {
 			return nil, err
 		}
 		sectors = append(sectors, s)

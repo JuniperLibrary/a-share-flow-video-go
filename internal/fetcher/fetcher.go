@@ -24,7 +24,8 @@ import (
 // Sector 表示一个板块的资金流向数据。
 type Sector struct {
 	Name  string  `json:"name"`
-	Net   float64 `json:"net"`
+	Net   float64 `json:"net"`   // 主力净流入（亿）
+	Rate  float64 `json:"rate"`  // 主力净占比（%），如 3.93
 	Color string  `json:"color"` // 运行时由前端/渲染层分配，不持久化到 CSV
 }
 
@@ -74,7 +75,7 @@ func fetchEMRaw(fs string) ([]map[string]any, error) {
 		var err error
 
 		for attempt := 1; attempt <= 3; attempt++ {
-			url := fmt.Sprintf("https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData?fields=f12,f14,f62&pn=%d&pz=500&fid=f62&po=1&fs=%s&ut=b2884a393a59ad64002292a3e90d46a5", pn, fs)
+			url := fmt.Sprintf("https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData?fields=f12,f14,f62,f184&pn=%d&pz=500&fid=f62&po=1&fs=%s&ut=b2884a393a59ad64002292a3e90d46a5", pn, fs)
 
 			req, reqErr := newRequest("GET", url)
 			if reqErr != nil {
@@ -155,9 +156,12 @@ func fetchPrimaryData() ([]Sector, error) {
 		if !ok || netFloat == 0 {
 			continue
 		}
+		rateVal := item["f184"]
+		rateFloat, _ := toFloat64(rateVal)
 		sectors = append(sectors, Sector{
 			Name: name,
 			Net:  roundTo2(netFloat / 1e8),
+			Rate: roundTo2(rateFloat),
 		})
 	}
 
@@ -379,11 +383,12 @@ func SaveDailyData(sectors []Sector, dateStr string) error {
 	w := csv.NewWriter(f)
 	defer w.Flush()
 
-	w.Write([]string{"name", "net"})
+	w.Write([]string{"name", "net", "rate"})
 	for _, s := range sectors {
 		w.Write([]string{
 			s.Name,
 			strconv.FormatFloat(s.Net, 'f', 2, 64),
+			strconv.FormatFloat(s.Rate, 'f', 2, 64),
 		})
 	}
 
@@ -396,6 +401,7 @@ func SaveDailyData(sectors []Sector, dateStr string) error {
 				Datetime:  storage.DateToDatetime(dateStr),
 				Name:      s.Name,
 				Net:       s.Net,
+				Rate:      s.Rate,
 				InputDate: inputDate,
 			})
 		}
@@ -510,10 +516,12 @@ func loadCSV(filename, dateStr string) ([]Sector, error) {
 		}
 
 		netVal, _ := strconv.ParseFloat(getField(record, colIdx, "net"), 64)
+		rateVal, _ := strconv.ParseFloat(getField(record, colIdx, "rate"), 64)
 
 		sectors = append(sectors, Sector{
 			Name:  getField(record, colIdx, "name"),
 			Net:   netVal,
+			Rate:  rateVal,
 			Color: getField(record, colIdx, "color"),
 		})
 	}

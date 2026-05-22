@@ -154,9 +154,15 @@ func LoadFullSectorCSV(path string) ([]Sector, error) {
 			continue
 		}
 
+		rate := 0.0
+		if len(row) > 2 {
+			rate, _ = strconv.ParseFloat(row[2], 64)
+		}
+
 		sectors = append(sectors, Sector{
 			Name: name,
 			Net:  roundTo2(net),
+			Rate: roundTo2(rate),
 		})
 	}
 
