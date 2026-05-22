@@ -54,7 +54,7 @@ func RenderMultiDayVideo(dayData map[string][]fetcher.Sector, dates []string,
 	for i, snap := range snapshots {
 		bars := make([]SectorData, len(snap.Bars))
 		for j, b := range snap.Bars {
-			bars[j] = SectorData{Name: b.Name, Net: b.Net, Color: b.Color}
+			bars[j] = SectorData{Name: b.Name, Net: b.Net, Rate: 0, Color: b.Color}
 		}
 		renderSnapshots[i] = BarSnapshot{
 			Date: snap.Date,

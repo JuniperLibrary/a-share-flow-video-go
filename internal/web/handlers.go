@@ -707,7 +707,6 @@ func handleGenerateMultiDay(c *gin.Context) {
 		Date     string `json:"date"`
 		Days     int    `json:"days"`
 		CopyMode string `json:"copy_mode"`
-		Format   string `json:"format"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
@@ -719,8 +718,15 @@ func handleGenerateMultiDay(c *gin.Context) {
 	if body.Days < 2 {
 		body.Days = 3
 	}
-	if body.Format == "" {
-		body.Format = "mobile"
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if body.Date == "" {
+		body.Date = time.Now().Format("2006-01-02")
+	}
+	if body.Days < 2 {
+		body.Days = 3
 	}
 
 	sse := NewSSEWriter(c)
@@ -739,7 +745,8 @@ func handleGenerateMultiDay(c *gin.Context) {
 	}
 	sse.Send("log", fmt.Sprintf("✅ 成功加载 %d 日数据", len(dayData)))
 
-	analysis := analyzer.MultiDayAnalyze(dayData, tradingDays)
+	sse.Send("log", fmt.Sprintf("📝 文案模式: %s", map[string]string{"ai": "AI 生成", "template": "模板"}[body.CopyMode]))
+	analysis := analyzer.MultiDayAnalyze(dayData, tradingDays, body.CopyMode)
 	sse.Send("log", fmt.Sprintf("✅ 趋势分析完成: %d条洞察 + %d条排名变化", len(analysis.TrendInsights), len(analysis.RankingChanges)))
 
 	outputDir := config.GetOutputDir()
@@ -749,16 +756,12 @@ func handleGenerateMultiDay(c *gin.Context) {
 	}
 	os.MkdirAll(filepath.Join(outputDir, dateLabel), 0755)
 
-	formatSuffix := ""
-	if body.Format == "tv" {
-		formatSuffix = "_tv"
-	}
-	outPath := filepath.Join(outputDir, dateLabel, fmt.Sprintf("三日资金流向%s.mp4", formatSuffix))
+	outPath := filepath.Join(outputDir, dateLabel, "三日资金流向.mp4")
 
-	sse.Send("log", fmt.Sprintf("🎬 开始渲染 Bar Chart Race 视频 (%s)...", body.Format))
+	sse.Send("log", "🎬 开始渲染 Bar Chart Race 视频 (16:9)...")
 	sse.Send("progress", "渲染视频中...")
 
-	if _, err := renderer.RenderMultiDayVideo(dayData, tradingDays, outPath, analysis, body.Format); err != nil {
+	if _, err := renderer.RenderMultiDayVideo(dayData, tradingDays, outPath, analysis, "tv"); err != nil {
 		sse.Send("error", fmt.Sprintf("渲染失败: %v", err))
 		return
 	}
@@ -968,7 +971,6 @@ func roundTo2(x float64) float64 {
 func handleGenerateTick(c *gin.Context) {
 	var body struct {
 		Date     string `json:"date"`
-		Format   string `json:"format"`
 		Session  string `json:"session"`
 		CopyMode string `json:"copy_mode"`
 	}
@@ -979,28 +981,33 @@ func handleGenerateTick(c *gin.Context) {
 	if body.Date == "" {
 		body.Date = time.Now().Format("2006-01-02")
 	}
-	if body.Format == "" {
-		body.Format = "mobile"
-	}
 	if body.Session == "" {
 		body.Session = "full"
 	}
 
-	sessCfg := config.SessionConfigs[body.Session]
-	formatSuffix := ""
-	if body.Format == "tv" {
-		formatSuffix = "_tv"
-	}
-	outPath := filepath.Join(config.GetOutputDir(), body.Date, fmt.Sprintf("%s_tick%s.mp4", sessCfg.FilenameSuffix, formatSuffix))
+	logger.Info("tick 视频生成请求",
+		zap.String("date", body.Date),
+		zap.String("session", body.Session),
+		zap.String("copyMode", body.CopyMode))
 
-	out, err := tickrenderer.RenderTickVideo(body.Date, outPath, body.Format, body.Session, nil, nil, nil)
+	sessCfg := config.SessionConfigs[body.Session]
+	outPath := filepath.Join(config.GetOutputDir(), body.Date, fmt.Sprintf("%s_tick.mp4", sessCfg.FilenameSuffix))
+
+	out, err := tickrenderer.RenderTickVideo(body.Date, outPath, "tv", body.Session, nil, nil, nil)
 	if err != nil {
 		logger.Error("tick 视频生成失败", zap.Error(err))
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
+	logger.Info("tick 渲染完成",
+		zap.String("output", out))
 
 	points, err := tickfetcher.LoadTickCSV(body.Date, body.Session)
+	if err != nil || len(points) == 0 {
+		logger.Warn("tick 文案跳过：无 tick 数据",
+			zap.String("date", body.Date),
+			zap.String("session", body.Session))
+	}
 	if err == nil && len(points) > 0 {
 		sectors := tickPointsToSectors(points)
 
@@ -1009,6 +1016,7 @@ func handleGenerateTick(c *gin.Context) {
 		if body.CopyMode == "ai" {
 			text, err = copy.GenerateCopywritingAI(sectors, body.Date, body.Session)
 			if err != nil {
+				logger.Warn("AI 文案生成失败，降级使用模板", zap.Error(err))
 				text = copy.GenerateCopywriting(sectors, body.Date, body.Session)
 			} else {
 				cwType = "ai_tick"
@@ -1025,19 +1033,23 @@ func handleGenerateTick(c *gin.Context) {
 				Content: text,
 			})
 		}
+		logger.Info("tick 文案已保存",
+			zap.String("type", cwType),
+			zap.String("date", body.Date),
+			zap.String("session", body.Session))
 	}
 
 	c.JSON(200, gin.H{"ok": true, "output": out})
 }
 
 func tickPointsToSectors(points []tickfetcher.TickPoint) []fetcher.Sector {
-	latest := make(map[string]float64)
+	latest := make(map[string]tickfetcher.TickPoint)
 	for _, p := range points {
-		latest[p.Name] = p.Net
+		latest[p.Name] = p
 	}
 	var sectors []fetcher.Sector
-	for name, net := range latest {
-		sectors = append(sectors, fetcher.Sector{Name: name, Net: net})
+	for _, p := range latest {
+		sectors = append(sectors, fetcher.Sector{Name: p.Name, Net: p.Net, Rate: p.Rate})
 	}
 	return sectors
 }
@@ -1134,7 +1146,7 @@ func handleTickReplayStream(c *gin.Context) {
 		if _, ok := timeMap[t]; !ok {
 			timeOrder = append(timeOrder, t)
 		}
-		timeMap[t] = append(timeMap[t], fetcher.Sector{Name: s.Name, Net: s.Net})
+		timeMap[t] = append(timeMap[t], fetcher.Sector{Name: s.Name, Net: s.Net, Rate: s.Rate})
 	}
 	sort.Strings(timeOrder)
 	l.Info("时间分组完成", zap.Int("timePoints", len(timeOrder)))
@@ -1188,6 +1200,7 @@ func handleTickReplayStream(c *gin.Context) {
 				Time: ts.time,
 				Name: s.Name,
 				Net:  s.Net,
+				Rate: s.Rate,
 			})
 		}
 
@@ -1209,6 +1222,7 @@ func handleTickReplayStream(c *gin.Context) {
 			Time: deduped[len(deduped)-1].time,
 			Name: s.Name,
 			Net:  s.Net,
+			Rate: s.Rate,
 		})
 	}
 	snapshot = tickfetcher.TickSnapshot{
@@ -1300,9 +1314,9 @@ func handleDashboard(c *gin.Context) {
 	if err != nil || len(sectors) == 0 {
 		if db, dbErr := storage.Get(); dbErr == nil {
 			if records, loadErr := db.LoadSectorsAll(latestDate); loadErr == nil && len(records) > 0 {
-				for _, r := range records {
-					sectors = append(sectors, fetcher.Sector{Name: r.Name, Net: r.Net})
-				}
+	for _, r := range records {
+				sectors = append(sectors, fetcher.Sector{Name: r.Name, Net: r.Net, Rate: r.Rate})
+			}
 			}
 		}
 	}

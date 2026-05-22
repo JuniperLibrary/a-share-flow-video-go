@@ -26,6 +26,7 @@ const (
 type SectorData struct {
 	Name  string  `json:"name"`
 	Net   float64 `json:"net"`
+	Rate  float64 `json:"rate"`
 	Color string  `json:"color"`
 }
 
@@ -70,7 +71,7 @@ func RenderVideo(sectors []fetcher.Sector, dateStr, outputPath string, events []
 
 	sectorData := make([]SectorData, len(sectors))
 	for i, s := range sectors {
-		sectorData[i] = SectorData{Name: s.Name, Net: s.Net, Color: s.Color}
+		sectorData[i] = SectorData{Name: s.Name, Net: s.Net, Rate: s.Rate, Color: s.Color}
 	}
 
 	if len(timeline) == 0 {

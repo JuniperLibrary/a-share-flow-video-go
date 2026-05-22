@@ -28,6 +28,7 @@ type SectorTick struct {
 	Color string    `json:"color"`
 	Data  []float64 `json:"data"`
 	Times []string  `json:"times"`
+	Rate  float64   `json:"rate"`
 }
 
 type TickRenderProps struct {
@@ -68,8 +69,16 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 	if err != nil || len(points) == 0 {
 		return "", fmt.Errorf("no tick data for %s session=%s", dateStr, session)
 	}
+	logger.Info("tick 数据加载",
+		zap.Int("records", len(points)),
+		zap.String("date", dateStr),
+		zap.String("session", session))
 
 	sectorTicks := buildSectorTicks(points)
+	logger.Info("tick 时序构建",
+		zap.Int("sectors", len(sectorTicks)),
+		zap.Int("timePoints", len(sectorTicks[0].Times)),
+		zap.String("date", dateStr))
 
 	if len(timeline) == 0 {
 		db, dbErr := storage.Get()
@@ -93,7 +102,16 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 	}
 	if len(events) == 0 {
 		events = analyzer.GetFallbackEvents(TotalFrames)
+		logger.Warn("tick 事件 fallback：使用默认事件",
+			zap.String("date", dateStr))
 	}
+
+	logger.Info("tick 事件准备就绪",
+		zap.Int("events", len(events)),
+		zap.Int("timeline", len(timeline)),
+		zap.Int("ticker", len(ticker)),
+		zap.String("date", dateStr),
+		zap.String("session", session))
 
 	props := TickRenderProps{
 		DateStr:        dateStr,
@@ -134,9 +152,10 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 	}
 
 	logger.Info("tick 渲染开始",
-		zap.Int("points", len(sectorTicks)),
+		zap.Int("sectors", len(sectorTicks)),
 		zap.String("output", outputPath),
-		zap.String("format", format))
+		zap.String("format", format),
+		zap.String("session", session))
 
 	cmd := exec.Command("npx", args...)
 	cmd.Dir = rendererDir
@@ -156,12 +175,14 @@ func buildSectorTicks(points []tickfetcher.TickPoint) []SectorTick {
 
 	sectorData := make(map[string][]float64)
 	sectorPrev := make(map[string]float64)
+	sectorLatestRate := make(map[string]float64)
 
 	for _, p := range points {
 		prev := sectorPrev[p.Name]
 		delta := p.Net - prev
 		sectorData[p.Name] = append(sectorData[p.Name], delta)
 		sectorPrev[p.Name] = p.Net
+		sectorLatestRate[p.Name] = p.Rate
 	}
 
 	var result []SectorTick
@@ -175,6 +196,7 @@ func buildSectorTicks(points []tickfetcher.TickPoint) []SectorTick {
 			Name:  name,
 			Data:  data,
 			Times: timeOrder,
+			Rate:  sectorLatestRate[name],
 		})
 	}
 
@@ -227,13 +249,13 @@ func sumAbs(data []float64) float64 {
 }
 
 func snapshotToSectors(points []tickfetcher.TickPoint) []fetcher.Sector {
-	latest := make(map[string]float64)
+	latest := make(map[string]tickfetcher.TickPoint)
 	for _, p := range points {
-		latest[p.Name] = p.Net
+		latest[p.Name] = p
 	}
 	var sectors []fetcher.Sector
-	for name, net := range latest {
-		sectors = append(sectors, fetcher.Sector{Name: name, Net: net})
+	for _, p := range latest {
+		sectors = append(sectors, fetcher.Sector{Name: p.Name, Net: p.Net, Rate: p.Rate})
 	}
 	return sectors
 }

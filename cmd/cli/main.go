@@ -203,18 +203,11 @@ func generateSession(sectors []fetcher.Sector, dateStr, dateDir string, useAI bo
 	os.MkdirAll(filepath.Join(outputDir, dateStr), 0755)
 	l := logger.With(zap.String("date", dateStr), zap.String("session", sessCfg.TitleSuffix))
 
-	for _, format := range []string{"mobile", "tv"} {
-		formatSuffix := ""
-		if format == "tv" {
-			formatSuffix = "_tv"
-		}
-		outPath := filepath.Join(outputDir, dateStr, fmt.Sprintf("%s%s.mp4", sessCfg.FilenameSuffix, formatSuffix))
-
-		if _, err := renderer.RenderVideo(sectors, dateStr, outPath, events, timeline, ticker, format, session); err != nil {
-			l.Error("Remotion 渲染失败", zap.String("session", sessCfg.TitleSuffix+" "+format), zap.Error(err))
-			continue
-		}
-		l.Info("视频已保存", zap.String("output", "output/"+dateStr+"/"+sessCfg.FilenameSuffix+formatSuffix+".mp4"))
+	outPath := filepath.Join(outputDir, dateStr, fmt.Sprintf("%s.mp4", sessCfg.FilenameSuffix))
+	if _, err := renderer.RenderVideo(sectors, dateStr, outPath, events, timeline, ticker, "tv", session); err != nil {
+		l.Error("Remotion 渲染失败", zap.String("session", sessCfg.TitleSuffix), zap.Error(err))
+	} else {
+		l.Info("视频已保存", zap.String("output", outPath))
 	}
 
 	var text string
@@ -277,18 +270,11 @@ func processTickDate(dateStr string, sessionOverride string, useAI bool) bool {
 		sl := l.With(zap.String("session", sessCfg.TitleSuffix))
 		sl.Info("--- 生成 Tick " + sessCfg.TitleSuffix + " 视频 ---")
 
-		for _, format := range []string{"mobile", "tv"} {
-			formatSuffix := ""
-			if format == "tv" {
-				formatSuffix = "_tv"
-			}
-			outPath := filepath.Join(outputDir, dateStr, fmt.Sprintf("%s_tick%s.mp4", sessCfg.FilenameSuffix, formatSuffix))
-
-			out, err := tickrenderer.RenderTickVideo(dateStr, outPath, format, sess, nil, nil, nil)
-			if err != nil {
-				sl.Error("Tick Remotion 渲染失败", zap.String("session", sessCfg.TitleSuffix+" "+format), zap.Error(err))
-				continue
-			}
+		outPath := filepath.Join(outputDir, dateStr, fmt.Sprintf("%s_tick.mp4", sessCfg.FilenameSuffix))
+		out, err := tickrenderer.RenderTickVideo(dateStr, outPath, "tv", sess, nil, nil, nil)
+		if err != nil {
+			sl.Error("Tick Remotion 渲染失败", zap.String("session", sessCfg.TitleSuffix), zap.Error(err))
+		} else {
 			sl.Info("Tick 视频已保存", zap.String("output", out))
 			success = true
 		}
@@ -329,13 +315,13 @@ func processTickDate(dateStr string, sessionOverride string, useAI bool) bool {
 }
 
 func snapshotToSectors(points []tickfetcher.TickPoint) []fetcher.Sector {
-	latest := make(map[string]float64)
+	latest := make(map[string]tickfetcher.TickPoint)
 	for _, p := range points {
-		latest[p.Name] = p.Net
+		latest[p.Name] = p
 	}
 	var sectors []fetcher.Sector
-	for name, net := range latest {
-		sectors = append(sectors, fetcher.Sector{Name: name, Net: net})
+	for _, p := range latest {
+		sectors = append(sectors, fetcher.Sector{Name: p.Name, Net: p.Net, Rate: p.Rate})
 	}
 	return sectors
 }
@@ -381,7 +367,7 @@ func generateMultiDayVideo(endDate string, days int, useAI bool) {
 		}
 	}
 
-	analysis := analyzer.MultiDayAnalyze(dayData, tradingDays)
+	analysis := analyzer.MultiDayAnalyze(dayData, tradingDays, "ai")
 
 	outputDir := config.GetOutputDir()
 	dateLabel := tradingDays[0]
@@ -391,18 +377,11 @@ func generateMultiDayVideo(endDate string, days int, useAI bool) {
 
 	os.MkdirAll(filepath.Join(outputDir, dateLabel), 0755)
 
-	for _, format := range []string{"mobile", "tv"} {
-		formatSuffix := ""
-		if format == "tv" {
-			formatSuffix = "_tv"
-		}
-		outPath := filepath.Join(outputDir, dateLabel, fmt.Sprintf("三日资金流向%s.mp4", formatSuffix))
-
-		if _, err := renderer.RenderMultiDayVideo(dayData, tradingDays, outPath, analysis, format); err != nil {
-			l.Error("Remotion 渲染失败", zap.String("format", format), zap.Error(err))
-			continue
-		}
-		l.Info("视频已保存", zap.String("output", "output/"+dateLabel+"/三日资金流向"+formatSuffix+".mp4"))
+	outPath := filepath.Join(outputDir, dateLabel, "三日资金流向.mp4")
+	if _, err := renderer.RenderMultiDayVideo(dayData, tradingDays, outPath, analysis, "tv"); err != nil {
+		l.Error("Remotion 渲染失败", zap.Error(err))
+	} else {
+		l.Info("视频已保存", zap.String("output", outPath))
 	}
 
 	l.Info(sep70)
