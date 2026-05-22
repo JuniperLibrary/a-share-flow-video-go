@@ -35,6 +35,7 @@ type TickPoint struct {
 	Time string
 	Name string
 	Net  float64
+	Rate float64
 }
 
 type TickFetcher struct {
@@ -77,6 +78,12 @@ func (tf *TickFetcher) Subscribe() (chan TickSnapshot, func()) {
 }
 
 // GetSnapshot returns the current accumulated tick data.
+func (tf *TickFetcher) IsRunning() bool {
+	tf.mu.Lock()
+	defer tf.mu.Unlock()
+	return tf.running
+}
+
 func (tf *TickFetcher) GetSnapshot() TickSnapshot {
 	tf.mu.Lock()
 	dateStr := tf.dateStr
@@ -311,6 +318,7 @@ func saveTickToDB(dateStr, timeStr string, sectors []fetcher.Sector) error {
 			Datetime:  storage.DateToDatetimeTick(dateStr, timeStr),
 			Name:      s.Name,
 			Net:       s.Net,
+			Rate:      s.Rate,
 			InputDate: inputDate,
 		})
 	}
@@ -357,6 +365,7 @@ func LoadTickCSV(dateStr, session string) ([]TickPoint, error) {
 			Time: timeStr,
 			Name: s.Name,
 			Net:  s.Net,
+			Rate: s.Rate,
 		})
 	}
 	return points, nil

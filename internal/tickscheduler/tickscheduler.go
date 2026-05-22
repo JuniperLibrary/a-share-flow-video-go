@@ -7,7 +7,6 @@ import (
 	"github.com/a-share-flow-video-go/internal/tickfetcher"
 )
 
-// shanghaiTZ is the Asia/Shanghai timezone, matching tickfetcher.
 var shanghaiTZ = func() *time.Location {
 	loc, err := time.LoadLocation("Asia/Shanghai")
 	if err != nil {
@@ -17,11 +16,11 @@ var shanghaiTZ = func() *time.Location {
 }()
 
 type TickScheduler struct {
-	mu       sync.Mutex
-	enabled  bool
-	fetcher  *tickfetcher.TickFetcher
-	stopCh   chan struct{}
-	running  bool
+	mu      sync.Mutex
+	enabled bool
+	fetcher *tickfetcher.TickFetcher
+	stopCh  chan struct{}
+	running bool
 }
 
 func New() *TickScheduler {
@@ -88,43 +87,41 @@ func (s *TickScheduler) checkAndRun() {
 		return
 	}
 
-	// 15:00 之后自动关闭采集
 	if s.shouldStop(now) {
 		s.fetcher.Stop()
 		return
 	}
 
-	if s.shouldRun(now) {
+	if s.shouldRun(now) && !s.fetcher.IsRunning() {
 		s.fetcher.Start()
 	}
 }
 
+func isTradingSession(h, m int) bool {
+	min := h*60 + m
+	morningPreStart := 9*60 + 25
+	morningEnd := 11*60 + 30
+	afternoonPreStart := 12*60 + 55
+	afternoonEnd := 15 * 60
+
+	inMorning := min >= morningPreStart && min <= morningEnd
+	inAfternoon := min >= afternoonPreStart && min <= afternoonEnd
+	return inMorning || inAfternoon
+}
+
 func (s *TickScheduler) shouldRun(now time.Time) bool {
 	h, m := now.Hour(), now.Minute()
-	currentMin := h*60 + m
-
-	morningStart := 9*60 + 28
-	fullStart := 12*60 + 58
-
-	if currentMin >= morningStart && currentMin < morningStart+2 {
-		return true
-	}
-	if currentMin >= fullStart && currentMin < fullStart+2 {
-		return true
-	}
-	return false
+	return isTradingSession(h, m)
 }
 
 func (s *TickScheduler) shouldStop(now time.Time) bool {
 	h, m := now.Hour(), now.Minute()
-	currentMin := h*60 + m
+	min := h*60 + m
 
-	// 11:31 - 12:57 停止早盘采集
-	if currentMin >= 11*60+31 && currentMin < 12*60+58 {
+	if min >= 11*60+31 && min < 12*60+55 {
 		return true
 	}
-	// 15:01 之后停止全天采集
-	if currentMin >= 15*60+1 {
+	if min >= 15*60+1 {
 		return true
 	}
 	return false
