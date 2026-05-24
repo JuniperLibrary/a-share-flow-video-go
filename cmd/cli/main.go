@@ -369,6 +369,18 @@ func generateMultiDayVideo(endDate string, days int, useAI bool) {
 
 	analysis := analyzer.MultiDayAnalyze(dayData, tradingDays, "ai")
 
+	// 加载逐 tick 数据用于渲染（含时间轴）
+	tickData, err := fetcher.LoadMultiDayTicks(tradingDays)
+	if err != nil {
+		l.Error("加载 tick 数据失败", zap.Error(err))
+		return
+	}
+	totalTicks := 0
+	for _, snaps := range tickData {
+		totalTicks += len(snaps)
+	}
+	l.Info("逐 tick 数据", zap.Int("dates", len(tickData)), zap.Int("totalSnapshots", totalTicks))
+
 	outputDir := config.GetOutputDir()
 	dateLabel := tradingDays[0]
 	if len(tradingDays) > 1 {
@@ -378,7 +390,7 @@ func generateMultiDayVideo(endDate string, days int, useAI bool) {
 	os.MkdirAll(filepath.Join(outputDir, dateLabel), 0755)
 
 	outPath := filepath.Join(outputDir, dateLabel, "三日资金流向.mp4")
-	if _, err := renderer.RenderMultiDayVideo(dayData, tradingDays, outPath, analysis, "tv"); err != nil {
+	if _, err := renderer.RenderMultiDayVideo(tickData, tradingDays, outPath, analysis, "tv"); err != nil {
 		l.Error("Remotion 渲染失败", zap.Error(err))
 	} else {
 		l.Info("视频已保存", zap.String("output", outPath))

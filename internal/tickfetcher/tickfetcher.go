@@ -92,6 +92,9 @@ func (tf *TickFetcher) GetSnapshot() TickSnapshot {
 	tf.mu.Unlock()
 
 	points, _ := LoadTickCSV(dateStr, "full")
+	if points == nil {
+		points = []TickPoint{}
+	}
 
 	timeSet := make(map[string]struct{})
 	for _, p := range points {

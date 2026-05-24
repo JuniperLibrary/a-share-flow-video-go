@@ -17,6 +17,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/a-share-flow-video-go/internal/analyzer"
+	"github.com/a-share-flow-video-go/internal/clsnews"
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/copy"
 	"github.com/a-share-flow-video-go/internal/fetcher"
@@ -205,12 +206,14 @@ func jsonStr(s string) string {
 }
 
 // SetupRouter 注册所有 HTTP 路由。
-func SetupRouter(tickSched *tickscheduler.TickScheduler) *gin.Engine {
+func SetupRouter(tickSched *tickscheduler.TickScheduler, newsSched *clsnews.NewsScheduler) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(logger.RecoveryMiddleware())
 	r.Use(logger.RequestLoggerMiddleware())
 	r.Use(corsMiddleware())
+
+	registerDocsRoute(r)
 
 	r.GET("/api/dates", handleDates)
 	r.GET("/api/data/:date", handleData)
@@ -223,7 +226,6 @@ func SetupRouter(tickSched *tickscheduler.TickScheduler) *gin.Engine {
 	r.GET("/api/sectors-all/:date", handleGetAllSectors)
 	r.GET("/api/sectors-all/names", handleGetSectorsAllNames)
 	r.GET("/api/sectors-all/dates", handleGetSectorsAllDates)
-	r.GET("/api/sectors-all/trend", handleGetSectorsTrend)
 	r.GET("/api/sectors-all/range", handleGetSectorsAllRange)
 	r.POST("/api/generate-multiday", handleGenerateMultiDay)
 	r.GET("/api/config", handleGetConfig)
@@ -288,6 +290,23 @@ func SetupRouter(tickSched *tickscheduler.TickScheduler) *gin.Engine {
 	r.GET("/api/tick/replay-stream", handleTickReplayStream)
 	r.GET("/api/tick/events/:date", handleTickEvents)
 	r.GET("/api/dashboard", handleDashboard)
+
+	// 财联社新闻路由
+	if newsSched != nil {
+		r.GET("/api/news", handleNewsList)
+		r.GET("/api/news/search", handleNewsSearch)
+		r.GET("/api/news/status", func(c *gin.Context) {
+			c.JSON(200, newsSched.Status())
+		})
+		r.POST("/api/news/start", func(c *gin.Context) {
+			newsSched.Start()
+			c.JSON(200, gin.H{"ok": true, "message": "新闻轮询已启动"})
+		})
+		r.POST("/api/news/stop", func(c *gin.Context) {
+			newsSched.Stop()
+			c.JSON(200, gin.H{"ok": true, "message": "新闻轮询已停止"})
+		})
+	}
 
 	r.GET("/output/:date/:file", serveVideo)
 
@@ -596,34 +615,6 @@ func handleGetAllSectors(c *gin.Context) {
 	})
 }
 
-func handleGetSectorsTrend(c *gin.Context) {
-	name := c.Query("name")
-	startDate := c.Query("start_date")
-	endDate := c.Query("end_date")
-
-	if name == "" || startDate == "" || endDate == "" {
-		c.JSON(400, gin.H{"error": "缺少参数: name, start_date, end_date"})
-		return
-	}
-
-	db, err := storage.Get()
-	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
-
-	sectors, err := db.LoadSectorTrend(name, startDate, endDate)
-	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(200, gin.H{
-		"name":    name,
-		"sectors": sectors,
-	})
-}
-
 func handleGetSectorsAllRange(c *gin.Context) {
 	startDate := c.Query("start_date")
 	endDate := c.Query("end_date")
@@ -718,25 +709,22 @@ func handleGenerateMultiDay(c *gin.Context) {
 	if body.Days < 2 {
 		body.Days = 3
 	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
-		return
-	}
-	if body.Date == "" {
-		body.Date = time.Now().Format("2006-01-02")
-	}
-	if body.Days < 2 {
-		body.Days = 3
-	}
+
+	logger.Info("多日 Bar Chart Race 视频生成请求",
+		zap.String("date", body.Date),
+		zap.Int("days", body.Days),
+		zap.String("copyMode", body.CopyMode))
 
 	sse := NewSSEWriter(c)
+	sse.Send("log", fmt.Sprintf("📅 截止日期: %s, 对比%d个交易日, 文案模式: %s",
+		body.Date, body.Days, map[string]string{"ai": "AI生成", "template": "模板"}[body.CopyMode]))
 
 	tradingDays, err := fetcher.GetTradingDays(body.Date, body.Days)
 	if err != nil {
 		sse.Send("error", fmt.Sprintf("无法获取交易日: %v", err))
 		return
 	}
-	sse.Send("log", fmt.Sprintf("📅 交易日: %s", tradingDays))
+	sse.Send("log", fmt.Sprintf("📅 交易日: %v", tradingDays))
 
 	dayData, err := fetcher.LoadMultiDaySectors(tradingDays)
 	if err != nil {
@@ -744,10 +732,39 @@ func handleGenerateMultiDay(c *gin.Context) {
 		return
 	}
 	sse.Send("log", fmt.Sprintf("✅ 成功加载 %d 日数据", len(dayData)))
+	// 按日报板块数
+	totalSectors := 0
+	allNames := make(map[string]bool)
+	for _, d := range tradingDays {
+		if sectors, ok := dayData[d]; ok {
+			sse.Send("log", fmt.Sprintf("  📆 %s → %d个板块", d, len(sectors)))
+			totalSectors += len(sectors)
+			for _, s := range sectors {
+				allNames[s.Name] = true
+			}
+		} else {
+			sse.Send("log", fmt.Sprintf("  ⚠️ %s → 无数据", d))
+		}
+	}
+	sse.Send("log", fmt.Sprintf("📊 跨日去重后涉及 %d 个不同板块", len(allNames)))
 
 	sse.Send("log", fmt.Sprintf("📝 文案模式: %s", map[string]string{"ai": "AI 生成", "template": "模板"}[body.CopyMode]))
 	analysis := analyzer.MultiDayAnalyze(dayData, tradingDays, body.CopyMode)
 	sse.Send("log", fmt.Sprintf("✅ 趋势分析完成: %d条洞察 + %d条排名变化", len(analysis.TrendInsights), len(analysis.RankingChanges)))
+
+	// 加载逐 tick 数据用于渲染（含时间轴）
+	tickData, err := fetcher.LoadMultiDayTicks(tradingDays)
+	if err != nil {
+		sse.Send("error", fmt.Sprintf("加载 tick 数据失败: %v", err))
+		return
+	}
+	totalTickSnapshots := 0
+	for _, d := range tradingDays {
+		if snaps, ok := tickData[d]; ok {
+			totalTickSnapshots += len(snaps)
+		}
+	}
+	sse.Send("log", fmt.Sprintf("⏱️ 逐 tick 数据: %d 日, %d 个时间点快照", len(tickData), totalTickSnapshots))
 
 	outputDir := config.GetOutputDir()
 	dateLabel := tradingDays[0]
@@ -761,7 +778,7 @@ func handleGenerateMultiDay(c *gin.Context) {
 	sse.Send("log", "🎬 开始渲染 Bar Chart Race 视频 (16:9)...")
 	sse.Send("progress", "渲染视频中...")
 
-	if _, err := renderer.RenderMultiDayVideo(dayData, tradingDays, outPath, analysis, "tv"); err != nil {
+	if _, err := renderer.RenderMultiDayVideo(tickData, tradingDays, outPath, analysis, "tv"); err != nil {
 		sse.Send("error", fmt.Sprintf("渲染失败: %v", err))
 		return
 	}
@@ -990,38 +1007,63 @@ func handleGenerateTick(c *gin.Context) {
 		zap.String("session", body.Session),
 		zap.String("copyMode", body.CopyMode))
 
+	sse := NewSSEWriter(c)
+	sse.Send("log", fmt.Sprintf("📅 日期: %s, 时段: %s, 文案: %s",
+		body.Date, config.SessionConfigs[body.Session].TitleSuffix,
+		map[string]string{"ai": "AI生成", "template": "模板"}[body.CopyMode]))
+
 	sessCfg := config.SessionConfigs[body.Session]
 	outPath := filepath.Join(config.GetOutputDir(), body.Date, fmt.Sprintf("%s_tick.mp4", sessCfg.FilenameSuffix))
 
+	// 预览 tick 数据量
+	if pts, err := tickfetcher.LoadTickCSV(body.Date, body.Session); err == nil {
+		timeSet := make(map[string]bool)
+		sectorSet := make(map[string]bool)
+		for _, p := range pts {
+			timeSet[p.Time] = true
+			sectorSet[p.Name] = true
+		}
+		sse.Send("log", fmt.Sprintf("📊 数据预览: %d条记录, %d个时间点, %d个板块", len(pts), len(timeSet), len(sectorSet)))
+	} else {
+		sse.Send("log", fmt.Sprintf("⚠️ 数据预览失败: %v", err))
+	}
+
+	sse.Send("log", fmt.Sprintf("🎬 开始渲染 Tick 曲线视频 (TV: 1920x1080)..."))
+	sse.Send("progress", "渲染视频中...")
+
 	out, err := tickrenderer.RenderTickVideo(body.Date, outPath, "tv", body.Session, nil, nil, nil)
 	if err != nil {
-		logger.Error("tick 视频生成失败", zap.Error(err))
-		c.JSON(500, gin.H{"error": err.Error()})
+		sse.Send("error", fmt.Sprintf("渲染失败: %v", err))
 		return
 	}
-	logger.Info("tick 渲染完成",
-		zap.String("output", out))
 
+	var fileInfo string
+	if fi, err := os.Stat(out); err == nil {
+		fileInfo = fmt.Sprintf("%.1fMB", float64(fi.Size())/1024/1024)
+	}
+	sse.Send("log", fmt.Sprintf("✅ Tick 视频渲染完成 (%s)", fileInfo))
+	sse.Send("progress", "生成文案中...")
+
+	// 文案生成
 	points, err := tickfetcher.LoadTickCSV(body.Date, body.Session)
 	if err != nil || len(points) == 0 {
-		logger.Warn("tick 文案跳过：无 tick 数据",
-			zap.String("date", body.Date),
-			zap.String("session", body.Session))
-	}
-	if err == nil && len(points) > 0 {
+		sse.Send("log", "⚠️ 无 tick 数据，跳过文案生成")
+	} else {
 		sectors := tickPointsToSectors(points)
 
 		var text string
 		cwType := "template_tick"
 		if body.CopyMode == "ai" {
+			sse.Send("log", "🤖 AI 文案生成中...")
 			text, err = copy.GenerateCopywritingAI(sectors, body.Date, body.Session)
 			if err != nil {
-				logger.Warn("AI 文案生成失败，降级使用模板", zap.Error(err))
+				sse.Send("log", fmt.Sprintf("⚠️ AI 生成失败，降级模板: %v", err))
 				text = copy.GenerateCopywriting(sectors, body.Date, body.Session)
 			} else {
 				cwType = "ai_tick"
 			}
 		} else {
+			sse.Send("log", "📝 模板文案生成中...")
 			text = copy.GenerateCopywriting(sectors, body.Date, body.Session)
 		}
 
@@ -1033,13 +1075,12 @@ func handleGenerateTick(c *gin.Context) {
 				Content: text,
 			})
 		}
-		logger.Info("tick 文案已保存",
-			zap.String("type", cwType),
-			zap.String("date", body.Date),
-			zap.String("session", body.Session))
+		sse.Send("log", "✅ 文案已保存")
 	}
 
-	c.JSON(200, gin.H{"ok": true, "output": out})
+	sse.Send("log", "✅ Tick 视频生成完成")
+	sse.Send("progress", "完成")
+	sse.Send("done", "生成完毕")
 }
 
 func tickPointsToSectors(points []tickfetcher.TickPoint) []fetcher.Sector {
@@ -1449,6 +1490,84 @@ func fetchTickEventsData(date, session string) ([]gin.H, error) {
 		})
 	}
 	return result, nil
+}
+
+func handleNewsList(c *gin.Context) {
+	limitStr := c.DefaultQuery("limit", "50")
+	offsetStr := c.DefaultQuery("offset", "0")
+	limit, _ := strconv.Atoi(limitStr)
+	offset, _ := strconv.Atoi(offsetStr)
+	if limit < 1 || limit > 200 {
+		limit = 50
+	}
+
+	db, err := storage.Get()
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	records, err := db.LoadLatestNews(limit, offset)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	total, err := db.GetCLSNewsCount()
+	if err != nil {
+		total = 0
+	}
+
+	if records == nil {
+		records = []storage.CLSNewsRecord{}
+	}
+
+	c.JSON(200, gin.H{
+		"records": records,
+		"total":   total,
+		"limit":   limit,
+		"offset":  offset,
+	})
+}
+
+func handleNewsSearch(c *gin.Context) {
+	keyword := c.Query("q")
+	if keyword == "" {
+		c.JSON(400, gin.H{"error": "缺少搜索关键词 q"})
+		return
+	}
+
+	limitStr := c.DefaultQuery("limit", "50")
+	offsetStr := c.DefaultQuery("offset", "0")
+	limit, _ := strconv.Atoi(limitStr)
+	offset, _ := strconv.Atoi(offsetStr)
+	if limit < 1 || limit > 200 {
+		limit = 50
+	}
+
+	db, err := storage.Get()
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	records, total, err := db.SearchCLSNews(keyword, limit, offset)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	if records == nil {
+		records = []storage.CLSNewsRecord{}
+	}
+
+	c.JSON(200, gin.H{
+		"records": records,
+		"total":   total,
+		"q":       keyword,
+		"limit":   limit,
+		"offset":  offset,
+	})
 }
 
 func corsMiddleware() gin.HandlerFunc {

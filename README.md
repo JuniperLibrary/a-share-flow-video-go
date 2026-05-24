@@ -18,14 +18,16 @@
 |------|------|
 | **双维度** | 早盘（09:30-11:30）和全天（09:30-15:00）独立生成，各自匹配对应时间轴 |
 | **双端输出** | 每个维度同时输出移动端 1080×1920（9:16）和 TV端 1920×1080（16:9） |
+| **多日/单日切换** | 支持单日 Tick 曲线视频 + 多日 Bar Chart Race 视频 |
 | **定时调度** | 09:28 早盘自动采集、12:58 全天自动采集，时区固定 Asia/Shanghai，自动跳过周末 |
 | **采集去重** | Tick 采集前自动检查数据库，已存在的时间点自动跳过，避免重复采集 |
 | **AI 文案** | 自动参考前 5 日历史文案，逐板块分析资金动向，标题 ≤20 字，含风险提示 |
 | **事件分析** | AI 优先（180s 超时），自动降级到数据驱动，保证始终有可用内容 |
 | **SSE 实时流** | 数据拉取和视频生成过程通过 Server-Sent Events 实时推送进度 |
 | **实时行情** | Web 端「行情」Tab，SSE 推送实时板块资金流曲线 + AI 异动事件检测 |
+| **新闻监控** | 财联社电报实时轮询（交易时段 30s/次），自动匹配关联板块，Web 端检索查阅 |
 | **全量导出** | 支持异步导出全部板块数据（非仅 Top21），带断点续传 |
-| **SQLite 持久化** | 板块数据、Ticks、文案统一持久化，支持双写 CSV + SQLite |
+| **SQLite 持久化** | 板块数据、Ticks、文案、新闻统一持久化，支持双写 CSV + SQLite |
 | **结构化日志** | 全项目 `zap` 日志系统，彩色终端输出 + 请求追踪 + panic 恢复 |
 
 ---
@@ -121,7 +123,7 @@ go run ./cmd/initdb/
 
 ## SQLite 持久化
 
-板块数据、Tick 时序数据、文案统一持久化到 SQLite，与 CSV 双写兼容。
+板块数据、Tick 时序数据、文案、新闻统一持久化到 SQLite，与 CSV 双写兼容。
 
 ### Schema
 
@@ -130,8 +132,9 @@ CREATE TABLE sectors (
     datetime   TEXT NOT NULL,  -- "2026-05-19 09:30" (tick) 或 "2026-05-19" (全量)
     name       TEXT NOT NULL,
     net        REAL NOT NULL,
+    rate       REAL NOT NULL DEFAULT 0,
     input_date TEXT NOT NULL DEFAULT '',  -- 录入时间 "2026-05-22 13:14:19"
-    PRIMARY KEY (datetime, name)  -- 唯一索引：防重复
+    PRIMARY KEY (datetime, name)
 );
 
 CREATE TABLE copywriting (
@@ -143,10 +146,11 @@ CREATE TABLE copywriting (
 );
 
 CREATE TABLE sectors_all (
-    date TEXT NOT NULL,  -- 日期 "2026-05-19"
-    code TEXT NOT NULL,  -- 板块代码 BKxxxx
-    name TEXT NOT NULL,  -- 板块名称
-    net  REAL NOT NULL,  -- 主力资金净流入（亿）
+    date TEXT NOT NULL,
+    code TEXT NOT NULL,
+    name TEXT NOT NULL,
+    net  REAL NOT NULL,
+    rate REAL NOT NULL DEFAULT 0,
     PRIMARY KEY (date, name)
 );
 
@@ -157,17 +161,32 @@ CREATE TABLE tick_events (
     payload TEXT NOT NULL,
     PRIMARY KEY (date, session, type)
 );
+
+CREATE TABLE cls_news (
+    id          BIGINT PRIMARY KEY,
+    title       TEXT    NOT NULL,
+    content     TEXT    NOT NULL DEFAULT '',
+    brief       TEXT    NOT NULL DEFAULT '',
+    level       TEXT    NOT NULL DEFAULT 'C',
+    reading_num BIGINT  NOT NULL DEFAULT 0,
+    ctime       DATETIME NOT NULL,
+    shareurl    TEXT    NOT NULL DEFAULT '',
+    sectors     TEXT    NOT NULL DEFAULT '',  -- JSON 数组
+    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 ```
 
 ### 数据写入
 
-| 来源 | datetime 格式 | input_date 格式 | 示例 |
-|------|--------------|-----------------|------|
-| 全量板块 | `YYYY-MM-DD` | `YYYY-MM-DD HH:MM:SS` | `2026-05-19` |
-| Tick 采集 | `YYYY-MM-DD HH:MM` | `YYYY-MM-DD HH:MM:SS` | `2026-05-19 09:30` |
-| 文案 | 独立表 | - | `date + session + type` 唯一 |
+| 来源 | datetime 格式 | 示例 |
+|------|--------------|------|
+| 全量板块 | `YYYY-MM-DD` | `2026-05-19` |
+| Tick 采集 | `YYYY-MM-DD HH:MM` | `2026-05-19 09:30` |
+| 文案 | 独立表 | `date + session + type` 唯一 |
+| 新闻 | 独立表 | `cls_news` id 唯一 |
 
 同一时间点同一板块重复采集 → `PRIMARY KEY` 冲突 → `INSERT OR REPLACE` 覆盖旧值。
+新闻按 `id` 去重 → `INSERT OR IGNORE` 防止重复入库。
 
 ---
 
@@ -193,8 +212,17 @@ Tick 采集调度器在交易时段自动采集板块资金流数据：
 
 | 触发时间 | 维度 | 数据文件 | 输出视频 |
 |----------|------|----------|----------|
-| `11:35`（可配置） | 早盘 | SQLite: `a-share-flow.db` (09:30-11:30) | `早盘.mp4` + `早盘_tv.mp4` |
+| `11:35`（可配置） | 早盘 | SQLite (09:30-11:30) | `早盘.mp4` + `早盘_tv.mp4` |
 | `15:05`（可配置） | 全天 | `data/YYYY-MM-DD/sectors.csv` + SQLite | `全天.mp4` + `全天_tv.mp4` |
+
+### 新闻轮询调度
+
+| 时段 | 间隔 | 说明 |
+|------|------|------|
+| 交易时段（09:00-15:00） | 30 秒 | 实时监控财联社电报 |
+| 非交易时段 / 周末 | 5 分钟 | 低频率保持数据更新 |
+
+新闻自动匹配 21 个监控板块关键词，存入 `cls_news` 表。
 
 ---
 
@@ -251,38 +279,16 @@ output/YYYY-MM-DD/
 ├── 早盘.mp4              # 移动端 9:16 (1080×1920)
 ├── 早盘_tv.mp4           # TV端 16:9 (1920×1080)
 ├── 全天.mp4
-└── 全天_tv.mp4
+├── 全天_tv.mp4
+└── 早盘_tick.mp4         # Tick 曲线视频
 
 data/YYYY-MM-DD/
 ├── sectors.csv               # 全天板块数据（21个监控板块）
 └── 板块全量_YYYY-MM-DD.csv   # 全量板块导出（异步任务）
 
 data/
-└── a-share-flow.db           # SQLite 数据库（板块+Tick+文案统一持久化）
-                              #   sectors 表: datetime+name 唯一索引
-                              #     datetime   -- 时间 "2026-05-19 09:30" (tick) 或 "2026-05-19" (全量)
-                              #     name       -- 板块名称
-                              #     net        -- 主力资金净流入（亿）
-                              #     input_date -- 录入时间 "2026-05-22 13:14:19"
-                              #   sectors_all 表: date+name 唯一索引（全量板块数据）
-                              #   copywriting 表: date+session+type 唯一索引
-                              #   tick_events 表: date+session+type 唯一索引（Tick 事件缓存）
+└── a-share-flow.db           # SQLite 数据库
 ```
-
----
-
-## 视频内容
-
-每段 30 秒视频包含以下视觉元素：
-
-| 元素 | 说明 |
-|------|------|
-| **资金流图表** | 板块按净流入排序，资金条动态填充，颜色区分流入/流出 |
-| **时间线** | 按交易时间排列的市场事件，标注关键板块异动 |
-| **底部弹窗** | 8-10 个市场事件在视频播放过程中依次弹出 |
-| **滚动资讯** | 底部 ticker 实时滚动 10-12 条资讯 |
-| **Header** | 日期 + 维度标签（早盘/全天） |
-| **Disclaimer** | 底部免责声明 |
 
 ---
 
@@ -292,34 +298,37 @@ data/
 |------|------|------|
 | `/api/dates` | GET | 获取所有有数据的日期列表 |
 | `/api/data/:date` | GET | 获取指定日期数据（query: `?session=morning/full`） |
-| `/api/generate` | POST | SSE 流式生成视频（body: `{"date", "format", "session", "copy_mode"}`） |
+| `/api/generate` | POST | SSE 流式生成视频 |
 | `/api/config` | GET/POST | 获取/保存 AI 配置 |
-| `/api/optimize-copy` | POST | 单独生成 AI 文案（body: `{"date", "session"}`） |
+| `/api/optimize-copy` | POST | 单独生成 AI 文案 |
 | `/api/files/:date` | GET | 获取指定日期的视频和文案文件列表 |
-| `/api/scheduler` | GET/POST | 获取/修改调度器状态 |
-| `/api/scheduler/run-now` | POST | 立即执行（全天维度） |
 | `/api/export-all/:date` | GET | 异步全量板块数据导出 |
 | `/api/export-all/status/:task_id` | GET | 查询导出任务状态 |
 | `/api/export-all/file/:task_id` | GET | 下载导出文件 |
-| `/api/export-hot-sectors/:date` | GET | 获取热门板块数据 |
-| `/api/tick/stream` | GET | SSE 实时行情流（推送 tick 数据快照 + 心跳保活） |
+| `/api/export-hot-sectors/:date` | GET | 获取热门板块数据（Top21） |
+| `/api/generate-multiday` | POST | 多日视频生成（Bar Chart Race） |
+| `/api/generate-tick` | POST | Tick 曲线视频生成 |
+| `/api/tick/stream` | GET | SSE 实时行情流 |
 | `/api/tick/status` | GET | 获取 Tick 采集器状态 |
 | `/api/tick/start` | POST | 手动启动 Tick 采集 |
 | `/api/tick/stop` | POST | 停止 Tick 采集 |
 | `/api/tick/enable` | POST | 启用/禁用定时采集 |
 | `/api/tick/interval` | GET/POST | 获取/设置采集频率 |
-| `/api/tick-data/:date` | GET | 获取指定日期 Tick 数据（query: `?session=full/morning`） |
+| `/api/tick-data/:date` | GET | 获取指定日期 Tick 数据 |
 | `/api/tick/dates` | GET | 获取所有有 Tick 数据的日期 |
-| `/api/tick/replay-stream` | GET | SSE 回放指定日期的历史 Tick 数据 |
-| `/api/tick/events/:date` | GET | 获取 Tick 事件分析数据 |
-| `/api/dashboard` | GET | 获取仪表盘聚合数据（单次请求） |
-| `/api/sectors-all/save/:date` | POST | 异步获取全量板块并保存到 SQLite |
-| `/api/sectors-all/status/:task_id` | GET | 查询全量板块获取任务状态 |
-| `/api/sectors-all/dates` | GET | 获取所有有全量板块数据的日期 |
-| `/api/sectors-all/trend` | GET | 获取板块资金流向趋势数据 |
-| `/api/sectors-all/range` | GET | 获取指定日期范围的全量板块数据 |
-| `/api/sectors-all/names` | GET | 获取所有板块名称列表 |
-| `/api/generate-multiday` | POST | 多日视频生成（Bar Chart Race） |
+| `/api/tick/replay-stream` | GET | SSE 回放历史 Tick 数据 |
+| `/api/tick/events/:date` | GET | Tick 事件分析数据 |
+| `/api/dashboard` | GET | 仪表盘聚合数据 |
+| `/api/sectors-all/save/:date` | POST | 异步获取全量板块并保存 |
+| `/api/sectors-all/status/:task_id` | GET | 查询全量板块任务状态 |
+| `/api/sectors-all/dates` | GET | 全量板块数据日期列表 |
+| `/api/sectors-all/range` | GET | 日期范围全量板块数据 |
+| `/api/sectors-all/names` | GET | 所有板块名称列表 |
+| `/api/news` | GET | 新闻列表（分页，默认 50 条） |
+| `/api/news/search` | GET | 搜索新闻（`?q=关键词`，支持分页） |
+| `/api/news/status` | GET | 新闻轮询调度器状态 |
+| `/api/news/start` | POST | 启动新闻轮询 |
+| `/api/news/stop` | POST | 停止新闻轮询 |
 | `/output/:date/:file` | GET | 下载视频文件 |
 
 ---
@@ -334,21 +343,29 @@ data/
 FetchTop21HotSectors() / FetchHistoricalSectors()
     ↓
 SaveSessionData() → data/YYYY-MM-DD/sectors.csv
-                → SQLite: sectors (datetime=date, name, net)
+                → SQLite: sectors
     ↓
 AnalyzeAllContent() → AI 生成（180s 超时）→ 降级 DataDrivenGenerate()
     ├── MarketEvent[]    底部弹窗事件
     ├── TimelineEvent[]  时间线事件
     └── TickerItem[]     底部滚动资讯
     ↓
-RenderVideo() → npx remotion render → MP4
+RenderVideo() / RenderMultiDayVideo() → npx remotion render → MP4
     ↓
-GenerateCopywriting() / GenerateCopywritingAI() → 文案 → SQLite: copywriting
+GenerateCopywriting() / GenerateCopywritingAI() → 文案 → SQLite
 
 Tick 采集（交易时段每 5-10 分钟）
     ↓
-TickFetcher.collectTick() → 检查数据库是否已存在 → SQLite: sectors (datetime="date time", name, net, input_date)
-                        → broadcast() → SSE subscribers → /api/tick/stream
+TickFetcher.collectTick() → 去重检查 → SQLite
+                        → broadcast() → SSE → /api/tick/stream
+
+财联社电报新闻
+    ↓
+NewsScheduler (30s / 5min 轮询) → FetchTelegraphList()
+    ↓
+MatchSectorsToNews() → 关键词匹配板块
+    ↓
+SaveCLSNews() → INSERT OR IGNORE → SQLite: cls_news
 ```
 
 ### 核心参数
@@ -361,6 +378,8 @@ TickFetcher.collectTick() → 检查数据库是否已存在 → SQLite: sectors
 | TV端分辨率 | 1920×1080 | 16:9 横屏 |
 | 早盘 X 轴 | 0-120 分钟 | 09:30-11:30 |
 | 全天 X 轴 | 0-330 分钟 | 09:30-15:00（含 11:30-13:00 午休） |
+| 新闻轮询（交易） | 30 秒 | 交易时段财联社电报拉取间隔 |
+| 新闻轮询（非交易） | 5 分钟 | 非交易时段拉取间隔 |
 
 ### 监控板块（Top21HotSectors）
 
@@ -381,13 +400,18 @@ a-share-flow-video-go/
 │   ├── fetcher/fetcher.go       # 东方财富 API：数据获取、CSV 保存/加载、Top21 过滤
 │   ├── analyzer/analyzer.go     # 事件分析：AIGenerate + DataDrivenGenerate + filterBySession
 │   ├── copy/copy.go             # 文案生成：模板模式 + AI 模式（含历史文案参考）
-│   ├── renderer/renderer.go     # Remotion 桥接：序列化 props → npx remotion render
+│   ├── renderer/renderer.go     # Remotion 桥接：单日/多日视频渲染
 │   ├── scheduler/scheduler.go   # 定时调度器：双时间点触发，跳过周末，独立状态跟踪
-│   ├── storage/storage.go       # SQLite 持久化：板块+Tick+文案统一存储（datetime+name 唯一索引）
+│   ├── storage/storage.go       # SQLite 持久化：板块+Tick+文案+新闻统一存储
 │   ├── logger/                  # zap 结构化日志：彩色终端、请求追踪、panic 恢复
-│   ├── tickfetcher/             # Tick 采集器：观察者模式 + 时区固定 Asia/Shanghai + 采集去重
-│   ├── tickscheduler/           # Tick 定时调度：09:28 早盘 / 12:58 全天自动启动，loop 常驻运行
-│   └── web/handlers.go          # HTTP handlers：SSE 流式响应、全量导出、路由注册、CORS 中间件
+│   ├── tickfetcher/             # Tick 采集器：观察者模式 + 时区固定 + 采集去重
+│   ├── tickscheduler/           # Tick 定时调度：09:28 早盘 / 12:58 全天
+│   ├── clsnews/                 # 财联社新闻系统：API 抓取、板块匹配、轮询调度
+│   │   ├── types.go             # CLSNews 类型定义
+│   │   ├── fetcher.go           # 电报列表 API 客户端 + 交易时段判断
+│   │   ├── sector_matcher.go    # 新闻→板块关键词匹配器
+│   │   └── scheduler.go         # 后台轮询调度器（30s/5min）
+│   └── web/handlers.go          # HTTP handlers：SSE 流、全量导出、新闻路由、CORS
 └── data/                        # 数据目录：CSV + SQLite 数据库
 ```
 
@@ -422,7 +446,7 @@ cd ../a-share-flow-video-web && npm run typecheck # 类型检查
 - **彩色终端输出**：按级别着色（INFO 绿色、WARN 黄色、ERROR 红色）
 - **请求追踪**：每个 HTTP 请求记录 method、path、status、duration、client IP
 - **Panic 恢复**：自动捕获 panic，记录堆栈，返回 500
-- **业务日志**：数据拉取、视频生成、文案保存等关键节点均有结构化日志
+- **业务日志**：数据拉取、视频生成、文案保存、新闻轮询等关键节点均有结构化日志
 
 ---
 

@@ -12,6 +12,7 @@ import (
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/fetcher"
 	"github.com/a-share-flow-video-go/internal/logger"
+	"github.com/a-share-flow-video-go/internal/storage"
 	"go.uber.org/zap"
 )
 
@@ -30,12 +31,18 @@ type MultiDayRenderProps struct {
 // BarSnapshot 渲染用快照（与 fetcher.BarSnapshot 一致但用 SectorData）。
 type BarSnapshot struct {
 	Date string        `json:"date"`
+	Time string        `json:"time"` // "09:30" — tick 时间点
 	Bars []SectorData  `json:"bars"`
 }
 
-// RenderMultiDayVideo 渲染多日 Bar Chart Race 视频。
-func RenderMultiDayVideo(dayData map[string][]fetcher.Sector, dates []string,
-	outputPath string, analysis analyzer.MultiDayAnalysis, format string) (string, error) {
+// RenderMultiDayVideo 渲染多日 Bar Chart Race 视频（逐 tick 数据）。
+func RenderMultiDayVideo(
+	dayTicks map[string][]storage.TimeSnapshot,
+	dates []string,
+	outputPath string,
+	analysis analyzer.MultiDayAnalysis,
+	format string,
+) (string, error) {
 
 	if _, err := time.Parse("2006-01-02", dates[0]); err != nil {
 		return "", fmt.Errorf("parse date: %w", err)
@@ -48,16 +55,21 @@ func RenderMultiDayVideo(dayData map[string][]fetcher.Sector, dates []string,
 		w, h = config.TVWidth, config.TVHeight
 	}
 
-	// 构建快照
-	snapshots := fetcher.BuildBarSnapshots(dayData, dates)
+	// 构建逐 tick 快照
+	snapshots := fetcher.BuildBarSnapshotsFromTicks(dayTicks, dates)
+	logger.Info("快照数据准备",
+		zap.Int("snapshots", len(snapshots)),
+		zap.Int("dates", len(dates)))
+
 	renderSnapshots := make([]BarSnapshot, len(snapshots))
 	for i, snap := range snapshots {
 		bars := make([]SectorData, len(snap.Bars))
 		for j, b := range snap.Bars {
-			bars[j] = SectorData{Name: b.Name, Net: b.Net, Rate: 0, Color: b.Color}
+			bars[j] = SectorData{Name: b.Name, Net: b.Net, Rate: b.Rate, Color: b.Color}
 		}
 		renderSnapshots[i] = BarSnapshot{
 			Date: snap.Date,
+			Time: snap.Time,
 			Bars: bars,
 		}
 	}
@@ -83,6 +95,16 @@ func RenderMultiDayVideo(dayData map[string][]fetcher.Sector, dates []string,
 	if err != nil {
 		return "", fmt.Errorf("marshal props: %w", err)
 	}
+
+	logger.Info("Remotion 渲染参数",
+		zap.Int("propsSize", len(propsJSON)),
+		zap.Int("snapshots", len(renderSnapshots)),
+		zap.Int("totalFrames", config.TotalFrames),
+		zap.Int("fps", config.FPS),
+		zap.Int("width", w),
+		zap.Int("height", h),
+		zap.String("compID", compID),
+		zap.String("output", outputPath))
 
 	rendererDir := config.GetRendererDir()
 	entry := filepath.Join(rendererDir, "src", "renderer", "index.ts")
@@ -116,6 +138,13 @@ func RenderMultiDayVideo(dayData map[string][]fetcher.Sector, dates []string,
 		return "", fmt.Errorf("Remotion render failed: %w", err)
 	}
 
-	logger.Info("remotion 多日渲染完成", zap.String("output", outputPath))
+	var fileInfo string
+	if fi, err := os.Stat(outputPath); err == nil {
+		fileInfo = fmt.Sprintf("%.1fMB", float64(fi.Size())/1024/1024)
+	}
+
+	logger.Info("remotion 多日渲染完成",
+		zap.String("output", outputPath),
+		zap.String("fileSize", fileInfo))
 	return outputPath, nil
 }

@@ -1,6 +1,7 @@
 package tickscheduler
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -83,7 +84,7 @@ func (s *TickScheduler) checkAndRun() {
 	}
 
 	now := time.Now().In(shanghaiTZ)
-	if now.Weekday() >= time.Saturday {
+	if now.Weekday() == time.Saturday || now.Weekday() == time.Sunday {
 		return
 	}
 
@@ -128,6 +129,10 @@ func (s *TickScheduler) shouldStop(now time.Time) bool {
 }
 
 func (s *TickScheduler) StartManual() error {
+	now := time.Now().In(shanghaiTZ)
+	if now.Weekday() == time.Saturday || now.Weekday() == time.Sunday {
+		return fmt.Errorf("今天是周末，非交易日")
+	}
 	s.mu.Lock()
 	s.enabled = true
 	s.mu.Unlock()

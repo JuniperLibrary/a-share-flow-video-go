@@ -4,13 +4,12 @@ import (
 	"encoding/csv"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"time"
 
-	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/logger"
+	"github.com/a-share-flow-video-go/internal/storage"
 	"go.uber.org/zap"
 )
 
@@ -23,9 +22,10 @@ type MultiDaySectorData struct {
 	Trend string // "连续流入" / "连续流出" / "加速流入" / "加速流出" / "波动"
 }
 
-// BarSnapshot 某一日的排名快照。
+// BarSnapshot 某一日某一时间点的排名快照。
 type BarSnapshot struct {
 	Date string
+	Time string // "09:30" — tick 时间点，空 = 日度数据
 	Bars []BarEntry
 }
 
@@ -33,6 +33,7 @@ type BarSnapshot struct {
 type BarEntry struct {
 	Name  string
 	Net   float64
+	Rate  float64
 	Rank  int
 	Color string
 }
@@ -72,46 +73,36 @@ func GetTradingDays(endDate string, n int) ([]string, error) {
 	return days, nil
 }
 
-// LoadMultiDaySectors 从本地 data 目录加载多日板块数据。
-// 优先加载 板块全量_*.csv（全量数据），回退到 sectors.csv（仅15个热门）。
+// LoadMultiDaySectors 从 SQLite sectors 表加载多日板块数据（datetime = 日期精确匹配）。
 func LoadMultiDaySectors(dates []string) (map[string][]Sector, error) {
 	result := make(map[string][]Sector)
 
+	db, err := storage.Get()
+	if err != nil {
+		return nil, fmt.Errorf("数据库连接失败: %w", err)
+	}
+
 	for _, date := range dates {
-		dateDir := filepath.Join(config.GetDataDir(), date)
-
-		// 优先尝试加载全量数据
-		fullFile := filepath.Join(dateDir, fmt.Sprintf("板块全量_%s.csv", date))
-		if _, err := os.Stat(fullFile); err == nil {
-			sectors, err := LoadFullSectorCSV(fullFile)
-			if err != nil {
-				logger.Warn("全量数据加载失败", zap.String("date", date), zap.Error(err))
-			} else {
-				logger.Info("从全量加载", zap.String("date", date), zap.Int("sectors", len(sectors)))
-				result[date] = sectors
-				continue
-			}
-		}
-
-		// 回退到 sectors.csv
-		sectorsFile := filepath.Join(dateDir, "sectors.csv")
-		if _, err := os.Stat(sectorsFile); err != nil {
-			logger.Warn("数据文件不存在", zap.String("date", date))
-			continue
-		}
-
-		sectors, err := LoadSessionData(date, "full")
+		dbSectors, err := db.LoadFullSectors(date)
 		if err != nil {
-			logger.Warn("数据加载失败", zap.String("date", date), zap.Error(err))
+			logger.Warn("数据库加载失败", zap.String("date", date), zap.Error(err))
+			continue
+		}
+		if len(dbSectors) == 0 {
+			logger.Warn("sectors 表中无该日期记录", zap.String("date", date))
 			continue
 		}
 
-		logger.Info("从 sectors.csv 加载", zap.String("date", date), zap.Int("sectors", len(sectors)))
+		sectors := make([]Sector, 0, len(dbSectors))
+		for _, s := range dbSectors {
+			sectors = append(sectors, Sector{Name: s.Name, Net: s.Net, Rate: s.Rate})
+		}
+		logger.Info("从 sectors 表加载", zap.String("date", date), zap.Int("sectors", len(sectors)))
 		result[date] = sectors
 	}
 
 	if len(result) == 0 {
-		return nil, fmt.Errorf("未找到任何有效数据，请确认 data/ 目录下存在对应日期的 板块全量_*.csv 或 sectors.csv")
+		return nil, fmt.Errorf("sectors 表中没有对应日期的板块数据，请确认已保存当日板块数据")
 	}
 
 	return result, nil
@@ -181,6 +172,8 @@ func BuildBarSnapshots(dayData map[string][]Sector, dates []string) []BarSnapsho
 
 	// 累计资金流 map
 	cumulativeNets := make(map[string]float64)
+	// 跟踪每个板块最近一次出现的完整数据（用于获取 rate）
+	latestSector := make(map[string]Sector)
 
 	for _, date := range dates {
 		sectors, ok := dayData[date]
@@ -190,13 +183,17 @@ func BuildBarSnapshots(dayData map[string][]Sector, dates []string) []BarSnapsho
 
 		for _, s := range sectors {
 			cumulativeNets[s.Name] += s.Net
+			latestSector[s.Name] = s
 		}
 
 		var allEntries []BarEntry
 		for name, net := range cumulativeNets {
+			ls := latestSector[name]
 			allEntries = append(allEntries, BarEntry{
-				Name: name,
-				Net:  roundTo2(net),
+				Name:  name,
+				Net:   roundTo2(net),
+				Rate:  ls.Rate,
+				Color: ls.Color,
 			})
 		}
 
@@ -215,12 +212,156 @@ func BuildBarSnapshots(dayData map[string][]Sector, dates []string) []BarSnapsho
 			allEntries[i].Rank = i + 1
 		}
 
+		topName := allEntries[0].Name
+		topNet := allEntries[0].Net
+		logger.Debug("快照构建",
+			zap.String("date", date),
+			zap.Int("totalCumulative", len(cumulativeNets)),
+			zap.Int("bars", len(allEntries)),
+			zap.String("top", topName),
+			zap.Float64("topNet", topNet))
+
 		snapshots = append(snapshots, BarSnapshot{
 			Date: date,
 			Bars: allEntries,
 		})
 	}
 
+	logger.Info("快照构建完成",
+		zap.Int("snapshots", len(snapshots)),
+		zap.Int("uniqueSectors", len(cumulativeNets)))
+	return snapshots
+}
+
+// LoadMultiDayTicks 从 SQLite sectors 表加载多日逐 tick 板块快照（按时间点分组）。
+func LoadMultiDayTicks(dates []string) (map[string][]storage.TimeSnapshot, error) {
+	result := make(map[string][]storage.TimeSnapshot)
+
+	db, err := storage.Get()
+	if err != nil {
+		return nil, fmt.Errorf("数据库连接失败: %w", err)
+	}
+
+	for _, date := range dates {
+		snapshots, err := db.LoadDaySnapshots(date)
+		if err != nil {
+			logger.Warn("数据库加载失败", zap.String("date", date), zap.Error(err))
+			continue
+		}
+		if len(snapshots) == 0 {
+			logger.Warn("sectors 表中无该日期 tick 记录", zap.String("date", date))
+			continue
+		}
+		logger.Info("从 sectors 表加载 tick 快照",
+			zap.String("date", date),
+			zap.Int("snapshots", len(snapshots)))
+		result[date] = snapshots
+	}
+
+	if len(result) == 0 {
+		return nil, fmt.Errorf("sectors 表中没有对应日期的 tick 数据")
+	}
+
+	return result, nil
+}
+
+// BuildBarSnapshotsFromTicks 从多日逐 tick 数据构建 Bar Chart Race 快照。
+// 每日逐 tick 累积：前一日收盘总值 + 当日盘中累积值 = bar 当前值，形成竞争效果。
+func BuildBarSnapshotsFromTicks(
+	dayTicks map[string][]storage.TimeSnapshot,
+	dates []string,
+) []BarSnapshot {
+	var snapshots []BarSnapshot
+
+	// 已完成日期的累计资金流（前一日收盘总值）
+	prevDayFinal := make(map[string]float64)
+	// 跟踪每个板块最近一次出现的 rate（当日最新值）
+	latestRate := make(map[string]float64)
+
+	for _, date := range dates {
+		tickSnapshots, ok := dayTicks[date]
+		if !ok || len(tickSnapshots) == 0 {
+			continue
+		}
+
+		for _, ts := range tickSnapshots {
+			timeStr := storage.ExtractTime(ts.Datetime)
+			if timeStr == "" {
+				continue
+			}
+
+			// 更新 rate 缓存
+			for _, s := range ts.Sectors {
+				latestRate[s.Name] = s.Rate
+			}
+
+			// 前日累计 + 当日盘中累积值 = bar 当前值
+			var allEntries []BarEntry
+			for _, s := range ts.Sectors {
+				net := prevDayFinal[s.Name] + s.Net
+				allEntries = append(allEntries, BarEntry{
+					Name: s.Name,
+					Net:  roundTo2(net),
+					Rate: s.Rate,
+				})
+			}
+
+			// 补充 prevDayFinal 中有、但本 snapshot 中丢失的板块（值保持为前日累计）
+			for name, net := range prevDayFinal {
+				found := false
+				for _, s := range ts.Sectors {
+					if s.Name == name {
+						found = true
+						break
+					}
+				}
+				if !found {
+					allEntries = append(allEntries, BarEntry{
+						Name: name,
+						Net:  roundTo2(net),
+						Rate: latestRate[name],
+					})
+				}
+			}
+
+			// 按绝对值排序
+			sort.Slice(allEntries, func(i, j int) bool {
+				return absF(allEntries[i].Net) > absF(allEntries[j].Net)
+			})
+
+			// 限制 TOP21
+			if len(allEntries) > 21 {
+				allEntries = allEntries[:21]
+			}
+
+			// 更新排名
+			for i := range allEntries {
+				allEntries[i].Rank = i + 1
+			}
+
+			snapshots = append(snapshots, BarSnapshot{
+				Date: date,
+				Time: timeStr,
+				Bars: allEntries,
+			})
+		}
+
+		// 该日所有 tick 处理完毕 = 该日收盘
+		// 以当日最后一个快照的各板块 net 作为该日累计增量
+		lastSnap := tickSnapshots[len(tickSnapshots)-1]
+		for _, s := range lastSnap.Sectors {
+			prevDayFinal[s.Name] += s.Net
+		}
+
+		logger.Debug("收盘累计更新",
+			zap.String("date", date),
+			zap.Int("tickSnapshots", len(tickSnapshots)),
+			zap.Int("cumulativeSectors", len(prevDayFinal)))
+	}
+
+	logger.Info("tick 快照构建完成",
+		zap.Int("snapshots", len(snapshots)),
+		zap.Int("uniqueSectors", len(prevDayFinal)))
 	return snapshots
 }
 

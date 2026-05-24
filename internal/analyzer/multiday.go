@@ -58,6 +58,10 @@ type MultiDayTicker struct {
 // MultiDayAnalyze 统一入口：优先 AI，失败降级数据驱动。
 // copyMode: "ai" 优先 AI（失败降级模板），"template" 直接使用模板。
 func MultiDayAnalyze(dayData map[string][]fetcher.Sector, dates []string, copyMode string) MultiDayAnalysis {
+	logger.Info("多日分析开始",
+		zap.String("copyMode", copyMode),
+		zap.Int("days", len(dates)))
+
 	if copyMode == "template" {
 		logger.Info("多日分析：用户选择模板文案", zap.String("copyMode", copyMode))
 		return DataDrivenMultiDay(dayData, dates)
@@ -69,6 +73,7 @@ func MultiDayAnalyze(dayData map[string][]fetcher.Sector, dates []string, copyMo
 		return DataDrivenMultiDay(dayData, dates)
 	}
 
+	logger.Info("多日分析：尝试 AI 生成")
 	result, err := AIGenerateMultiDay(dayData, dates, aiCfg)
 	if err != nil {
 		logger.Warn("多日分析：AI 请求失败，降级使用模板生成", zap.Error(err))
@@ -78,6 +83,7 @@ func MultiDayAnalyze(dayData map[string][]fetcher.Sector, dates []string, copyMo
 		logger.Warn("多日分析：AI 返回空结果，降级使用模板生成")
 		return DataDrivenMultiDay(dayData, dates)
 	}
+	logger.Info("多日分析：AI 分析成功")
 	return result
 }
 

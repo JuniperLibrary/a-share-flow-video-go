@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 
+	"github.com/a-share-flow-video-go/internal/clsnews"
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/logger"
 	"github.com/a-share-flow-video-go/internal/storage"
@@ -29,7 +30,11 @@ func main() {
 	tickSched.Start()
 	defer tickSched.Shutdown()
 
-	r := web.SetupRouter(tickSched)
+	newsSched := clsnews.NewNewsScheduler()
+	newsSched.Start()
+	defer newsSched.Stop()
+
+	r := web.SetupRouter(tickSched, newsSched)
 
 	port := os.Getenv("PORT")
 	if port == "" {

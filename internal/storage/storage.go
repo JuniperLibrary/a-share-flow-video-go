@@ -105,10 +105,24 @@ func (db *DB) initSchema() error {
 		PRIMARY KEY (date, session, type)
 	);
 
+	CREATE TABLE IF NOT EXISTS cls_news (
+		id          BIGINT PRIMARY KEY,
+		title       TEXT    NOT NULL,
+		content     TEXT    NOT NULL DEFAULT '',
+		brief       TEXT    NOT NULL DEFAULT '',
+		level       TEXT    NOT NULL DEFAULT 'C',
+		reading_num BIGINT  NOT NULL DEFAULT 0,
+		ctime       DATETIME NOT NULL,
+		shareurl    TEXT    NOT NULL DEFAULT '',
+		sectors     TEXT    NOT NULL DEFAULT '',
+		created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_sectors_date ON sectors(datetime);
 	CREATE INDEX IF NOT EXISTS idx_copywriting_date ON copywriting(date);
 	CREATE INDEX IF NOT EXISTS idx_sectors_all_date ON sectors_all(date);
 	CREATE INDEX IF NOT EXISTS idx_tick_events_date ON tick_events(date);
+	CREATE INDEX IF NOT EXISTS idx_cls_news_ctime ON cls_news(ctime);
 	`
 	if _, err := db.db.Exec(schema); err != nil {
 		return err
@@ -155,7 +169,18 @@ func (db *DB) LoadFullSectors(date string) ([]Sector, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	rows, err := db.db.Query("SELECT datetime, name, net, rate, input_date FROM sectors WHERE datetime = ? ORDER BY ABS(net) DESC", date)
+	prefix := date + "%"
+	rows, err := db.db.Query(`
+		SELECT s.datetime, s.name, s.net, s.rate, s.input_date
+		FROM sectors s
+		INNER JOIN (
+			SELECT name, MAX(datetime) AS max_dt
+			FROM sectors
+			WHERE datetime LIKE ?
+			GROUP BY name
+		) latest ON s.name = latest.name AND s.datetime = latest.max_dt
+		ORDER BY ABS(s.net) DESC
+	`, prefix)
 	if err != nil {
 		return nil, err
 	}
@@ -170,6 +195,54 @@ func (db *DB) LoadFullSectors(date string) ([]Sector, error) {
 		sectors = append(sectors, s)
 	}
 	return sectors, rows.Err()
+}
+
+// TimeSnapshot 一个时间点的所有板块数据快照。
+type TimeSnapshot struct {
+	Datetime string   // "2026-05-20 09:30"
+	Sectors  []Sector
+}
+
+// LoadDaySnapshots 加载指定日期所有 tick 时间点的板块快照（按时间升序）。
+func (db *DB) LoadDaySnapshots(date string) ([]TimeSnapshot, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	prefix := date + "%"
+	rows, err := db.db.Query(`
+		SELECT datetime, name, net, rate, input_date
+		FROM sectors
+		WHERE datetime LIKE ?
+		ORDER BY datetime ASC
+	`, prefix)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var snapshots []TimeSnapshot
+	var currentDT string
+	var currentSectors []Sector
+
+	for rows.Next() {
+		var s Sector
+		if err := rows.Scan(&s.Datetime, &s.Name, &s.Net, &s.Rate, &s.InputDate); err != nil {
+			return nil, err
+		}
+		if s.Datetime != currentDT {
+			if currentDT != "" {
+				snapshots = append(snapshots, TimeSnapshot{Datetime: currentDT, Sectors: currentSectors})
+			}
+			currentDT = s.Datetime
+			currentSectors = nil
+		}
+		currentSectors = append(currentSectors, s)
+	}
+	if currentDT != "" {
+		snapshots = append(snapshots, TimeSnapshot{Datetime: currentDT, Sectors: currentSectors})
+	}
+
+	return snapshots, rows.Err()
 }
 
 func (db *DB) LoadTickSectors(date string) ([]Sector, error) {
@@ -429,6 +502,117 @@ func (db *DB) ListTickDates() ([]string, error) {
 		dates = append(dates, d)
 	}
 	return dates, rows.Err()
+}
+
+// CLSNewsRecord 财联社新闻数据库记录。
+type CLSNewsRecord struct {
+	ID        int64  `json:"id"`
+	Title     string `json:"title"`
+	Content   string `json:"content"`
+	Brief     string `json:"brief"`
+	Level     string `json:"level"`
+	ReadingNum int64 `json:"reading_num"`
+	CTime     string `json:"ctime"`    // "2026-05-24 16:34:00"
+	ShareURL  string `json:"shareurl"`
+	Sectors   string `json:"sectors"`   // JSON 数组字符串
+	CreatedAt string `json:"created_at"`
+}
+
+// SaveCLSNews 批量保存财联社新闻（INSERT OR IGNORE 按 id 去重）。
+func (db *DB) SaveCLSNews(records []CLSNewsRecord) (int, error) {
+	if len(records) == 0 {
+		return 0, nil
+	}
+
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	tx, err := db.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO cls_news (id, title, content, brief, level, reading_num, ctime, shareurl, sectors) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return 0, err
+	}
+	defer stmt.Close()
+
+	saved := 0
+	for _, r := range records {
+		result, err := stmt.Exec(r.ID, r.Title, r.Content, r.Brief, r.Level, r.ReadingNum, r.CTime, r.ShareURL, r.Sectors)
+		if err != nil {
+			return saved, err
+		}
+		if n, _ := result.RowsAffected(); n > 0 {
+			saved++
+		}
+	}
+
+	return saved, tx.Commit()
+}
+
+// LoadLatestNews 加载最新新闻（分页，按 ctime 降序）。
+func (db *DB) LoadLatestNews(limit, offset int) ([]CLSNewsRecord, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	rows, err := db.db.Query(`SELECT id, title, content, brief, level, reading_num, ctime, shareurl, sectors, created_at FROM cls_news ORDER BY ctime DESC LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var records []CLSNewsRecord
+	for rows.Next() {
+		var r CLSNewsRecord
+		if err := rows.Scan(&r.ID, &r.Title, &r.Content, &r.Brief, &r.Level, &r.ReadingNum, &r.CTime, &r.ShareURL, &r.Sectors, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		records = append(records, r)
+	}
+	return records, rows.Err()
+}
+
+// SearchCLSNews 搜索新闻（按标题或正文模糊匹配）。
+func (db *DB) SearchCLSNews(keyword string, limit, offset int) ([]CLSNewsRecord, int, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	like := "%" + keyword + "%"
+
+	var total int
+	err := db.db.QueryRow("SELECT COUNT(*) FROM cls_news WHERE title LIKE ? OR content LIKE ?", like, like).Scan(&total)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	rows, err := db.db.Query(`SELECT id, title, content, brief, level, reading_num, ctime, shareurl, sectors, created_at FROM cls_news WHERE title LIKE ? OR content LIKE ? ORDER BY ctime DESC LIMIT ? OFFSET ?`, like, like, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var records []CLSNewsRecord
+	for rows.Next() {
+		var r CLSNewsRecord
+		if err := rows.Scan(&r.ID, &r.Title, &r.Content, &r.Brief, &r.Level, &r.ReadingNum, &r.CTime, &r.ShareURL, &r.Sectors, &r.CreatedAt); err != nil {
+			return nil, 0, err
+		}
+		records = append(records, r)
+	}
+	return records, total, rows.Err()
+}
+
+// GetCLSNewsCount 返回新闻总数。
+func (db *DB) GetCLSNewsCount() (int, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	var count int
+	err := db.db.QueryRow("SELECT COUNT(*) FROM cls_news").Scan(&count)
+	return count, err
 }
 
 func DateToDatetime(date string) string {

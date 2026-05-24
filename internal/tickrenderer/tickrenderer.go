@@ -75,10 +75,22 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 		zap.String("session", session))
 
 	sectorTicks := buildSectorTicks(points)
-	logger.Info("tick 时序构建",
-		zap.Int("sectors", len(sectorTicks)),
-		zap.Int("timePoints", len(sectorTicks[0].Times)),
-		zap.String("date", dateStr))
+	if len(sectorTicks) > 0 {
+		topNames := make([]string, 0, 3)
+		for i, st := range sectorTicks {
+			if i >= 3 {
+				break
+			}
+			topNames = append(topNames, fmt.Sprintf("%s(%dpts)", st.Name, len(st.Data)))
+		}
+		logger.Info("tick 时序构建",
+			zap.Int("sectors", len(sectorTicks)),
+			zap.Int("timePoints", len(sectorTicks[0].Times)),
+			zap.Strings("top3", topNames),
+			zap.Int("totalDataPoints", len(sectorTicks)*len(sectorTicks[0].Times)))
+	} else {
+		logger.Warn("tick 时序构建为空", zap.String("date", dateStr))
+	}
 
 	if len(timeline) == 0 {
 		db, dbErr := storage.Get()
@@ -151,11 +163,15 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 		"--frames", fmt.Sprintf("0-%d", TotalFrames-1),
 	}
 
-	logger.Info("tick 渲染开始",
+	logger.Info("tick 渲染参数",
+		zap.Int("propsSize", len(propsJSON)),
 		zap.Int("sectors", len(sectorTicks)),
-		zap.String("output", outputPath),
-		zap.String("format", format),
-		zap.String("session", session))
+		zap.Int("totalFrames", TotalFrames),
+		zap.Int("fps", FPS),
+		zap.Int("width", w),
+		zap.Int("height", h),
+		zap.String("compID", compID),
+		zap.String("output", outputPath))
 
 	cmd := exec.Command("npx", args...)
 	cmd.Dir = rendererDir
@@ -166,7 +182,14 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 		return "", fmt.Errorf("Remotion tick render failed: %w", err)
 	}
 
-	logger.Info("tick 渲染完成", zap.String("output", outputPath))
+	var fileInfo string
+	if fi, err := os.Stat(outputPath); err == nil {
+		fileInfo = fmt.Sprintf("%.1fMB", float64(fi.Size())/1024/1024)
+	}
+
+	logger.Info("tick 渲染完成",
+		zap.String("output", outputPath),
+		zap.String("fileSize", fileInfo))
 	return outputPath, nil
 }
 
