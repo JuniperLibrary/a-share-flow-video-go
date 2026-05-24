@@ -267,6 +267,12 @@ func (s *Scheduler) execute(session string) {
 		}
 	}
 
+	if config.DataMode() == "json" {
+		if db, err := storage.Get(); err == nil {
+			db.ExportJSON()
+		}
+	}
+
 	s.mu.Lock()
 	s.lastStatus = "success"
 	s.mu.Unlock()

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/logger"
 	"github.com/a-share-flow-video-go/internal/storage"
 	"go.uber.org/zap"
@@ -148,7 +149,10 @@ func (s *NewsScheduler) poll() {
 	s.lastCount = saved
 	s.mu.Unlock()
 
-	if saved > 0 {
+	if saved > 0 && config.DataMode() == "json" {
+		if db, err := storage.Get(); err == nil {
+			db.ExportJSON()
+		}
 		DumpNews(news[:min(saved, len(news))])
 		msg := fmt.Sprintf("📰 新增 %d 条财联社电报", saved)
 		logger.Info(msg, zap.Int64("lastTime", s.lastTime))
