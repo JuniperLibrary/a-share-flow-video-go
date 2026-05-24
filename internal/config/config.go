@@ -128,6 +128,15 @@ func GetEnvPath() string {
 	return filepath.Join(GetProjectRoot(), ".env")
 }
 
+// DataMode 返回存储模式: "sqlite" (默认, 写入文件数据库) 或 "json" (写入 JSON 文件).
+func DataMode() string {
+	mode := os.Getenv("DATA_MODE")
+	if mode != "sqlite" && mode != "json" {
+		return "sqlite"
+	}
+	return mode
+}
+
 // LoadEnv parses the .env file and sets environment variables.
 func LoadEnv() error {
 	envPath := GetEnvPath()
