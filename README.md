@@ -64,6 +64,7 @@ AI_MODEL=gpt-4o-mini
 | `OPENAI_API_KEY` | LLM API Key | 无（使用模板/数据驱动模式） |
 | `OPENAI_BASE_URL` | LLM API 地址 | `https://api.openai.com/v1` |
 | `AI_MODEL` | 模型名称 | `gpt-4o-mini` |
+| `DATA_MODE` | 存储模式: `sqlite`(本地) / `json`(部署) | `sqlite` |
 
 ### 3. 生成视频
 
@@ -83,6 +84,9 @@ go run ./cmd/cli/ --session=full       # 仅全天
 # AI 文案模式
 go run ./cmd/cli/ --ai
 go run ./cmd/cli/ --ai --session=morning
+
+# 仅采集数据，跳过视频渲染（适合 CI/部署场景）
+go run ./cmd/cli/ --collect-only
 
 # 批量处理
 go run ./cmd/cli/ --ai 2026-05-12 2026-05-13 2026-05-14
@@ -110,7 +114,19 @@ go build -o cli ./cmd/cli/
 go build -o web-server ./cmd/web/
 ```
 
-### 5. SQLite 数据库初始化
+### 5. JSON 数据管理
+
+JSON 文件是 Git 友好的数据格式，用于 GitHub Pages 部署或跨环境同步数据：
+
+```bash
+# 导出 SQLite 数据到 JSON 文件 (data/*.json)
+go run ./cmd/datajson/ export
+
+# 从 JSON 文件导入数据到 SQLite
+go run ./cmd/datajson/ import
+```
+
+### 6. SQLite 数据库初始化
 
 数据库在 Web/CLI 启动时自动初始化。也可手动初始化：
 
@@ -282,12 +298,17 @@ output/YYYY-MM-DD/
 ├── 全天_tv.mp4
 └── 早盘_tick.mp4         # Tick 曲线视频
 
+data/
+├── a-share-flow.db           # SQLite 数据库（gitignored，本地开发）
+├── sectors.json              # 板块数据（Git 友好，部署用）
+├── sectors_all.json          # 全量板块数据
+├── copywriting.json          # 文案数据
+├── tick_events.json          # Tick 时序数据
+└── cls_news.json             # 财联社新闻数据
+
 data/YYYY-MM-DD/
 ├── sectors.csv               # 全天板块数据（21个监控板块）
 └── 板块全量_YYYY-MM-DD.csv   # 全量板块导出（异步任务）
-
-data/
-└── a-share-flow.db           # SQLite 数据库
 ```
 
 ---
@@ -394,7 +415,8 @@ a-share-flow-video-go/
 ├── cmd/
 │   ├── cli/main.go              # CLI 入口：命令行视频生成器
 │   ├── web/main.go              # Web 服务入口：gin HTTP 服务器（端口 8084）
-│   └── initdb/main.go           # SQLite 数据库手动初始化脚本
+│   ├── initdb/main.go           # SQLite 数据库手动初始化脚本
+│   └── datajson/main.go         # JSON 导入导出工具（Git 友好部署）
 ├── internal/
 │   ├── config/config.go         # 集中配置：视频参数、SessionConfigs、AI 配置、路径管理
 │   ├── fetcher/fetcher.go       # 东方财富 API：数据获取、CSV 保存/加载、Top21 过滤
@@ -412,7 +434,7 @@ a-share-flow-video-go/
 │   │   ├── sector_matcher.go    # 新闻→板块关键词匹配器
 │   │   └── scheduler.go         # 后台轮询调度器（30s/5min）
 │   └── web/handlers.go          # HTTP handlers：SSE 流、全量导出、新闻路由、CORS
-└── data/                        # 数据目录：CSV + SQLite 数据库
+└── data/                        # 数据目录：CSV + SQLite + JSON (Git 友好)
 ```
 
 > 前端已分离为独立项目：[a-share-flow-video-web](../a-share-flow-video-web)，通过 CORS 跨域与后端通信。
@@ -436,6 +458,34 @@ cd ../a-share-flow-video-web && npm run dev       # 开发模式
 cd ../a-share-flow-video-web && npm run build     # 生产构建
 cd ../a-share-flow-video-web && npm run typecheck # 类型检查
 ```
+
+---
+
+## 部署方案
+
+支持两种运行模式，通过 `DATA_MODE` 环境变量切换：
+
+### 本地开发（默认）
+
+```bash
+# SQLite 持久化，性能最优
+go run ./cmd/cli/
+```
+
+- 数据写入 `data/a-share-flow.db`（被 gitignore）
+- JSON 文件不自动更新，需要手动 `go run ./cmd/datajson/ export`
+
+### GitHub Pages 部署
+
+```bash
+DATA_MODE=json go run ./cmd/cli/
+```
+
+- 使用内存 SQLite，启动时自动从 JSON 文件导入历史数据
+- 采集完成后自动导出 JSON 到 `data/*.json`
+- 不产生 `.db` 文件
+
+> 详细部署步骤（GitHub Actions + GitHub Pages）：[DEPLOY.md](./DEPLOY.md)
 
 ---
 

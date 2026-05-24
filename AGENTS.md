@@ -21,6 +21,14 @@ go run ./cmd/web/
 # SQLite: manual database initialization
 go run ./cmd/initdb/
 
+# Data: export SQLite tables to JSON files (git-friendly, deployable)
+go run ./cmd/datajson/ export
+
+# Data: import JSON files back into SQLite (local development restore)
+go run ./cmd/datajson/ import
+
+# Deploy: see DEPLOY.md for GitHub Actions + GitHub Pages setup
+
 # Frontend (separate project: a-share-flow-video-web)
 # cd ../a-share-flow-video-web && npm run dev
 # cd ../a-share-flow-video-web && npx tsc --noEmit

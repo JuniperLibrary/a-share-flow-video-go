@@ -1,6 +1,7 @@
 # Binaries
 /cli
 /web-server
+/datajson
 *.exe
 
 # Dependencies
@@ -12,7 +13,7 @@ web/frontend/dist/
 
 # Data and output
 output/
-data/
+data/*.db*
 
 # Build artifacts
 web/frontend/tsconfig.tsbuildinfo
