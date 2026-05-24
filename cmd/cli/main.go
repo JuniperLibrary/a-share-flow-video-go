@@ -39,6 +39,7 @@ func main() {
 	session := ""
 	days := 0
 	useTick := false
+	collectOnly := false
 	var dates []string
 
 	for _, arg := range os.Args[1:] {
@@ -51,6 +52,8 @@ func main() {
 			days, _ = strconv.Atoi(strings.TrimPrefix(arg, "--days="))
 		case arg == "--tick":
 			useTick = true
+		case arg == "--collect-only":
+			collectOnly = true
 		default:
 			dates = append(dates, arg)
 		}
@@ -99,7 +102,7 @@ func main() {
 
 	successCount := 0
 	for _, dateStr := range dates {
-		if processDate(dateStr, useAI, session) {
+		if processDate(dateStr, useAI, session, collectOnly) {
 			successCount++
 		}
 	}
@@ -111,7 +114,7 @@ func main() {
 	logger.Info(sep70)
 }
 
-func processDate(dateStr string, useAI bool, sessionOverride string) bool {
+func processDate(dateStr string, useAI bool, sessionOverride string, collectOnly bool) bool {
 	l := logger.With(zap.String("date", dateStr))
 	l.Info(sep70)
 	l.Info("处理日期: " + dateStr)
@@ -184,7 +187,15 @@ func processDate(dateStr string, useAI bool, sessionOverride string) bool {
 			printSectorsTable(sectors)
 		}
 
-		generateSession(sectors, dateStr, dateDir, useAI, session)
+		if !collectOnly {
+			generateSession(sectors, dateStr, dateDir, useAI, session)
+		}
+	}
+
+	if config.DataMode() == "json" {
+		if db, err := storage.Get(); err == nil {
+			db.ExportJSON()
+		}
 	}
 	return true
 }
@@ -310,6 +321,12 @@ func processTickDate(dateStr string, sessionOverride string, useAI bool) bool {
 			})
 		}
 		sl.Info("文案已保存", zap.String("session", sessCfg.TitleSuffix+" (tick)"))
+	}
+
+	if config.DataMode() == "json" {
+		if db, err := storage.Get(); err == nil {
+			db.ExportJSON()
+		}
 	}
 	return success
 }
