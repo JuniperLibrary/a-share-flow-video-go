@@ -10,6 +10,10 @@ import (
 	"sync"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/a-share-flow-video-go/internal/config"
+	"github.com/a-share-flow-video-go/internal/logger"
+	"go.uber.org/zap"
 )
 
 type DB struct {
@@ -660,4 +664,140 @@ func (db *DB) LoadTickEvents(date, session string) (json.RawMessage, error) {
 		return nil, err
 	}
 	return json.RawMessage(payloadStr), nil
+}
+
+// RawRows executes a query and returns all rows as []map[string]any.
+func (db *DB) RawRows(query string, args ...any) ([]map[string]any, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	rows, err := db.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+
+	var results []map[string]any
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		valPtrs := make([]any, len(cols))
+		for i := range vals {
+			valPtrs[i] = &vals[i]
+		}
+
+		if err := rows.Scan(valPtrs...); err != nil {
+			return nil, err
+		}
+
+		row := make(map[string]any)
+		for i, col := range cols {
+			val := vals[i]
+			switch v := val.(type) {
+			case []byte:
+				row[col] = string(v)
+			default:
+				row[col] = v
+			}
+		}
+		results = append(results, row)
+	}
+	return results, rows.Err()
+}
+
+// RawExec executes a statement without returning rows.
+func (db *DB) RawExec(query string, args ...any) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	_, err := db.db.Exec(query, args...)
+	return err
+}
+
+var exportQueries = []struct {
+	File  string
+	Query string
+}{
+	{"sectors.json", "SELECT datetime, name, net, rate, input_date FROM sectors ORDER BY datetime, name"},
+	{"sectors_all.json", "SELECT date, code, name, net, rate FROM sectors_all ORDER BY date, name"},
+	{"copywriting.json", "SELECT date, session, type, content FROM copywriting ORDER BY date, session, type"},
+	{"tick_events.json", "SELECT date, session, type, payload FROM tick_events ORDER BY date, session, type"},
+	{"cls_news.json", "SELECT id, title, content, brief, level, reading_num, ctime, shareurl, sectors, created_at FROM cls_news ORDER BY ctime DESC"},
+}
+
+// ImportJSON 从 data/*.json 文件导入数据到数据库。
+// 在 JSON 模式下启动时自动调用，将历史 JSON 数据载入内存 SQLite。
+func (db *DB) ImportJSON() error {
+	dir := config.GetDataDir()
+	for _, t := range exportQueries {
+		path := filepath.Join(dir, t.File)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue // 文件不存在是正常的
+		}
+		var rows []map[string]any
+		if err := json.Unmarshal(data, &rows); err != nil {
+			logger.Warn("JSON 解析失败", zap.String("table", t.File), zap.Error(err))
+			continue
+		}
+		for _, row := range rows {
+			if err := db.insertRow(t.File, row); err != nil {
+				logger.Warn("JSON 导入失败", zap.String("table", t.File), zap.Error(err))
+			}
+		}
+		logger.Info("JSON 已导入", zap.String("table", t.File), zap.Int("rows", len(rows)))
+	}
+	return nil
+}
+
+func (db *DB) insertRow(filename string, row map[string]any) error {
+	switch filename {
+	case "sectors.json":
+		return db.RawExec(`INSERT OR REPLACE INTO sectors (datetime, name, net, rate, input_date) VALUES (?, ?, ?, ?, ?)`,
+			row["datetime"], row["name"], row["net"], row["rate"], row["input_date"])
+	case "sectors_all.json":
+		return db.RawExec(`INSERT OR REPLACE INTO sectors_all (date, code, name, net, rate) VALUES (?, ?, ?, ?, ?)`,
+			row["date"], row["code"], row["name"], row["net"], row["rate"])
+	case "copywriting.json":
+		return db.RawExec(`INSERT OR REPLACE INTO copywriting (date, session, type, content) VALUES (?, ?, ?, ?)`,
+			row["date"], row["session"], row["type"], row["content"])
+	case "tick_events.json":
+		return db.RawExec(`INSERT OR REPLACE INTO tick_events (date, session, type, payload) VALUES (?, ?, ?, ?)`,
+			row["date"], row["session"], row["type"], row["payload"])
+	case "cls_news.json":
+		return db.RawExec(`INSERT OR IGNORE INTO cls_news (id, title, content, brief, level, reading_num, ctime, shareurl, sectors, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			row["id"], row["title"], row["content"], row["brief"], row["level"], row["reading_num"], row["ctime"], row["shareurl"], row["sectors"], row["created_at"])
+	}
+	return fmt.Errorf("未知文件: %s", filename)
+}
+
+// ExportJSON 将数据库全部表导出为 JSON 文件到 data/ 目录。
+// 仅在 DATA_MODE=json 时有效，sqlite 模式不产生 JSON 文件。
+func (db *DB) ExportJSON() error {
+	dir := config.GetDataDir()
+	os.MkdirAll(dir, 0755)
+
+	for _, t := range exportQueries {
+		rows, err := db.RawRows(t.Query)
+		if err != nil {
+			logger.Warn("导出失败", zap.String("table", t.File), zap.Error(err))
+			continue
+		}
+		path := filepath.Join(dir, t.File)
+		data, err := json.MarshalIndent(rows, "", "  ")
+		if err != nil {
+			logger.Warn("JSON 序列化失败", zap.String("table", t.File), zap.Error(err))
+			continue
+		}
+		if err := os.WriteFile(path, data, 0644); err != nil {
+			logger.Warn("写入失败", zap.String("path", path), zap.Error(err))
+			continue
+		}
+		logger.Info("JSON 已导出", zap.String("table", t.File), zap.Int("rows", len(rows)))
+	}
+	return nil
 }
