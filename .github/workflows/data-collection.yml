@@ -1,0 +1,51 @@
+name: 数据采集
+
+on:
+  schedule:
+    # 交易日 15:05 CST (07:05 UTC) — 收盘后采集全天数据
+    - cron: '5 7 * * 1-5'
+  # 也支持手动触发
+  workflow_dispatch:
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 需要 token 才能写回
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: 采集板块数据
+        # --collect-only 跳过视频渲染（CI 无 GPU，渲染会失败且耗时）
+        # 只采集数据 + 生成文案 + 导出 JSON
+        run: DATA_MODE=json go run ./cmd/cli/ --collect-only
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          AI_MODEL: ${{ secrets.AI_MODEL }}
+
+      - name: 提交 JSON 数据到仓库
+        run: |
+          git config user.name "a-share-flow-bot"
+          git config user.email "bot@a-share-flow.dev"
+          git add data/*.json
+          git diff --staged --quiet || git commit -m "chore(data): 自动采集 $(date '+%Y-%m-%d') 数据"
+          git push
+
+      - name: 触发前端仓库部署
+        if: success()
+        run: |
+          curl -sL -X POST \
+            -H "Authorization: token ${{ secrets.DEPLOY_PAT }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "Content-Type: application/json" \
+            "https://api.github.com/repos/JuniperLibrary/a-share-flow-video-web/dispatches" \
+            -d '{"event_type":"data-updated"}'
