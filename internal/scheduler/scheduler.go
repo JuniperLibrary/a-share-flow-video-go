@@ -222,8 +222,20 @@ func (s *Scheduler) execute(session string) {
 		events = analyzer.GetFallbackEvents(config.TotalFrames)
 	}
 
+	// 在渲染前生成文案，用于 TTS 语音合成
+	copywriteText := ""
+	aiCfg := config.GetAIConfig()
+	if aiCfg.APIKey != "" {
+		if aiText, err := copy.GenerateCopywritingAI(sectors, todayStr, session); err == nil {
+			copywriteText = aiText
+		}
+	}
+	if copywriteText == "" {
+		copywriteText = copy.GenerateCopywriting(sectors, todayStr, session)
+	}
+
 	outPath := filepath.Join(outputDir, todayStr, fmt.Sprintf("%s.mp4", sessCfg.FilenameSuffix))
-	if _, err := renderer.RenderVideo(sectors, todayStr, outPath, events, timeline, ticker, "tv", session); err != nil {
+	if _, err := renderer.RenderVideo(sectors, todayStr, outPath, events, timeline, ticker, "tv", session, copywriteText); err != nil {
 		logger.Error("scheduler 渲染失败", zap.String("session", sessCfg.TitleSuffix), zap.Error(err))
 		s.mu.Lock()
 		s.lastStatus = fmt.Sprintf("error: render %s: %v", sessCfg.TitleSuffix, err)
@@ -231,40 +243,17 @@ func (s *Scheduler) execute(session string) {
 		return
 	}
 
-	aiCfg := config.GetAIConfig()
-	if aiCfg.APIKey != "" {
-		aiText, err := copy.GenerateCopywritingAI(sectors, todayStr, session)
-		if err != nil {
-			logger.Warn("scheduler AI文案生成失败", zap.String("session", sessCfg.TitleSuffix), zap.Error(err))
-			tplCopy := copy.GenerateCopywriting(sectors, todayStr, session)
-			if db, err := storage.Get(); err == nil {
-				_ = db.SaveCopywriting(storage.Copywriting{
-					Date:    todayStr,
-					Session: session,
-					Type:    "template",
-					Content: tplCopy,
-				})
-			}
-		} else {
-			if db, err := storage.Get(); err == nil {
-				_ = db.SaveCopywriting(storage.Copywriting{
-					Date:    todayStr,
-					Session: session,
-					Type:    "ai",
-					Content: aiText,
-				})
-			}
-		}
-	} else {
-		tplCopy := copy.GenerateCopywriting(sectors, todayStr, session)
-		if db, err := storage.Get(); err == nil {
-			_ = db.SaveCopywriting(storage.Copywriting{
-				Date:    todayStr,
-				Session: session,
-				Type:    "template",
-				Content: tplCopy,
-			})
-		}
+	cwType := "template"
+	if aiCfg.APIKey != "" && copywriteText != "" {
+		cwType = "ai"
+	}
+	if db, err := storage.Get(); err == nil {
+		_ = db.SaveCopywriting(storage.Copywriting{
+			Date:    todayStr,
+			Session: session,
+			Type:    cwType,
+			Content: copywriteText,
+		})
 	}
 
 	if config.DataMode() == "json" {

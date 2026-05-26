@@ -218,26 +218,31 @@ func generateSession(sectors []fetcher.Sector, dateStr, dateDir string, useAI bo
 	l := logger.With(zap.String("date", dateStr), zap.String("session", sessCfg.TitleSuffix))
 
 	outPath := filepath.Join(outputDir, dateStr, fmt.Sprintf("%s.mp4", sessCfg.FilenameSuffix))
-	if _, err := renderer.RenderVideo(sectors, dateStr, outPath, events, timeline, ticker, "tv", session); err != nil {
+
+	// 在渲染前生成文案，用于 TTS 语音合成
+	var copywriteText string
+	if useAI {
+		var err error
+		copywriteText, err = copy.GenerateCopywritingAI(sectors, dateStr, session)
+		if err != nil {
+			l.Warn("AI文案生成失败，降级模板模式", zap.String("session", sessCfg.TitleSuffix), zap.Error(err))
+			copywriteText = copy.GenerateCopywriting(sectors, dateStr, session)
+		}
+	} else {
+		copywriteText = copy.GenerateCopywriting(sectors, dateStr, session)
+	}
+
+	if _, err := renderer.RenderVideo(sectors, dateStr, outPath, events, timeline, ticker, "tv", session, copywriteText); err != nil {
 		l.Error("Remotion 渲染失败", zap.String("session", sessCfg.TitleSuffix), zap.Error(err))
 	} else {
 		l.Info("视频已保存", zap.String("output", outPath))
 	}
 
-	var text string
-	if useAI {
-		var err error
-		text, err = copy.GenerateCopywritingAI(sectors, dateStr, session)
-		if err != nil {
-			l.Warn("AI文案生成失败，降级模板模式", zap.String("session", sessCfg.TitleSuffix), zap.Error(err))
-			text = copy.GenerateCopywriting(sectors, dateStr, session)
-		}
-	} else {
-		text = copy.GenerateCopywriting(sectors, dateStr, session)
-	}
-	cwType := "template"
+	var cwType string
 	if useAI {
 		cwType = "ai"
+	} else {
+		cwType = "template"
 	}
 
 	if db, err := storage.Get(); err == nil {
@@ -245,7 +250,7 @@ func generateSession(sectors []fetcher.Sector, dateStr, dateDir string, useAI bo
 			Date:    dateStr,
 			Session: session,
 			Type:    cwType,
-			Content: text,
+			Content: copywriteText,
 		})
 	}
 	l.Info("文案已保存", zap.String("session", sessCfg.TitleSuffix))
