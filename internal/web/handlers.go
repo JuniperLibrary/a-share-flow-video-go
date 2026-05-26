@@ -294,6 +294,7 @@ func SetupRouter(tickSched *tickscheduler.TickScheduler, newsSched *clsnews.News
 	if newsSched != nil {
 		r.GET("/api/news", handleNewsList)
 		r.GET("/api/news/search", handleNewsSearch)
+		r.GET("/api/news/date", handleNewsByDate)
 		r.GET("/api/news/status", func(c *gin.Context) {
 			c.JSON(200, newsSched.Status())
 		})
@@ -1360,6 +1361,45 @@ func handleNewsSearch(c *gin.Context) {
 		"records": records,
 		"total":   total,
 		"q":       keyword,
+		"limit":   limit,
+		"offset":  offset,
+	})
+}
+
+func handleNewsByDate(c *gin.Context) {
+	dateStr := c.Query("date")
+	if dateStr == "" {
+		dateStr = time.Now().Format("2006-01-02")
+	}
+
+	limitStr := c.DefaultQuery("limit", "50")
+	offsetStr := c.DefaultQuery("offset", "0")
+	limit, _ := strconv.Atoi(limitStr)
+	offset, _ := strconv.Atoi(offsetStr)
+	if limit < 1 || limit > 200 {
+		limit = 50
+	}
+
+	db, err := storage.Get()
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	records, total, err := db.LoadNewsByDate(dateStr, limit, offset)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	if records == nil {
+		records = []storage.CLSNewsRecord{}
+	}
+
+	c.JSON(200, gin.H{
+		"records": records,
+		"total":   total,
+		"date":    dateStr,
 		"limit":   limit,
 		"offset":  offset,
 	})

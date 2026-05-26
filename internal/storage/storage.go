@@ -579,6 +579,36 @@ func (db *DB) LoadLatestNews(limit, offset int) ([]CLSNewsRecord, error) {
 	return records, rows.Err()
 }
 
+// LoadNewsByDate 按日期加载新闻（按 ctime 降序）。
+func (db *DB) LoadNewsByDate(date string, limit, offset int) ([]CLSNewsRecord, int, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	prefix := date + "%"
+
+	var total int
+	err := db.db.QueryRow("SELECT COUNT(*) FROM cls_news WHERE ctime LIKE ?", prefix).Scan(&total)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	rows, err := db.db.Query(`SELECT id, title, content, brief, level, reading_num, ctime, shareurl, sectors, created_at FROM cls_news WHERE ctime LIKE ? ORDER BY ctime DESC LIMIT ? OFFSET ?`, prefix, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var records []CLSNewsRecord
+	for rows.Next() {
+		var r CLSNewsRecord
+		if err := rows.Scan(&r.ID, &r.Title, &r.Content, &r.Brief, &r.Level, &r.ReadingNum, &r.CTime, &r.ShareURL, &r.Sectors, &r.CreatedAt); err != nil {
+			return nil, 0, err
+		}
+		records = append(records, r)
+	}
+	return records, total, rows.Err()
+}
+
 // SearchCLSNews 搜索新闻（按标题或正文模糊匹配）。
 func (db *DB) SearchCLSNews(keyword string, limit, offset int) ([]CLSNewsRecord, int, error) {
 	db.mu.RLock()
