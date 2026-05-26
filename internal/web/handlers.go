@@ -227,6 +227,12 @@ func SetupRouter(tickSched *tickscheduler.TickScheduler, newsSched *clsnews.News
 	r.GET("/api/sectors-all/names", handleGetSectorsAllNames)
 	r.GET("/api/sectors-all/dates", handleGetSectorsAllDates)
 	r.GET("/api/sectors-all/range", handleGetSectorsAllRange)
+
+	r.GET("/api/notes", handleListNotes)
+	r.POST("/api/notes", handleCreateNote)
+	r.PUT("/api/notes/:id", handleUpdateNote)
+	r.DELETE("/api/notes/:id", handleDeleteNote)
+
 	r.POST("/api/generate-multiday", handleGenerateMultiDay)
 	r.GET("/api/config", handleGetConfig)
 	r.POST("/api/config", handleSaveConfig)
@@ -242,6 +248,64 @@ func SetupRouter(tickSched *tickscheduler.TickScheduler, newsSched *clsnews.News
 			return
 		}
 		c.JSON(200, gin.H{"ok": true, "message": "tick 采集已启动"})
+	})
+	r.POST("/api/tick/force-collect", func(c *gin.Context) {
+		var body struct {
+			Time string `json:"time"` // "15:00"
+			Date string `json:"date"` // 可选，默认当天
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+		if body.Time == "" {
+			c.JSON(400, gin.H{"error": "缺少 time 参数"})
+			return
+		}
+		dateStr := body.Date
+		if dateStr == "" {
+			dateStr = time.Now().In(time.FixedZone("CST", 8*60*60)).Format("2006-01-02")
+		}
+		datetime := storage.DateToDatetimeTick(dateStr, body.Time)
+
+		db, err := storage.Get()
+		if err != nil {
+			c.JSON(500, gin.H{"error": "数据库初始化失败"})
+			return
+		}
+		exists, _ := db.HasTickData(datetime)
+		if exists {
+			c.JSON(200, gin.H{"ok": true, "message": fmt.Sprintf("%s %s 的 tick 数据已存在", dateStr, body.Time)})
+			return
+		}
+
+		sectors, err := fetcher.FetchTop21HotSectors()
+		if err != nil {
+			c.JSON(502, gin.H{"error": fmt.Sprintf("东方财富 API 请求失败: %v", err)})
+			return
+		}
+
+		inputDate := time.Now().In(time.FixedZone("CST", 8*60*60)).Format("2006-01-02 15:04:05")
+		records := make([]storage.Sector, 0, len(sectors))
+		for _, s := range sectors {
+			records = append(records, storage.Sector{
+				Datetime:  datetime,
+				Name:      s.Name,
+				Net:       s.Net,
+				Rate:      s.Rate,
+				InputDate: inputDate,
+			})
+		}
+		if err := db.SaveSectors(records); err != nil {
+			c.JSON(500, gin.H{"error": fmt.Sprintf("保存失败: %v", err)})
+			return
+		}
+
+		c.JSON(200, gin.H{
+			"ok":      true,
+			"message": fmt.Sprintf("已强制采集 %s %s 的 tick 数据", dateStr, body.Time),
+			"count":   len(records),
+		})
 	})
 	r.POST("/api/tick/stop", func(c *gin.Context) {
 		tickSched.StopManual()
@@ -463,6 +527,11 @@ func handleSaveAllSectors(c *gin.Context) {
 	saveAllTasks[taskID] = task
 	saveAllTasksMu.Unlock()
 
+	logger.Info("全板块数据获取任务已创建",
+		zap.String("date", dateStr),
+		zap.String("task_id", taskID),
+	)
+
 	go runSaveAllTask(task)
 
 	c.JSON(200, gin.H{
@@ -478,22 +547,36 @@ func handleSaveAllStatus(c *gin.Context) {
 	saveAllTasksMu.Unlock()
 
 	if !ok {
+		logger.Warn("全板块数据任务状态查询失败，任务不存在", zap.String("task_id", taskID))
 		c.JSON(404, gin.H{"error": "任务不存在"})
 		return
 	}
 
 	task.mu.Lock()
+	dateStr := task.Date
+	status := task.Status
+	progress := task.Progress
+	count := task.Count
+	errMsg := task.Err
 	resp := gin.H{
 		"task_id":  taskID,
-		"date":     task.Date,
-		"status":   task.Status,
-		"progress": task.Progress,
-		"count":    task.Count,
+		"date":     dateStr,
+		"status":   status,
+		"progress": progress,
+		"count":    count,
 	}
-	if task.Err != "" {
-		resp["error"] = task.Err
+	if errMsg != "" {
+		resp["error"] = errMsg
 	}
 	task.mu.Unlock()
+
+	logger.Info("全板块数据任务状态",
+		zap.String("task_id", taskID),
+		zap.String("date", dateStr),
+		zap.String("status", status),
+		zap.String("progress", progress),
+		zap.Int("count", count),
+	)
 
 	c.JSON(200, resp)
 }
@@ -504,21 +587,34 @@ func runSaveAllTask(task *SaveAllTask) {
 	task.Progress = "开始获取板块数据..."
 	task.mu.Unlock()
 
+	logger.Info("全板块数据获取任务开始执行",
+		zap.String("date", task.Date),
+	)
+
 	var allSectors []storage.SectorAll
-	allFS := []string{"m:90+t:2", "m:90+t:3"}
-	for _, fs := range allFS {
+	allFS := []struct {
+		fs       string
+		category string
+	}{{"m:90+t:2", "industry"}, {"m:90+t:3", "concept"}}
+	for _, item := range allFS {
 		for pn := 1; ; pn++ {
 			task.mu.Lock()
-			task.Progress = fmt.Sprintf("获取第%d页...", pn)
+			task.Progress = fmt.Sprintf("获取第%d页(%s)...", pn, item.category)
 			task.mu.Unlock()
 
-			url := fmt.Sprintf("https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData?fields=f12,f14,f62&pn=%d&pz=500&fid=f62&po=1&fs=%s&ut=b2884a39ad64002292a3e90d46a5", pn, fs)
+			url := fmt.Sprintf("https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData?fields=f12,f14,f62&pn=%d&pz=500&fid=f62&po=1&fs=%s&ut=b2884a39ad64002292a3e90d46a5", pn, item.fs)
 			req, err := http.NewRequest("GET", url, nil)
 			if err != nil {
 				task.mu.Lock()
 				task.Status = "error"
 				task.Err = err.Error()
 				task.mu.Unlock()
+				logger.Error("全板块数据API请求创建失败",
+					zap.String("date", task.Date),
+					zap.String("category", item.category),
+					zap.Int("page", pn),
+					zap.Error(err),
+				)
 				return
 			}
 			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
@@ -530,6 +626,12 @@ func runSaveAllTask(task *SaveAllTask) {
 				task.Status = "error"
 				task.Err = fmt.Sprintf("API请求失败: %v", err)
 				task.mu.Unlock()
+				logger.Error("全板块数据API请求失败",
+					zap.String("date", task.Date),
+					zap.String("category", item.category),
+					zap.Int("page", pn),
+					zap.Error(err),
+				)
 				return
 			}
 
@@ -542,28 +644,42 @@ func runSaveAllTask(task *SaveAllTask) {
 			resp.Body.Close()
 			json.Unmarshal(b, &result)
 
-			for _, item := range result.Data.Diff {
-				name, _ := item["f14"].(string)
-				code, _ := item["f12"].(string)
-				netVal := item["f62"]
+			pageItemCount := len(result.Data.Diff)
+			logger.Info("全板块数据页获取成功",
+				zap.String("date", task.Date),
+				zap.String("category", item.category),
+				zap.Int("page", pn),
+				zap.Int("items", pageItemCount),
+			)
+
+			for _, d := range result.Data.Diff {
+				name, _ := d["f14"].(string)
+				code, _ := d["f12"].(string)
+				netVal := d["f62"]
 				if name == "" || netVal == nil {
 					continue
 				}
 				if f, ok := toFloat64(netVal); ok && f != 0 {
 					allSectors = append(allSectors, storage.SectorAll{
-						Date: task.Date,
-						Code: code,
-						Name: name,
-						Net:  roundTo2(f / 1e8),
+						Date:     task.Date,
+						Code:     code,
+						Name:     name,
+						Net:      roundTo2(f / 1e8),
+						Category: item.category,
 					})
 				}
 			}
 
-			if len(result.Data.Diff) < 500 {
+			if pageItemCount < 500 {
 				break
 			}
 			time.Sleep(200 * time.Millisecond)
 		}
+
+		logger.Info("全板块数据分类获取完成",
+			zap.String("date", task.Date),
+			zap.String("category", item.category),
+		)
 	}
 
 	task.mu.Lock()
@@ -577,6 +693,10 @@ func runSaveAllTask(task *SaveAllTask) {
 		task.Status = "error"
 		task.Err = fmt.Sprintf("数据库连接失败: %v", err)
 		task.mu.Unlock()
+		logger.Error("全板块数据保存失败-数据库连接失败",
+			zap.String("date", task.Date),
+			zap.Error(err),
+		)
 		return
 	}
 
@@ -585,6 +705,11 @@ func runSaveAllTask(task *SaveAllTask) {
 		task.Status = "error"
 		task.Err = fmt.Sprintf("保存数据库失败: %v", err)
 		task.mu.Unlock()
+		logger.Error("全板块数据保存失败-写入数据库失败",
+			zap.String("date", task.Date),
+			zap.Int("count", len(allSectors)),
+			zap.Error(err),
+		)
 		return
 	}
 
@@ -593,6 +718,11 @@ func runSaveAllTask(task *SaveAllTask) {
 	task.Progress = fmt.Sprintf("完成: 已保存 %d 个板块数据", len(allSectors))
 	task.Count = len(allSectors)
 	task.mu.Unlock()
+
+	logger.Info("全板块数据获取任务完成",
+		zap.String("date", task.Date),
+		zap.Int("total_count", len(allSectors)),
+	)
 }
 
 func handleGetAllSectors(c *gin.Context) {
@@ -1195,7 +1325,7 @@ func handleDashboard(c *gin.Context) {
 		if db, dbErr := storage.Get(); dbErr == nil {
 			if records, loadErr := db.LoadSectorsAll(latestDate); loadErr == nil && len(records) > 0 {
 	for _, r := range records {
-				sectors = append(sectors, fetcher.Sector{Name: r.Name, Net: r.Net, Rate: r.Rate})
+				sectors = append(sectors, fetcher.Sector{Name: r.Name, Net: r.Net, Rate: r.Rate, Category: r.Category})
 			}
 			}
 		}
@@ -1206,7 +1336,7 @@ func handleDashboard(c *gin.Context) {
 	outflowCount := 0
 	totalNet := 0.0
 	for _, s := range sectors {
-		netValues = append(netValues, gin.H{"name": s.Name, "net": s.Net})
+		netValues = append(netValues, gin.H{"name": s.Name, "net": s.Net, "category": s.Category})
 		if s.Net >= 0 {
 			inflowCount++
 		} else {
@@ -1403,6 +1533,117 @@ func handleNewsByDate(c *gin.Context) {
 		"limit":   limit,
 		"offset":  offset,
 	})
+}
+
+func handleListNotes(c *gin.Context) {
+	db, err := storage.Get()
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	notes, err := db.ListNotes()
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if notes == nil {
+		notes = []storage.Note{}
+	}
+
+	c.JSON(200, gin.H{"notes": notes})
+}
+
+func handleCreateNote(c *gin.Context) {
+	var body struct {
+		Type    string `json:"type"`
+		Content string `json:"content"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if body.Content == "" {
+		c.JSON(400, gin.H{"error": "内容不能为空"})
+		return
+	}
+	if body.Type != "completed" && body.Type != "planned" {
+		body.Type = "planned"
+	}
+
+	db, err := storage.Get()
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	id, err := db.SaveNote(storage.Note{Type: body.Type, Content: body.Content})
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{"ok": true, "id": id})
+}
+
+func handleUpdateNote(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "无效的 id"})
+		return
+	}
+
+	var body struct {
+		Type    string `json:"type"`
+		Content string `json:"content"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if body.Content == "" {
+		c.JSON(400, gin.H{"error": "内容不能为空"})
+		return
+	}
+	if body.Type != "completed" && body.Type != "planned" {
+		body.Type = "planned"
+	}
+
+	db, err := storage.Get()
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := db.UpdateNote(id, body.Type, body.Content); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{"ok": true})
+}
+
+func handleDeleteNote(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "无效的 id"})
+		return
+	}
+
+	db, err := storage.Get()
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := db.DeleteNote(id); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{"ok": true})
 }
 
 func corsMiddleware() gin.HandlerFunc {
