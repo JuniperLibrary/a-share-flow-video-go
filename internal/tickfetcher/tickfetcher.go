@@ -332,8 +332,37 @@ type tradingRange struct {
 	start, end int
 }
 
+// tickSchedule 计算从 currentMinute 开始，以 interval 为步长，
+// 在 allRanges 范围内所有待采集的 (tradingMinute, timeStr) 列表。
+// 纯数学计算，不依赖时钟或 IO，用于测试验证调度逻辑。
+func tickSchedule(currentMinute, interval int, allRanges []tradingRange) []struct {
+	Minute int
+	Time   string
+} {
+	var result []struct {
+		Minute int
+		Time   string
+	}
+	for _, rng := range allRanges {
+		if rng.end < currentMinute {
+			continue
+		}
+		startMinute := rng.start
+		if currentMinute > rng.start {
+			startMinute = ((currentMinute-rng.start)/interval)*interval + rng.start
+		}
+		for minute := startMinute; minute <= rng.end; minute += interval {
+			result = append(result, struct {
+				Minute int
+				Time   string
+			}{Minute: minute, Time: minutesToTime(minute)})
+		}
+	}
+	return result
+}
+
 func minutesToTime(minutes int) string {
-	if minutes <= 120 {
+	if minutes < 120 {
 		h := 9 + (30+minutes)/60
 		m := (30 + minutes) % 60
 		return fmt.Sprintf("%02d:%02d", h, m)

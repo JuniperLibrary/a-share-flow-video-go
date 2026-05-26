@@ -12,22 +12,23 @@ import (
 	"go.uber.org/zap"
 )
 
-// NewsScheduler 财联社新闻轮询调度器。
-// 交易时段每 30s 拉取一次，非交易时段每 5min 拉取一次。
+// NewsScheduler 财联社新闻调度器，支持自动轮询和手动回放两种模式。
+// 自动轮询每 5 分钟拉取一次（不分交易/非交易时段），手动回放由前端按钮触发。
 type NewsScheduler struct {
 	mu        sync.Mutex
 	running   bool
 	stopCh    chan struct{}
-	lastTime  int64           // 上次拉取到的最新时间戳
-	totalNews int             // 累计拉取的新闻数
-	lastPoll  time.Time       // 上次轮询时间
-	lastCount int             // 上次轮询新增条数
+	lastTime  int64     // 上次拉取到的最新时间戳
+	totalNews int       // 累计拉取的新闻数
+	lastPoll  time.Time // 上次轮询时间
+	lastCount int       // 上次轮询新增条数
 }
 
 func NewNewsScheduler() *NewsScheduler {
 	return &NewsScheduler{}
 }
 
+// Start 启动后台自动轮询，每 5 分钟拉取一次。
 func (s *NewsScheduler) Start() {
 	s.mu.Lock()
 	if s.running {
@@ -38,12 +39,12 @@ func (s *NewsScheduler) Start() {
 	s.stopCh = make(chan struct{})
 	s.mu.Unlock()
 
-	go s.poll()
-
+	go s.pollOnce()
 	go s.loop()
-	logger.Info("财联社新闻轮询已启动")
+	logger.Info("财联社新闻自动轮询已启动（5分钟间隔）")
 }
 
+// Stop 停止后台自动轮询。
 func (s *NewsScheduler) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -55,38 +56,55 @@ func (s *NewsScheduler) Stop() {
 	logger.Info("财联社新闻轮询已停止")
 }
 
+// IsRunning 返回自动轮询是否运行中。
 func (s *NewsScheduler) IsRunning() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.running
 }
 
+// PollOnce 手动触发一次拉取→匹配→保存，返回本次新增的匹配新闻条数。
+func (s *NewsScheduler) PollOnce() int {
+	s.poll()
+	s.mu.Lock()
+	count := s.lastCount
+	s.mu.Unlock()
+	return count
+}
+
 // Status 返回调度器状态。
 func (s *NewsScheduler) Status() map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	status := "running"
-	if !s.running {
-		status = "stopped"
+	status := "stopped"
+	if s.running {
+		status = "running"
+	}
+	lastPollStr := ""
+	if !s.lastPoll.IsZero() {
+		lastPollStr = s.lastPoll.Format(time.RFC3339)
 	}
 	return map[string]any{
 		"status":     status,
 		"total_news": s.totalNews,
-		"last_poll":  s.lastPoll.Format(time.RFC3339),
+		"last_poll":  lastPollStr,
 		"last_count": s.lastCount,
 	}
 }
 
 func (s *NewsScheduler) loop() {
 	for {
-		interval := GetPollInterval()
 		select {
 		case <-s.stopCh:
 			return
-		case <-time.After(interval):
+		case <-time.After(5 * time.Minute):
 			s.poll()
 		}
 	}
+}
+
+func (s *NewsScheduler) pollOnce() {
+	s.poll()
 }
 
 func (s *NewsScheduler) poll() {
@@ -107,11 +125,26 @@ func (s *NewsScheduler) poll() {
 	// 匹配板块标签
 	MatchSectorsToNews(news)
 
-	// 更新最新时间戳
+	// 更新最新时间戳（基于原始列表，避免重复拉取）
 	maxTime := ExtractMaxCTime(news)
 	if maxTime > s.lastTime {
 		s.lastTime = maxTime
 		logger.Debug("财联社最新时间戳", zap.Int64("lastTime", maxTime))
+	}
+
+	// 只保留有匹配板块的新闻
+	matched := news[:0]
+	for _, n := range news {
+		if len(n.Sectors) > 0 {
+			matched = append(matched, n)
+		}
+	}
+	if len(matched) == 0 {
+		s.mu.Lock()
+		s.lastPoll = time.Now()
+		s.lastCount = 0
+		s.mu.Unlock()
+		return
 	}
 
 	// 转 storage 记录并保存
@@ -121,8 +154,8 @@ func (s *NewsScheduler) poll() {
 		return
 	}
 
-	records := make([]storage.CLSNewsRecord, 0, len(news))
-	for _, n := range news {
+	records := make([]storage.CLSNewsRecord, 0, len(matched))
+	for _, n := range matched {
 		sectorsJSON, _ := json.Marshal(n.Sectors)
 		records = append(records, storage.CLSNewsRecord{
 			ID:         n.ID,
@@ -154,7 +187,7 @@ func (s *NewsScheduler) poll() {
 			db.ExportJSON()
 		}
 		DumpNews(news[:min(saved, len(news))])
-		msg := fmt.Sprintf("📰 新增 %d 条财联社电报", saved)
+		msg := fmt.Sprintf("财联社新增 %d 条匹配新闻", saved)
 		logger.Info(msg, zap.Int64("lastTime", s.lastTime))
 	}
 }

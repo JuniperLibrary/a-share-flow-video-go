@@ -200,7 +200,7 @@ func IsTradingTime() bool {
 // GetPollInterval 返回轮询间隔：交易时段 30s，非交易时段 5min。
 func GetPollInterval() time.Duration {
 	if IsTradingTime() {
-		return 30 * time.Second
+		return 5 * time.Minute
 	}
 	return 5 * time.Minute
 }
