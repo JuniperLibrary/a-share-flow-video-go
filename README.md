@@ -22,6 +22,8 @@
 | **定时调度** | 09:28 早盘自动采集、12:58 全天自动采集，时区固定 Asia/Shanghai，自动跳过周末 |
 | **采集去重** | Tick 采集前自动检查数据库，已存在的时间点自动跳过，避免重复采集 |
 | **AI 文案** | 自动参考前 5 日历史文案，逐板块分析资金动向，标题 ≤20 字，含风险提示 |
+| **TTS 语音合成** | AI 文案自动转为语音（edge-tts），视频开头朗读标题 + 结尾朗读总结内容 |
+| **动态视频时长** | 总帧数根据 TTS 音频长度自动计算，视频时长随文案长度自适应 |
 | **事件分析** | AI 优先（180s 超时），自动降级到数据驱动，保证始终有可用内容 |
 | **SSE 实时流** | 数据拉取和视频生成过程通过 Server-Sent Events 实时推送进度 |
 | **实时行情** | Web 端「行情」Tab，SSE 推送实时板块资金流曲线 + AI 异动事件检测 |
@@ -222,6 +224,7 @@ Tick 采集调度器在交易时段自动采集板块资金流数据：
 - 跳过周末（周六、周日不执行）
 - 采集前自动检查数据库，已存在的时间点自动跳过
 - 采集间隔默认 10 分钟，可在 Web 控制台修改（1-30 分钟）
+- 调度器 `shouldStop` 阈值为 `15:15`（=15:00 + 最大间隔10min + 5min 缓冲），确保收盘前最后一笔 tick 完整采集
 - 调度器 loop 常驻运行，`Stop()` 只暂停采集，`Shutdown()` 才真正退出
 
 ### 全量数据调度
@@ -283,8 +286,10 @@ AI 文案相比模板模式增强：
 - **趋势判断**：结合历史文案指出板块资金的变化趋势
 - **标题 ≤20 字**：适合小红书/抖音等平台
 - **风险提示**：文末固定包含投资风险提示
+- **TTS 语音播报**：文案自动合成为语音（edge-tts），视频开头朗读标题、资金流动动画后朗读正文总结
 
 > 设置了 AI API Key 时，系统只生成 AI 文案；AI 生成失败时自动降级为模板文案。
+> TTS 合成失败时静默降级，不阻塞视频渲染。
 
 ---
 
@@ -309,6 +314,11 @@ data/
 data/YYYY-MM-DD/
 ├── sectors.csv               # 全天板块数据（21个监控板块）
 └── 板块全量_YYYY-MM-DD.csv   # 全量板块导出（异步任务）
+
+TTS 语音文件（临时，在 Remotion 项目目录下）：
+../a-share-flow-video-web/public/voiceover/
+├── title.mp3                 # 标题口播（视频开头段落）
+└── content.mp3               # 总结口播（视频结尾段落）
 ```
 
 ---
@@ -335,6 +345,7 @@ data/YYYY-MM-DD/
 | `/api/tick/stop` | POST | 停止 Tick 采集 |
 | `/api/tick/enable` | POST | 启用/禁用定时采集 |
 | `/api/tick/interval` | GET/POST | 获取/设置采集频率 |
+| `/api/tick/force-collect` | POST | 强制采集指定时间点 tick（绕过盘时间检查，参数: `time`, `date`） |
 | `/api/tick-data/:date` | GET | 获取指定日期 Tick 数据 |
 | `/api/tick/dates` | GET | 获取所有有 Tick 数据的日期 |
 | `/api/tick/replay-stream` | GET | SSE 回放历史 Tick 数据 |
@@ -371,9 +382,11 @@ AnalyzeAllContent() → AI 生成（180s 超时）→ 降级 DataDrivenGenerate(
     ├── TimelineEvent[]  时间线事件
     └── TickerItem[]     底部滚动资讯
     ↓
-RenderVideo() / RenderMultiDayVideo() → npx remotion render → MP4
-    ↓
 GenerateCopywriting() / GenerateCopywritingAI() → 文案 → SQLite
+    ↓
+TTS 合成（edge-tts） → voiceover/title.mp3 + voiceover/content.mp3
+    ↓
+RenderVideo() → npx remotion render → MP4（三段式结构：标题口播 → 资金流动画 → 结论口播）
 
 Tick 采集（交易时段每 5-10 分钟）
     ↓
@@ -394,7 +407,8 @@ SaveCLSNews() → INSERT OR IGNORE → SQLite: cls_news
 | 参数 | 值 | 说明 |
 |------|-----|------|
 | FPS | 30 | 视频帧率 |
-| TotalFrames | 900 | 总帧数（30 秒视频） |
+| 基础动画帧数 | 900 | 资金流动画帧数（30 秒），TTS 扩展后总帧数动态增加 |
+| TTS 引擎 | edge-tts (zh-CN-XiaoxiaoNeural) | 免费中文语音合成 |
 | 移动端分辨率 | 1080×1920 | 9:16 竖屏 |
 | TV端分辨率 | 1920×1080 | 16:9 横屏 |
 | 早盘 X 轴 | 0-120 分钟 | 09:30-11:30 |
@@ -422,7 +436,8 @@ a-share-flow-video-go/
 │   ├── fetcher/fetcher.go       # 东方财富 API：数据获取、CSV 保存/加载、Top21 过滤
 │   ├── analyzer/analyzer.go     # 事件分析：AIGenerate + DataDrivenGenerate + filterBySession
 │   ├── copy/copy.go             # 文案生成：模板模式 + AI 模式（含历史文案参考）
-│   ├── renderer/renderer.go     # Remotion 桥接：单日/多日视频渲染
+│   ├── renderer/renderer.go     # Remotion 桥接：单日/多日视频渲染 + TTS 语音合成集成
+│   ├── tts/tts.go               # TTS 语音合成：edge-tts 调用、音频时长解析、文案解析
 │   ├── scheduler/scheduler.go   # 定时调度器：双时间点触发，跳过周末，独立状态跟踪
 │   ├── storage/storage.go       # SQLite 持久化：板块+Tick+文案+新闻统一存储
 │   ├── logger/                  # zap 结构化日志：彩色终端、请求追踪、panic 恢复
@@ -505,6 +520,7 @@ DATA_MODE=json go run ./cmd/cli/
 - `TestFetchTop21HotSectors_Live` 期望 ≥21 个板块
 - 早盘视频使用的是全天累计资金流向数据（定性分析够用，非分时增量）
 - 东方财富 API `f62` 字段是当日累计主力净流入，非分时增量
+- 15:00 tick 数据采集需确认 `shouldStop` 阈值 ≥ `15:15`（已在 `tickscheduler.go:128` 修复），避免最后一笔 tick 因 race condition 丢失
 
 ---
 
