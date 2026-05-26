@@ -40,6 +40,7 @@ func main() {
 	days := 0
 	useTick := false
 	collectOnly := false
+	format := "all"
 	var dates []string
 
 	for _, arg := range os.Args[1:] {
@@ -54,6 +55,8 @@ func main() {
 			useTick = true
 		case arg == "--collect-only":
 			collectOnly = true
+		case strings.HasPrefix(arg, "--format="):
+			format = strings.TrimPrefix(arg, "--format=")
 		default:
 			dates = append(dates, arg)
 		}
@@ -75,7 +78,7 @@ func main() {
 		logger.Info("将处理日期", zap.Int("count", len(dates)), zap.String("dates", strings.Join(dates, ", ")))
 		successCount := 0
 		for _, dateStr := range dates {
-			if processTickDate(dateStr, session, useAI) {
+			if processTickDate(dateStr, session, useAI, format) {
 				successCount++
 			}
 		}
@@ -248,7 +251,7 @@ func generateSession(sectors []fetcher.Sector, dateStr, dateDir string, useAI bo
 	l.Info("文案已保存", zap.String("session", sessCfg.TitleSuffix))
 }
 
-func processTickDate(dateStr string, sessionOverride string, useAI bool) bool {
+func processTickDate(dateStr string, sessionOverride string, useAI bool, format string) bool {
 	l := logger.With(zap.String("date", dateStr))
 	l.Info(sep70)
 	l.Info("处理 Tick 视频: " + dateStr)
@@ -281,13 +284,29 @@ func processTickDate(dateStr string, sessionOverride string, useAI bool) bool {
 		sl := l.With(zap.String("session", sessCfg.TitleSuffix))
 		sl.Info("--- 生成 Tick " + sessCfg.TitleSuffix + " 视频 ---")
 
-		outPath := filepath.Join(outputDir, dateStr, fmt.Sprintf("%s_tick.mp4", sessCfg.FilenameSuffix))
-		out, err := tickrenderer.RenderTickVideo(dateStr, outPath, "tv", sess, nil, nil, nil)
-		if err != nil {
-			sl.Error("Tick Remotion 渲染失败", zap.String("session", sessCfg.TitleSuffix), zap.Error(err))
-		} else {
-			sl.Info("Tick 视频已保存", zap.String("output", out))
-			success = true
+		renderMobile := format == "all" || format == "mobile"
+		renderTV := format == "all" || format == "tv"
+
+		if renderMobile {
+			outPathMobile := filepath.Join(outputDir, dateStr, fmt.Sprintf("%s_tick_mobile.mp4", sessCfg.FilenameSuffix))
+			outMobile, err := tickrenderer.RenderTickVideo(dateStr, outPathMobile, "mobile", sess, nil, nil, nil)
+			if err != nil {
+				sl.Error("Tick Mobile Remotion 渲染失败", zap.String("session", sessCfg.TitleSuffix), zap.Error(err))
+			} else {
+				sl.Info("Tick Mobile 视频已保存", zap.String("output", outMobile))
+				success = true
+			}
+		}
+
+		if renderTV {
+			outPathTV := filepath.Join(outputDir, dateStr, fmt.Sprintf("%s_tick.mp4", sessCfg.FilenameSuffix))
+			outTV, err := tickrenderer.RenderTickVideo(dateStr, outPathTV, "tv", sess, nil, nil, nil)
+			if err != nil {
+				sl.Error("Tick TV Remotion 渲染失败", zap.String("session", sessCfg.TitleSuffix), zap.Error(err))
+			} else {
+				sl.Info("Tick TV 视频已保存", zap.String("output", outTV))
+				success = true
+			}
 		}
 
 		points, err := tickfetcher.LoadTickCSV(dateStr, sess)

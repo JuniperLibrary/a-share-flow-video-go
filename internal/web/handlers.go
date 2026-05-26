@@ -283,15 +283,10 @@ func SetupRouter(tickSched *tickscheduler.TickScheduler, newsSched *clsnews.News
 		c.JSON(200, gin.H{"date": dateStr, "session": session, "points": points})
 	})
 	r.POST("/api/generate-tick", handleGenerateTick)
-	r.GET("/api/tick/stream", func(c *gin.Context) {
-		handleTickStream(c, tickSched.GetFetcher())
-	})
-	r.GET("/api/tick/dates", handleTickDates)
-	r.GET("/api/tick/replay-stream", handleTickReplayStream)
-	r.GET("/api/tick/events/:date", handleTickEvents)
+
 	r.GET("/api/dashboard", handleDashboard)
 
-	// 财联社新闻路由
+	// 财联社新闻路由（自动轮询 + 手动回放）
 	if newsSched != nil {
 		r.GET("/api/news", handleNewsList)
 		r.GET("/api/news/search", handleNewsSearch)
@@ -305,6 +300,10 @@ func SetupRouter(tickSched *tickscheduler.TickScheduler, newsSched *clsnews.News
 		r.POST("/api/news/stop", func(c *gin.Context) {
 			newsSched.Stop()
 			c.JSON(200, gin.H{"ok": true, "message": "新闻轮询已停止"})
+		})
+		r.POST("/api/news/replay", func(c *gin.Context) {
+			count := newsSched.PollOnce()
+			c.JSON(200, gin.H{"ok": true, "count": count, "message": fmt.Sprintf("回放完成，新增 %d 条新闻", count)})
 		})
 	}
 
@@ -990,6 +989,7 @@ func handleGenerateTick(c *gin.Context) {
 		Date     string `json:"date"`
 		Session  string `json:"session"`
 		CopyMode string `json:"copy_mode"`
+		Format   string `json:"format"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
@@ -1001,11 +1001,15 @@ func handleGenerateTick(c *gin.Context) {
 	if body.Session == "" {
 		body.Session = "full"
 	}
+	if body.Format == "" {
+		body.Format = "all"
+	}
 
 	logger.Info("tick 视频生成请求",
 		zap.String("date", body.Date),
 		zap.String("session", body.Session),
-		zap.String("copyMode", body.CopyMode))
+		zap.String("copyMode", body.CopyMode),
+		zap.String("format", body.Format))
 
 	sse := NewSSEWriter(c)
 	sse.Send("log", fmt.Sprintf("📅 日期: %s, 时段: %s, 文案: %s",
@@ -1013,7 +1017,6 @@ func handleGenerateTick(c *gin.Context) {
 		map[string]string{"ai": "AI生成", "template": "模板"}[body.CopyMode]))
 
 	sessCfg := config.SessionConfigs[body.Session]
-	outPath := filepath.Join(config.GetOutputDir(), body.Date, fmt.Sprintf("%s_tick.mp4", sessCfg.FilenameSuffix))
 
 	// 预览 tick 数据量
 	if pts, err := tickfetcher.LoadTickCSV(body.Date, body.Session); err == nil {
@@ -1028,20 +1031,43 @@ func handleGenerateTick(c *gin.Context) {
 		sse.Send("log", fmt.Sprintf("⚠️ 数据预览失败: %v", err))
 	}
 
-	sse.Send("log", fmt.Sprintf("🎬 开始渲染 Tick 曲线视频 (TV: 1920x1080)..."))
-	sse.Send("progress", "渲染视频中...")
+	renderMobile := body.Format == "all" || body.Format == "mobile"
+	renderTV := body.Format == "all" || body.Format == "tv"
 
-	out, err := tickrenderer.RenderTickVideo(body.Date, outPath, "tv", body.Session, nil, nil, nil)
-	if err != nil {
-		sse.Send("error", fmt.Sprintf("渲染失败: %v", err))
-		return
+	if renderMobile {
+		outPathMobile := filepath.Join(config.GetOutputDir(), body.Date, fmt.Sprintf("%s_tick_mobile.mp4", sessCfg.FilenameSuffix))
+		sse.Send("log", "🎬 开始渲染 Tick 曲线视频 (Mobile 9:16)...")
+		sse.Send("progress", "渲染 Mobile 版本...")
+
+		outMobile, err := tickrenderer.RenderTickVideo(body.Date, outPathMobile, "mobile", body.Session, nil, nil, nil)
+		if err != nil {
+			sse.Send("log", fmt.Sprintf("⚠️ Mobile 渲染失败: %v", err))
+		} else {
+			var fileInfo string
+			if fi, err := os.Stat(outMobile); err == nil {
+				fileInfo = fmt.Sprintf("%.1fMB", float64(fi.Size())/1024/1024)
+			}
+			sse.Send("log", fmt.Sprintf("✅ Tick Mobile 渲染完成 (%s)", fileInfo))
+		}
 	}
 
-	var fileInfo string
-	if fi, err := os.Stat(out); err == nil {
-		fileInfo = fmt.Sprintf("%.1fMB", float64(fi.Size())/1024/1024)
+	if renderTV {
+		outPathTV := filepath.Join(config.GetOutputDir(), body.Date, fmt.Sprintf("%s_tick.mp4", sessCfg.FilenameSuffix))
+		sse.Send("log", "🎬 开始渲染 Tick 曲线视频 (TV 16:9)...")
+		sse.Send("progress", "渲染 TV 版本...")
+
+		outTV, err := tickrenderer.RenderTickVideo(body.Date, outPathTV, "tv", body.Session, nil, nil, nil)
+		if err != nil {
+			sse.Send("error", fmt.Sprintf("TV 渲染失败: %v", err))
+			return
+		}
+
+		var fileInfo string
+		if fi, err := os.Stat(outTV); err == nil {
+			fileInfo = fmt.Sprintf("%.1fMB", float64(fi.Size())/1024/1024)
+		}
+		sse.Send("log", fmt.Sprintf("✅ Tick TV 渲染完成 (%s)", fileInfo))
 	}
-	sse.Send("log", fmt.Sprintf("✅ Tick 视频渲染完成 (%s)", fileInfo))
 	sse.Send("progress", "生成文案中...")
 
 	// 文案生成
@@ -1093,236 +1119,6 @@ func tickPointsToSectors(points []tickfetcher.TickPoint) []fetcher.Sector {
 		sectors = append(sectors, fetcher.Sector{Name: p.Name, Net: p.Net, Rate: p.Rate})
 	}
 	return sectors
-}
-
-func handleTickStream(c *gin.Context, tf *tickfetcher.TickFetcher) {
-	sse := NewSSEWriter(c)
-
-	// 先推送当前快照（历史数据）
-	snapshot := tf.GetSnapshot()
-	b, _ := json.Marshal(snapshot)
-	sse.Send("tick", string(b))
-
-	// 订阅新 tick
-	ch, unsubscribe := tf.Subscribe()
-	defer unsubscribe()
-
-	// 心跳：每 15 秒发一次，防止连接超时
-	heartbeat := time.NewTicker(15 * time.Second)
-	defer heartbeat.Stop()
-
-	ctx := c.Request.Context()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-heartbeat.C:
-			sse.Send("heartbeat", "")
-		case snap, ok := <-ch:
-			if !ok {
-				return
-			}
-			b, _ := json.Marshal(snap)
-			sse.Send("tick", string(b))
-		}
-	}
-}
-
-// handleTickDates 返回所有有 tick 数据的日期
-func handleTickDates(c *gin.Context) {
-	db, err := storage.Get()
-	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
-
-	dates, err := db.ListTickDates()
-	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(200, gin.H{"dates": dates})
-}
-
-// handleTickReplayStream 回放指定日期的历史 tick 数据
-func handleTickReplayStream(c *gin.Context) {
-	date := c.Query("date")
-	if date == "" {
-		c.JSON(400, gin.H{"error": "缺少参数 date"})
-		return
-	}
-
-	l := logger.With(zap.String("date", date))
-	l.Info("tick 回放请求")
-
-	db, err := storage.Get()
-	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
-
-	sectors, err := db.LoadTickSectors(date)
-	if err != nil || len(sectors) == 0 {
-		l.Warn("无 tick 数据")
-		c.JSON(404, gin.H{"error": "该日期无 tick 数据"})
-		return
-	}
-	l.Info("加载 tick 数据", zap.Int("records", len(sectors)))
-
-	sse := NewSSEWriter(c)
-
-	// 按时间分组
-	type timeSlice struct {
-		time    string
-		sectors []fetcher.Sector
-	}
-	timeMap := make(map[string][]fetcher.Sector)
-	var timeOrder []string
-	for _, s := range sectors {
-		t := storage.ExtractTime(s.Datetime)
-		if t == "" {
-			continue
-		}
-		if _, ok := timeMap[t]; !ok {
-			timeOrder = append(timeOrder, t)
-		}
-		timeMap[t] = append(timeMap[t], fetcher.Sector{Name: s.Name, Net: s.Net, Rate: s.Rate})
-	}
-	sort.Strings(timeOrder)
-	l.Info("时间分组完成", zap.Int("timePoints", len(timeOrder)))
-
-	// 去重（同一时间同一板块只保留最后一条）
-	deduped := make([]timeSlice, 0, len(timeOrder))
-	for _, t := range timeOrder {
-		seen := make(map[string]int)
-		var unique []fetcher.Sector
-		for i, s := range timeMap[t] {
-			if _, ok := seen[s.Name]; ok {
-				seen[s.Name] = i
-				continue
-			}
-			seen[s.Name] = i
-			unique = append(unique, s)
-		}
-		deduped = append(deduped, timeSlice{time: t, sectors: unique})
-	}
-	l.Info("去重完成", zap.Int("dedupedPoints", len(deduped)))
-
-	// 推送初始空快照
-	snapshot := tickfetcher.TickSnapshot{
-		Points:   []tickfetcher.TickPoint{},
-		Date:     date,
-		Running:  true,
-		Count:    0,
-		LastTime: "",
-	}
-	b, _ := json.Marshal(snapshot)
-	sse.Send("tick", string(b))
-	l.Info("推送初始快照")
-
-	// 加速回放：每个时间点间隔 200ms
-	replayInterval := 200 * time.Millisecond
-	ticker := time.NewTicker(replayInterval)
-	defer ticker.Stop()
-
-	ctx := c.Request.Context()
-	for i, ts := range deduped {
-		select {
-		case <-ctx.Done():
-			l.Info("客户端断开，回放中断", zap.Int("played", i))
-			return
-		case <-ticker.C:
-		}
-
-		points := make([]tickfetcher.TickPoint, 0, len(ts.sectors))
-		for _, s := range ts.sectors {
-			points = append(points, tickfetcher.TickPoint{
-				Time: ts.time,
-				Name: s.Name,
-				Net:  s.Net,
-				Rate: s.Rate,
-			})
-		}
-
-		snapshot := tickfetcher.TickSnapshot{
-			Points:   points,
-			Date:     date,
-			Running:  i < len(deduped)-1,
-			Count:    i + 1,
-			LastTime: ts.time,
-		}
-		b, _ := json.Marshal(snapshot)
-		sse.Send("tick", string(b))
-	}
-
-	// 回放完成，发送最终状态
-	finalPoints := make([]tickfetcher.TickPoint, 0, len(deduped[len(deduped)-1].sectors))
-	for _, s := range deduped[len(deduped)-1].sectors {
-		finalPoints = append(finalPoints, tickfetcher.TickPoint{
-			Time: deduped[len(deduped)-1].time,
-			Name: s.Name,
-			Net:  s.Net,
-			Rate: s.Rate,
-		})
-	}
-	snapshot = tickfetcher.TickSnapshot{
-		Points:   finalPoints,
-		Date:     date,
-		Running:  false,
-		Count:    len(deduped),
-		LastTime: deduped[len(deduped)-1].time,
-	}
-	b, _ = json.Marshal(snapshot)
-	sse.Send("tick", string(b))
-	sse.Send("replay_done", "回放完成")
-	l.Info("回放完成", zap.Int("totalPoints", len(deduped)))
-}
-
-func handleTickEvents(c *gin.Context) {
-	date := c.Param("date")
-	if date == "" {
-		date = time.Now().Format("2006-01-02")
-	}
-	session := c.DefaultQuery("session", "full")
-
-	db, err := storage.Get()
-	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
-
-	cached, err := db.LoadTickEvents(date, session)
-	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
-	if cached != nil {
-		c.Data(200, "application/json", cached)
-		return
-	}
-
-	points, err := tickfetcher.LoadTickCSV(date, session)
-	if err != nil || len(points) == 0 {
-		c.JSON(404, gin.H{"error": "该日期无 tick 数据"})
-		return
-	}
-
-	events, timeline, ticker := analyzer.AnalyzeTickContent(points, date, session)
-
-	payload := map[string]any{
-		"timeline": timeline,
-		"events":   events,
-		"ticker":   ticker,
-	}
-	payloadJSON, _ := json.Marshal(payload)
-
-	_ = db.SaveTickEvents(date, session, payloadJSON)
-
-	l := logger.With(zap.String("date", date), zap.String("session", session))
-	l.Info("tick 事件已生成并落库", zap.Int("events", len(events)), zap.Int("timeline", len(timeline)), zap.Int("ticker", len(ticker)))
-
-	c.JSON(200, payload)
 }
 
 // handleDashboard 返回仪表盘所需的全量聚合数据（单次请求）。
@@ -1402,14 +1198,6 @@ func handleDashboard(c *gin.Context) {
 	}
 	resp["ranking"] = netValues
 
-	if eventsData, evErr := fetchTickEventsData(latestDate, "full"); evErr == nil {
-		limited := eventsData
-		if len(limited) > 20 {
-			limited = limited[:20]
-		}
-		resp["events"] = limited
-	}
-
 	top5Names := make([]string, 0, 5)
 	for i, item := range netValues {
 		if i >= 5 {
@@ -1455,41 +1243,6 @@ func handleDashboard(c *gin.Context) {
 	}
 
 	c.JSON(200, resp)
-}
-
-func fetchTickEventsData(date, session string) ([]gin.H, error) {
-	db, err := storage.Get()
-	if err != nil {
-		return nil, err
-	}
-
-	cached, err := db.LoadTickEvents(date, session)
-	if err == nil && cached != nil {
-		var payload struct {
-			Timeline []gin.H `json:"timeline"`
-		}
-		if json.Unmarshal(cached, &payload) == nil {
-			return payload.Timeline, nil
-		}
-	}
-
-	points, err := tickfetcher.LoadTickCSV(date, session)
-	if err != nil || len(points) == 0 {
-		return nil, fmt.Errorf("no tick data for %s", date)
-	}
-
-	_, timeline, _ := analyzer.AnalyzeTickContent(points, date, session)
-	result := make([]gin.H, 0, len(timeline))
-	for _, ev := range timeline {
-		result = append(result, gin.H{
-			"time":        ev.Time,
-			"sector":      ev.Sector,
-			"title":       ev.Title,
-			"description": ev.Description,
-			"sentiment":   ev.Sentiment,
-		})
-	}
-	return result, nil
 }
 
 func handleNewsList(c *gin.Context) {
