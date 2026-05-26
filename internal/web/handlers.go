@@ -284,6 +284,10 @@ func SetupRouter(tickSched *tickscheduler.TickScheduler, newsSched *clsnews.News
 	})
 	r.POST("/api/generate-tick", handleGenerateTick)
 
+	r.GET("/api/tick/stream", func(c *gin.Context) {
+		handleTickStream(c, tickSched)
+	})
+
 	r.GET("/api/dashboard", handleDashboard)
 
 	// 财联社新闻路由（自动轮询 + 手动回放）
@@ -1119,6 +1123,44 @@ func tickPointsToSectors(points []tickfetcher.TickPoint) []fetcher.Sector {
 		sectors = append(sectors, fetcher.Sector{Name: p.Name, Net: p.Net, Rate: p.Rate})
 	}
 	return sectors
+}
+
+func handleTickStream(c *gin.Context, tickSched *tickscheduler.TickScheduler) {
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+	c.Writer.WriteHeaderNow()
+	c.Writer.Flush()
+
+	ch, unsubscribe := tickSched.GetFetcher().Subscribe()
+	defer unsubscribe()
+
+	// Send initial snapshot immediately
+	snapshot := tickSched.GetFetcher().GetSnapshot()
+	data, _ := json.Marshal(snapshot)
+	line := fmt.Sprintf(`{"type":"tick","text":%s}`, jsonStr(string(data)))
+	c.Writer.Write([]byte(line + "\n"))
+	c.Writer.Flush()
+
+	// Stream updates
+	ctx := c.Request.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case snap, ok := <-ch:
+			if !ok {
+				return
+			}
+			data, _ := json.Marshal(snap)
+			line := fmt.Sprintf(`{"type":"tick","text":%s}`, jsonStr(string(data)))
+			if _, err := c.Writer.Write([]byte(line + "\n")); err != nil {
+				return
+			}
+			c.Writer.Flush()
+		}
+	}
 }
 
 // handleDashboard 返回仪表盘所需的全量聚合数据（单次请求）。
