@@ -198,7 +198,7 @@ func (tf *TickFetcher) run() {
 		return
 	}
 
-	allRanges := []tradingRange{{0, 119}, {120, 240}}
+	allRanges := []tradingRange{{0, 120}, {120, 240}}
 
 	for _, rng := range allRanges {
 		if rng.end < currentMinute {
@@ -218,6 +218,9 @@ func (tf *TickFetcher) run() {
 			}
 
 			timeStr := minutesToTime(minute)
+			if minute == 120 && rng.start == 0 {
+				timeStr = "11:30"
+			}
 			tf.collectTick(dateStr, timeStr, minute)
 
 			if minute < rng.end {
@@ -352,10 +355,14 @@ func tickSchedule(currentMinute, interval int, allRanges []tradingRange) []struc
 			startMinute = ((currentMinute-rng.start)/interval)*interval + rng.start
 		}
 		for minute := startMinute; minute <= rng.end; minute += interval {
+			timeStr := minutesToTime(minute)
+			if minute == 120 && rng.start == 0 {
+				timeStr = "11:30"
+			}
 			result = append(result, struct {
 				Minute int
 				Time   string
-			}{Minute: minute, Time: minutesToTime(minute)})
+			}{Minute: minute, Time: timeStr})
 		}
 	}
 	return result

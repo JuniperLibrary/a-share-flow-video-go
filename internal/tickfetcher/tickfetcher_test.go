@@ -222,10 +222,90 @@ func TestTickSchedule_Interval1_FullDay(t *testing.T) {
 	}
 }
 
+// ---- 11:30 edge case (morning range extended to {0, 120}) ----
+
+func TestTickSchedule_MorningIncludes1130(t *testing.T) {
+	// 09:30 start, interval=5, range={0,120} — should include minute 120 as "11:30"
+	schedule := tickSchedule(0, 5, []tradingRange{{0, 120}})
+	if len(schedule) == 0 {
+		t.Fatal("expected non-empty schedule")
+	}
+
+	// 0,5,10,...,120 = 25 ticks
+	expected := 25
+	if len(schedule) != expected {
+		t.Errorf("expected %d ticks, got %d", expected, len(schedule))
+	}
+
+	// Minute 120 should map to "11:30", not "13:00", because rng.start==0
+	last := schedule[len(schedule)-1]
+	if last.Time != "11:30" || last.Minute != 120 {
+		t.Errorf("last tick should be 11:30 (120), got %s (%d)", last.Time, last.Minute)
+	}
+}
+
+func TestTickSchedule_FullDayWith1130(t *testing.T) {
+	// Full day with extended morning range {0,120}
+	schedule := tickSchedule(0, 5, []tradingRange{{0, 120}, {120, 240}})
+
+	// Morning: 0,5,...,115,120 = 25 ticks (120/5 + 1 for 120 inclusive)
+	// Afternoon: 120,125,...,240 = 25 ticks (120/5 + 1 for 240 inclusive)
+	expected := 50
+	if len(schedule) != expected {
+		t.Errorf("expected %d ticks (25 morning + 25 afternoon), got %d", expected, len(schedule))
+	}
+
+	// Morning last = minute 120 at "11:30"
+	lastMorning := schedule[24]
+	if lastMorning.Time != "11:30" || lastMorning.Minute != 120 {
+		t.Errorf("last morning tick should be 11:30 (120), got %s (%d)", lastMorning.Time, lastMorning.Minute)
+	}
+
+	// Afternoon first = minute 120 at "13:00" (rng.start==120, no special case)
+	firstAfternoon := schedule[25]
+	if firstAfternoon.Time != "13:00" || firstAfternoon.Minute != 120 {
+		t.Errorf("first afternoon tick should be 13:00 (120), got %s (%d)", firstAfternoon.Time, firstAfternoon.Minute)
+	}
+
+	// Last tick = 15:00
+	last := schedule[len(schedule)-1]
+	if last.Time != "15:00" {
+		t.Errorf("last tick should be 15:00, got %s", last.Time)
+	}
+}
+
+func TestTickSchedule_1130AfternoonDedup(t *testing.T) {
+	// Start at 13:00 (minute 120) with extended morning range {0,120}
+	// Morning {0,120}: 120 <= 120 → NOT skipped. Minute 120 mapped to "11:30".
+	// Afternoon {120,240}: 120 <= 240 → processed. Minute 120 mapped to "13:00".
+	schedule := tickSchedule(120, 10, []tradingRange{{0, 120}, {120, 240}})
+
+	// Morning produces 1 tick: minute 120 → "11:30"
+	// Afternoon: 120,130,...,240 = 13 ticks starting with 120 → "13:00"
+	// Total = 1 + 13 = 14
+	expected := 14
+	if len(schedule) != expected {
+		t.Errorf("expected %d ticks (1 morning 11:30 + 13 afternoon), got %d", expected, len(schedule))
+	}
+
+	// First tick = 11:30 (morning range handles minute 120 first)
+	first := schedule[0]
+	if first.Time != "11:30" || first.Minute != 120 {
+		t.Errorf("first tick should be 11:30 (120), got %s (%d)", first.Time, first.Minute)
+	}
+
+	// Second tick = 13:00 (afternoon range handles minute 120 with original mapping)
+	second := schedule[1]
+	if second.Time != "13:00" || second.Minute != 120 {
+		t.Errorf("second tick should be 13:00 (120), got %s (%d)", second.Time, second.Minute)
+	}
+}
+
 // ---- nowTradingMinute wall clock simulation ----
 
-// TestNowTradingMinute_EdgeCases 验证不同时间点对应的 trading minute 是否正确
-// 这些测试不依赖 time.Now()，而是手动构造 time.Time 来模拟。
+// TestMinutesToTime_RangeBounds 验证 minutesToTime 作为纯时间转换函数的行为。
+// 注意: minute 120 在 minutesToTime 中映射为 "13:00" (as 公式行为)。
+// tickSchedule() 和 run() 中的 special case 会将其改写为 "11:30" (当 rng.start==0 时)。
 func TestMinutesToTime_RangeBounds(t *testing.T) {
 	// Verify the morning range {0,119} ends at 11:29, NOT 11:30
 	morningEnd := minutesToTime(119)
@@ -233,7 +313,7 @@ func TestMinutesToTime_RangeBounds(t *testing.T) {
 		t.Errorf("minute 119 should be 11:29, got %s", morningEnd)
 	}
 
-	// Minute 120 = 13:00 (start of afternoon)
+	// Minute 120 = 13:00 (start of afternoon) — pure formula, no context
 	afternoonStart := minutesToTime(120)
 	if afternoonStart != "13:00" {
 		t.Errorf("minute 120 should be 13:00, got %s", afternoonStart)
