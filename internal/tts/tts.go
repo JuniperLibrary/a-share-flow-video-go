@@ -1,0 +1,124 @@
+// Package tts 提供文本转语音功能，调用 edge-tts 命令行工具
+// 将 AI 生成的视频文案合成为中文 MP3 语音，用于 Remotion 视频配音。
+package tts
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+)
+
+// Voice 可选中文语音角色
+type Voice string
+
+const (
+	Xiaoxiao Voice = "zh-CN-XiaoxiaoNeural" // 女声，亲切自然（默认）
+	Yunyang  Voice = "zh-CN-YunyangNeural"  // 男声，沉稳
+	Xiaoyi   Voice = "zh-CN-XiaoyiNeural"   // 女声，知性
+	Yunjian  Voice = "zh-CN-YunjianNeural"  // 男声，年轻
+)
+
+// TextToSpeech 将文本合成为 MP3 文件。
+// 使用 edge-tts 命令行工具，不依赖额外的 API 密钥。
+func TextToSpeech(text, outputPath string, voice Voice) error {
+	if voice == "" {
+		voice = Xiaoxiao
+	}
+
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
+		return fmt.Errorf("创建输出目录失败: %w", err)
+	}
+
+	cmd := exec.Command("edge-tts",
+		"--voice", string(voice),
+		"--text", text,
+		"--write-media", outputPath,
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("edge-tts 合成失败: %w\n输出: %s", err, string(output))
+	}
+
+	// 验证文件已生成
+	if _, err := os.Stat(outputPath); err != nil {
+		return fmt.Errorf("TTS 输出文件未找到: %w", err)
+	}
+	return nil
+}
+
+// GetAudioDuration 使用 ffprobe 获取音频文件时长（秒）。
+func GetAudioDuration(audioPath string) (float64, error) {
+	cmd := exec.Command("ffprobe",
+		"-v", "error",
+		"-show_entries", "format=duration",
+		"-of", "csv=p=0",
+		audioPath,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return 0, fmt.Errorf("ffprobe 获取时长失败: %w", err)
+	}
+	duration, err := strconv.ParseFloat(strings.TrimSpace(string(output)), 64)
+	if err != nil {
+		return 0, fmt.Errorf("解析音频时长失败: %w", err)
+	}
+	return duration, nil
+}
+
+// ParseCopywriting 解析 AI 生成的文案，提取标题和正文。
+// 标题：第一段非空连续文本中的第一行（去掉 # 标签行和空行后的第一个有意义行）
+// 正文：从"前3秒钩子"或第二段开始到第一个 # 标签之前的所有内容（去掉 hashtag 行）
+func ParseCopywriting(text string) (title, body string) {
+	lines := strings.Split(text, "\n")
+
+	// 过滤空行和纯 hashtag 行，提取有意义行
+	var meaningful []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		// 跳过纯 hashtag 行
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		meaningful = append(meaningful, trimmed)
+	}
+
+	if len(meaningful) == 0 {
+		return "", text
+	}
+
+	// 第一行当标题
+	title = meaningful[0]
+
+	// 从第二行开始到第一个 # 标签（原始行）之前作为正文
+	bodyLines := []string{}
+	inHashtag := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			inHashtag = true
+			continue
+		}
+		if !inHashtag && trimmed != "" && trimmed != title {
+			bodyLines = append(bodyLines, trimmed)
+		}
+	}
+	body = strings.Join(bodyLines, "\n")
+	if body == "" {
+		body = strings.Join(meaningful[1:], "\n")
+	}
+
+	return title, body
+}
+
+// EnsureEdgeTTS 检查 edge-tts 是否可用。
+func EnsureEdgeTTS() error {
+	if _, err := exec.LookPath("edge-tts"); err != nil {
+		return fmt.Errorf("未找到 edge-tts 命令，请运行: pip install edge-tts")
+	}
+	return nil
+}
