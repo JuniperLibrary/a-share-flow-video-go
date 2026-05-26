@@ -40,7 +40,7 @@ func RequestLoggerMiddleware() gin.HandlerFunc {
 		} else if statusCode >= 400 {
 			Warn("HTTP request", fields...)
 		} else {
-			Debug("HTTP request", fields...)
+			Info("HTTP request", fields...)
 		}
 	}
 }

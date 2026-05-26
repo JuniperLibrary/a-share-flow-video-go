@@ -23,10 +23,11 @@ import (
 
 // Sector 表示一个板块的资金流向数据。
 type Sector struct {
-	Name  string  `json:"name"`
-	Net   float64 `json:"net"`   // 主力净流入（亿）
-	Rate  float64 `json:"rate"`  // 主力净占比（%），如 3.93
-	Color string  `json:"color"` // 运行时由前端/渲染层分配，不持久化到 CSV
+	Name     string  `json:"name"`
+	Net      float64 `json:"net"`      // 主力净流入（亿）
+	Rate     float64 `json:"rate"`     // 主力净占比（%），如 3.93
+	Color    string  `json:"color"`    // 运行时由前端/渲染层分配，不持久化到 CSV
+	Category string  `json:"category"` // "industry" 行业 / "concept" 概念 / "" 未知
 }
 
 // Top21HotSectors 当前市场最热门的 21 个板块。
@@ -159,9 +160,10 @@ func fetchPrimaryData() ([]Sector, error) {
 		rateVal := item["f184"]
 		rateFloat, _ := toFloat64(rateVal)
 		sectors = append(sectors, Sector{
-			Name: name,
-			Net:  roundTo2(netFloat / 1e8),
-			Rate: roundTo2(rateFloat),
+			Name:     name,
+			Net:      roundTo2(netFloat / 1e8),
+			Rate:     roundTo2(rateFloat),
+			Category: "industry",
 		})
 	}
 

@@ -30,11 +30,12 @@ type Sector struct {
 }
 
 type SectorAll struct {
-	Date string  `json:"date"` // "2026-05-19"
-	Code string  `json:"code"` // 板块代码 BKxxxx
-	Name string  `json:"name"` // 板块名称
-	Net  float64 `json:"net"`  // 主力资金净流入（亿）
-	Rate float64 `json:"rate"` // 主力净占比（%）
+	Date     string  `json:"date"`     // "2026-05-19"
+	Code     string  `json:"code"`     // 板块代码 BKxxxx
+	Name     string  `json:"name"`     // 板块名称
+	Net      float64 `json:"net"`      // 主力资金净流入（亿）
+	Rate     float64 `json:"rate"`     // 主力净占比（%）
+	Category string  `json:"category"` // "industry" 行业板块 / "concept" 概念板块
 }
 
 type Copywriting struct {
@@ -42,6 +43,14 @@ type Copywriting struct {
 	Session string `json:"session"`
 	Type    string `json:"type"`
 	Content string `json:"content"`
+}
+
+type Note struct {
+	ID        int64  `json:"id"`
+	Type      string `json:"type"`      // "completed" 已完成 / "planned" 待计划
+	Content   string `json:"content"`   // 笔记内容
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 func New(dbPath string) (*DB, error) {
@@ -93,11 +102,12 @@ func (db *DB) initSchema() error {
 	);
 
 	CREATE TABLE IF NOT EXISTS sectors_all (
-		date TEXT    NOT NULL,  -- 日期 "2026-05-19"
-		code TEXT    NOT NULL,  -- 板块代码 BKxxxx
-		name TEXT    NOT NULL,  -- 板块名称
-		net  REAL    NOT NULL,  -- 主力资金净流入（亿）
-		rate REAL    NOT NULL DEFAULT 0,  -- 主力净占比（%）
+		date     TEXT    NOT NULL,  -- 日期 "2026-05-19"
+		code     TEXT    NOT NULL,  -- 板块代码 BKxxxx
+		name     TEXT    NOT NULL,  -- 板块名称
+		net      REAL    NOT NULL,  -- 主力资金净流入（亿）
+		rate     REAL    NOT NULL DEFAULT 0,  -- 主力净占比（%）
+		category TEXT    NOT NULL DEFAULT '',  -- "industry" 行业 / "concept" 概念
 		PRIMARY KEY (date, name)
 	);
 
@@ -127,6 +137,14 @@ func (db *DB) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_sectors_all_date ON sectors_all(date);
 	CREATE INDEX IF NOT EXISTS idx_tick_events_date ON tick_events(date);
 	CREATE INDEX IF NOT EXISTS idx_cls_news_ctime ON cls_news(ctime);
+
+	CREATE TABLE IF NOT EXISTS notes (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		type       TEXT    NOT NULL DEFAULT 'planned',
+		content    TEXT    NOT NULL,
+		created_at TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+		updated_at TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+	);
 	`
 	if _, err := db.db.Exec(schema); err != nil {
 		return err
@@ -136,6 +154,7 @@ func (db *DB) initSchema() error {
 	_, _ = db.db.Exec("ALTER TABLE sectors ADD COLUMN input_date TEXT NOT NULL DEFAULT ''")
 	_, _ = db.db.Exec("ALTER TABLE sectors ADD COLUMN rate REAL NOT NULL DEFAULT 0")
 	_, _ = db.db.Exec("ALTER TABLE sectors_all ADD COLUMN rate REAL NOT NULL DEFAULT 0")
+	_, _ = db.db.Exec("ALTER TABLE sectors_all ADD COLUMN category TEXT NOT NULL DEFAULT ''")
 
 	return nil
 }
@@ -304,14 +323,14 @@ func (db *DB) SaveSectorsAll(sectors []SectorAll) error {
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO sectors_all (date, code, name, net, rate) VALUES (?, ?, ?, ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO sectors_all (date, code, name, net, rate, category) VALUES (?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
 	for _, s := range sectors {
-		if _, err := stmt.Exec(s.Date, s.Code, s.Name, s.Net, s.Rate); err != nil {
+		if _, err := stmt.Exec(s.Date, s.Code, s.Name, s.Net, s.Rate, s.Category); err != nil {
 			return err
 		}
 	}
@@ -323,7 +342,7 @@ func (db *DB) LoadSectorsAll(date string) ([]SectorAll, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	rows, err := db.db.Query("SELECT date, code, name, net, rate FROM sectors_all WHERE date = ? ORDER BY ABS(net) DESC", date)
+	rows, err := db.db.Query("SELECT date, code, name, net, rate, category FROM sectors_all WHERE date = ? ORDER BY ABS(net) DESC", date)
 	if err != nil {
 		return nil, err
 	}
@@ -332,7 +351,7 @@ func (db *DB) LoadSectorsAll(date string) ([]SectorAll, error) {
 	var sectors []SectorAll
 	for rows.Next() {
 		var s SectorAll
-		if err := rows.Scan(&s.Date, &s.Code, &s.Name, &s.Net, &s.Rate); err != nil {
+		if err := rows.Scan(&s.Date, &s.Code, &s.Name, &s.Net, &s.Rate, &s.Category); err != nil {
 			return nil, err
 		}
 		sectors = append(sectors, s)
@@ -365,7 +384,7 @@ func (db *DB) LoadSectorsAllRange(startDate, endDate string) ([]SectorAll, error
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	rows, err := db.db.Query("SELECT date, code, name, net, rate FROM sectors_all WHERE date >= ? AND date <= ? ORDER BY date, ABS(net) DESC", startDate, endDate)
+	rows, err := db.db.Query("SELECT date, code, name, net, rate, category FROM sectors_all WHERE date >= ? AND date <= ? ORDER BY date, ABS(net) DESC", startDate, endDate)
 	if err != nil {
 		return nil, err
 	}
@@ -374,7 +393,7 @@ func (db *DB) LoadSectorsAllRange(startDate, endDate string) ([]SectorAll, error
 	var sectors []SectorAll
 	for rows.Next() {
 		var s SectorAll
-		if err := rows.Scan(&s.Date, &s.Code, &s.Name, &s.Net, &s.Rate); err != nil {
+		if err := rows.Scan(&s.Date, &s.Code, &s.Name, &s.Net, &s.Rate, &s.Category); err != nil {
 			return nil, err
 		}
 		sectors = append(sectors, s)
@@ -386,7 +405,7 @@ func (db *DB) LoadSectorTrend(name, startDate, endDate string) ([]SectorAll, err
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	rows, err := db.db.Query("SELECT date, code, name, net, rate FROM sectors_all WHERE name = ? AND date >= ? AND date <= ? ORDER BY date", name, startDate, endDate)
+	rows, err := db.db.Query("SELECT date, code, name, net, rate, category FROM sectors_all WHERE name = ? AND date >= ? AND date <= ? ORDER BY date", name, startDate, endDate)
 	if err != nil {
 		return nil, err
 	}
@@ -395,7 +414,7 @@ func (db *DB) LoadSectorTrend(name, startDate, endDate string) ([]SectorAll, err
 	var sectors []SectorAll
 	for rows.Next() {
 		var s SectorAll
-		if err := rows.Scan(&s.Date, &s.Code, &s.Name, &s.Net, &s.Rate); err != nil {
+		if err := rows.Scan(&s.Date, &s.Code, &s.Name, &s.Net, &s.Rate, &s.Category); err != nil {
 			return nil, err
 		}
 		sectors = append(sectors, s)
@@ -803,6 +822,58 @@ func (db *DB) insertRow(filename string, row map[string]any) error {
 			row["id"], row["title"], row["content"], row["brief"], row["level"], row["reading_num"], row["ctime"], row["shareurl"], row["sectors"], row["created_at"])
 	}
 	return fmt.Errorf("未知文件: %s", filename)
+}
+
+// ListNotes 列出所有笔记（按创建时间倒序）。
+func (db *DB) ListNotes() ([]Note, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	rows, err := db.db.Query("SELECT id, type, content, created_at, updated_at FROM notes ORDER BY created_at DESC")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var notes []Note
+	for rows.Next() {
+		var n Note
+		if err := rows.Scan(&n.ID, &n.Type, &n.Content, &n.CreatedAt, &n.UpdatedAt); err != nil {
+			return nil, err
+		}
+		notes = append(notes, n)
+	}
+	return notes, rows.Err()
+}
+
+// SaveNote 创建一条笔记。
+func (db *DB) SaveNote(note Note) (int64, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	result, err := db.db.Exec("INSERT INTO notes (type, content) VALUES (?, ?)", note.Type, note.Content)
+	if err != nil {
+		return 0, err
+	}
+	return result.LastInsertId()
+}
+
+// UpdateNote 更新笔记的 type 和/或 content。
+func (db *DB) UpdateNote(id int64, noteType, content string) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	_, err := db.db.Exec("UPDATE notes SET type = ?, content = ?, updated_at = datetime('now','localtime') WHERE id = ?", noteType, content, id)
+	return err
+}
+
+// DeleteNote 删除一条笔记。
+func (db *DB) DeleteNote(id int64) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	_, err := db.db.Exec("DELETE FROM notes WHERE id = ?", id)
+	return err
 }
 
 // ExportJSON 将数据库全部表导出为 JSON 文件到 data/ 目录。

@@ -431,12 +431,13 @@ func TickDataDrivenGenerate(points []tickfetcher.TickPoint, session string) ([]M
 		})
 	}
 
-	// 收盘事件
+	// 收盘事件（含结论页）
+	conclusion := buildConclusionFromCumulative(cumulative) + " 你最看好哪个方向？"
 	events = append(events, MarketEvent{
 		EventType: "market", Frame: totalFrames * 95 / 100,
-		Text:    "收盘总结",
-		Subtext: "全天资金流向分析完成",
-		Importance: 2,
+		Text:    "资金流总结",
+		Subtext: conclusion,
+		Importance: 3,
 	})
 
 	sort.Slice(events, func(i, j int) bool {
@@ -809,11 +810,12 @@ func DataDrivenGenerate(sectors []fetcher.Sector, session string) ([]MarketEvent
 			Importance: 3,
 		})
 	}
+	conclusionText := buildConclusionText(all) + " 你最看好哪个方向？"
 	events = append(events, MarketEvent{
 		EventType: "market", Frame: 95,
-		Text:       "收盘总结",
-		Subtext:    fmt.Sprintf("全天主力净流向%+.1f亿", totalNet),
-		Importance: 2,
+		Text:       "资金流总结",
+		Subtext:    conclusionText,
+		Importance: 3,
 	})
 
 	logger.Info("数据驱动生成",
@@ -907,6 +909,17 @@ func AITickGenerate(points []tickfetcher.TickPoint, dateStr string, session stri
 
 请严格按以下 JSON 格式输出一个对象，包含三个字段：
 
+### 视频5段式结构（重要）
+整个视频按以下模板组织 events 的 frame 分布：
+
+| 段落 | frame 范围 | 内容 | events 数量 |
+|------|-----------|------|------------|
+| ① 钩子 | 0-5 | 前3秒钩子（疑问/冲突/数据型） | 1个 event，event_type="market" |
+| ② 资金流动态图 | 6-40 | 板块资金流曲线展示 | 3-4个 events，早盘资金动态 |
+| ③ 排行榜变化 | 41-70 | TOP10排名变化 | 2-3个 events，板块轮动/排名变化 |
+| ④ AI总结 | 71-85 | 核心结论，今日主线判断 | 1-2个 events，主线/情绪总结 |
+| ⑤ 结论页+互动 | 86-100 | 流入TOP3/流出TOP3 + 互动引导 | 1-2个 events，event_type="market" 结论页 |
+
 ### 1. timelineEvents（市场事件时间线，10-12个）
 - time: 时间 "HH:MM"（必须在 09:30-11:30 或 13:00-15:00 范围内）
 - timeMinutes: 从09:30起的分钟数（如09:35=5, 10:15=45, 13:15=225, 14:10=310）
@@ -922,16 +935,16 @@ func AITickGenerate(points []tickfetcher.TickPoint, dateStr string, session stri
 
 ### 3. events（底部弹窗事件，8-10个）
 - event_type: "market"/"sentiment"/"rotation"/"aberration"
-- frame: 时间位置百分比（0-100）
+- frame: 时间位置百分比（0-100），必须按照上面的5段式结构分布
 - text: 主标题（8-10字，游资风格）
 - subtext: 副标题（15-20字，包含板块名和数值）
 - importance: 重要程度 1/2/3
-- 时间分布建议：frame 5-15 开盘，20-40 早盘，45-65 午盘前，70-85 午盘后，90-98 收盘
+- **必须包含一个结论页 event（frame 90-98）**：event_type="market"，text为"资金流总结"，subtext包含今日流入TOP3板块名和净流入金额，并在末尾追加" 你最看好哪个方向？"
 
 ## 注意事项
 - timelineEvents 的 timeMinutes 必须按升序排列
 - tickerItems 的 time 从早到晚排列
-- events 的 frame 从低到高分布（开盘5%%，盘中30-60%%，收盘90%%+）
+- events 的 frame 从低到高分布，严格按5段式结构
 - 所有内容必须基于实际数据，不要编造数据
 - 板块名和数值必须与数据摘要一致
 - 输出风格必须像游资复盘、私募策略会，而不是财经新闻
@@ -1045,6 +1058,11 @@ func AIGenerate(sectors []fetcher.Sector, dateStr string, aiCfg config.AIConfig)
 
 	prompt := fmt.Sprintf(`你是一位A股市场资深分析师。请根据以下板块资金流向数据，分析并生成三类内容。
 
+## 账号品牌
+- 账号名称：主线共振Lab
+- Slogan：**资金不会说谎，主线都会留下痕迹**
+- 风格：每日板块资金图谱可视化，不荐股，仅记录市场
+
 ## 数据摘要
 %s
 
@@ -1057,12 +1075,23 @@ func AIGenerate(sectors []fetcher.Sector, dateStr string, aiCfg config.AIConfig)
 ## 输出要求
 请严格按以下 JSON 格式输出一个对象，包含三个字段：
 
+### 视频5段式结构（重要）
+整个视频按以下模板组织 events 的 frame 分布：
+
+| 段落 | frame 范围 | 内容 | events 数量 |
+|------|-----------|------|------------|
+| ① 钩子 | 0-5 | 前3秒钩子（疑问/冲突/数据型） | 1个 event，event_type="market" |
+| ② 资金流动态图 | 6-40 | 板块资金流曲线展示 | 3-4个 events，早盘资金动态 |
+| ③ 排行榜变化 | 41-70 | TOP10排名变化 | 2-3个 events，板块轮动/排名变化 |
+| ④ AI总结 | 71-85 | 核心结论，今日主线判断 | 1-2个 events，主线/情绪总结 |
+| ⑤ 结论页+互动 | 86-100 | 流入TOP3/流出TOP3 + 互动引导 | 1-2个 events，event_type="market" 结论页 |
+
 ### 1. timelineEvents（市场事件时间线，10-12个）
 - time: 时间 "HH:MM"（必须在 09:30-11:30 或 13:00-15:00 范围内）
 - timeMinutes: 从09:30起的分钟数（如09:35=5, 10:15=45, 13:15=225, 14:10=310）
 - sector: 相关板块名（必须是数据中实际存在的板块）
 - title: 事件标题（10字以内，包含板块名）
-- description: 事件描述（20字以内，使用专业术语如"主力资金涌入""资金出逃""板块轮动""情绪分化""量能萎缩""放量突破"，并包含具体数值）
+- description: 事件描述（20字以内，使用专业术语如"主力资金涌入""资金出逃""板块轮动""情绪分化""量能萎缩""放量突破""主线共振"，并包含具体数值）
 - sentiment: "positive" / "negative" / "neutral"
 - 时间分布建议：09:30-10:00 至少2个，10:00-11:00 至少2个，11:00-11:30 至少1个，13:00-14:00 至少2个，14:00-15:00 至少2个
 
@@ -1072,16 +1101,16 @@ func AIGenerate(sectors []fetcher.Sector, dateStr string, aiCfg config.AIConfig)
 
 ### 3. events（底部弹窗事件，8-10个）
 - event_type: "market"/"sentiment"/"rotation"/"aberration"
-- frame: 时间位置百分比（0-100）
+- frame: 时间位置百分比（0-100），必须按照上面的5段式结构分布
 - text: 主标题（10字以内）
 - subtext: 副标题（20字以内）
 - importance: 重要程度 1/2/3
-- 时间分布建议：frame 5-15 开盘，20-40 早盘，45-65 午盘前，70-85 午盘后，90-98 收盘
+- **必须包含一个结论页 event（frame 90-98）**：event_type="market"，text为"资金流总结"，subtext包含今日流入TOP3板块名和净流入金额，并在末尾追加" 你最看好哪个方向？"
 
 ## 注意事项
 - timelineEvents 的 timeMinutes 必须按升序排列
 - tickerItems 的 time 从早到晚排列
-- events 的 frame 从低到高分布（开盘5%%，盘中30-60%%，收盘90%%+）
+- events 的 frame 从低到高分布，严格按5段式结构
 - 所有内容必须基于实际数据，不要编造数据
 - 板块名和数值必须与数据摘要一致
 - 必须输出有效的 JSON 对象，不要有其他内容
@@ -1291,6 +1320,64 @@ func formatTop5(sectors []fetcher.Sector) string {
 		lines[i] = fmt.Sprintf("- %s: %+.1f亿", sectors[i].Name, sectors[i].Net)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// buildConclusionText 生成"流入TOP3 / 流出TOP3"文本，用于结论页 event 的 subtext
+func buildConclusionText(sectors []fetcher.Sector) string {
+	var sorted []fetcher.Sector
+	sorted = append(sorted, sectors...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Net > sorted[j].Net })
+
+	var inTop, outTop []string
+	for _, s := range sorted {
+		if s.Net > 0 && len(inTop) < 3 {
+			inTop = append(inTop, fmt.Sprintf("%s%.0f亿", s.Name, s.Net))
+		} else if s.Net < 0 && len(outTop) < 3 {
+			outTop = append(outTop, fmt.Sprintf("%s%.0f亿", s.Name, absF(s.Net)))
+		}
+	}
+	inStr := strings.Join(inTop, "、")
+	outStr := strings.Join(outTop, "、")
+	if inStr == "" {
+		inStr = "无"
+	}
+	if outStr == "" {
+		outStr = "无"
+	}
+	return fmt.Sprintf("流入TOP3：%s | 流出TOP3：%s", inStr, outStr)
+}
+
+// buildConclusionFromCumulative 从 tick 累计数据生成结论页文本
+func buildConclusionFromCumulative(cumulative map[string][]float64) string {
+	type entry struct {
+		name string
+		net  float64
+	}
+	var entries []entry
+	for name, vals := range cumulative {
+		if len(vals) > 0 {
+			entries = append(entries, entry{name, vals[len(vals)-1]})
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].net > entries[j].net })
+
+	var inTop, outTop []string
+	for _, e := range entries {
+		if e.net > 0 && len(inTop) < 3 {
+			inTop = append(inTop, fmt.Sprintf("%s%.0f亿", e.name, e.net))
+		} else if e.net < 0 && len(outTop) < 3 {
+			outTop = append(outTop, fmt.Sprintf("%s%.0f亿", e.name, absF(e.net)))
+		}
+	}
+	inStr := strings.Join(inTop, "、")
+	outStr := strings.Join(outTop, "、")
+	if inStr == "" {
+		inStr = "无"
+	}
+	if outStr == "" {
+		outStr = "无"
+	}
+	return fmt.Sprintf("流入TOP3：%s | 流出TOP3：%s", inStr, outStr)
 }
 
 func parseDateDisplay(dateStr string) string {
