@@ -16,7 +16,7 @@ import (
 // Video parameters
 const (
 	FPS         = 30
-	TotalFrames = 1800
+	TotalFrames = 2700
 
 	// MobileWidth Mobile dimensions (9:16)
 	MobileWidth  = 1080

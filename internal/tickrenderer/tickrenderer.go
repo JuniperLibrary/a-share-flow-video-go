@@ -161,6 +161,7 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 		"--overwrite",
 		"--fps", fmt.Sprintf("%d", FPS),
 		"--frames", fmt.Sprintf("0-%d", TotalFrames-1),
+		"--bitrate", "8M",
 	}
 
 	logger.Info("tick 渲染参数",

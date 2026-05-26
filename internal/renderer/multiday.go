@@ -122,6 +122,7 @@ func RenderMultiDayVideo(
 		"--overwrite",
 		"--fps", fmt.Sprintf("%d", config.FPS),
 		"--frames", fmt.Sprintf("0-%d", config.TotalFrames-1),
+		"--bitrate", "8M",
 	}
 
 	logger.Info("remotion 多日渲染开始",

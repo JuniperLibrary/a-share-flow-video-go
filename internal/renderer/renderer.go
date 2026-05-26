@@ -117,6 +117,7 @@ func RenderVideo(sectors []fetcher.Sector, dateStr, outputPath string, events []
 		"--overwrite",
 		"--fps", fmt.Sprintf("%d", FPS),
 		"--frames", fmt.Sprintf("0-%d", TotalFrames-1),
+		"--bitrate", "8M",
 	}
 
 	logger.Info("remotion 渲染开始",
