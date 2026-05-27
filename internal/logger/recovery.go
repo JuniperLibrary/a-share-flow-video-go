@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"fmt"
 	"net/http"
 	"runtime/debug"
 
@@ -12,11 +13,16 @@ func RecoveryMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		defer func() {
 			if err := recover(); err != nil {
-				Error("panic recovered",
+				fullPath := c.FullPath()
+				key := c.Request.Method + " " + fullPath
+				name, ok := routeNames[key]
+				if !ok {
+					name = c.Request.URL.Path
+				}
+
+				Error(fmt.Sprintf("panic recovered: %s", name),
 					zap.Any("error", err),
 					zap.String("stack", string(debug.Stack())),
-					zap.String("path", c.Request.URL.Path),
-					zap.String("method", c.Request.Method),
 				)
 
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
