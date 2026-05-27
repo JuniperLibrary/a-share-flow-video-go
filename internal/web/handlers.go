@@ -21,6 +21,7 @@ import (
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/copy"
 	"github.com/a-share-flow-video-go/internal/fetcher"
+	"github.com/a-share-flow-video-go/internal/hotnews"
 	"github.com/a-share-flow-video-go/internal/logger"
 	"github.com/a-share-flow-video-go/internal/renderer"
 	"github.com/a-share-flow-video-go/internal/storage"
@@ -1166,17 +1167,62 @@ func handleGenerateTick(c *gin.Context) {
 		sse.Send("log", fmt.Sprintf("⚠️ 数据预览失败: %v", err))
 	}
 
+	// 在渲染前生成文案，用于 TTS 语音合成
+	points, pErr := tickfetcher.LoadTickCSV(body.Date, body.Session)
+	var copywriteText string
+	cwType := "template_tick"
+	if pErr != nil || len(points) == 0 {
+		sse.Send("log", "⚠️ 无 tick 数据，跳过文案生成")
+	} else {
+		sectors := tickPointsToSectors(points)
+		sse.Send("progress", "生成文案中...")
+		if body.CopyMode == "ai" {
+			sse.Send("log", "🤖 AI 文案生成中...")
+			var aiErr error
+			copywriteText, aiErr = copy.GenerateCopywritingAI(sectors, body.Date, body.Session)
+			if aiErr != nil {
+				sse.Send("log", fmt.Sprintf("⚠️ AI 生成失败，降级模板: %v", aiErr))
+				copywriteText = copy.GenerateCopywriting(sectors, body.Date, body.Session)
+			} else {
+				cwType = "ai_tick"
+			}
+		} else {
+			sse.Send("log", "📝 模板文案生成中...")
+			copywriteText = copy.GenerateCopywriting(sectors, body.Date, body.Session)
+		}
+	}
+
 	renderMobile := body.Format == "all" || body.Format == "mobile"
 	renderTV := body.Format == "all" || body.Format == "tv"
+
+	var newsPagesMobile, newsPagesTV []hotnews.NewsPage
+	if renderMobile {
+		pages, err := hotnews.LoadForVideo(body.Date, "mobile")
+		if err != nil {
+			sse.Send("log", fmt.Sprintf("⚠️ 新闻加载失败 (mobile): %v", err))
+		} else if len(pages) > 0 {
+			newsPagesMobile = pages
+			sse.Send("log", fmt.Sprintf("📰 新闻加载完成 (mobile): %d页", len(pages)))
+		}
+	}
+	if renderTV {
+		pages, err := hotnews.LoadForVideo(body.Date, "tv")
+		if err != nil {
+			sse.Send("log", fmt.Sprintf("⚠️ 新闻加载失败 (tv): %v", err))
+		} else if len(pages) > 0 {
+			newsPagesTV = pages
+			sse.Send("log", fmt.Sprintf("📰 新闻加载完成 (tv): %d页", len(pages)))
+		}
+	}
 
 	if renderMobile {
 		outPathMobile := filepath.Join(config.GetOutputDir(), body.Date, fmt.Sprintf("%s_tick_mobile.mp4", sessCfg.FilenameSuffix))
 		sse.Send("log", "🎬 开始渲染 Tick 曲线视频 (Mobile 9:16)...")
 		sse.Send("progress", "渲染 Mobile 版本...")
 
-		outMobile, err := tickrenderer.RenderTickVideo(body.Date, outPathMobile, "mobile", body.Session, nil, nil, nil)
-		if err != nil {
-			sse.Send("log", fmt.Sprintf("⚠️ Mobile 渲染失败: %v", err))
+		outMobile, rErr := tickrenderer.RenderTickVideo(body.Date, outPathMobile, "mobile", body.Session, nil, nil, nil, copywriteText, newsPagesMobile)
+		if rErr != nil {
+			sse.Send("log", fmt.Sprintf("⚠️ Mobile 渲染失败: %v", rErr))
 		} else {
 			var fileInfo string
 			if fi, err := os.Stat(outMobile); err == nil {
@@ -1191,9 +1237,9 @@ func handleGenerateTick(c *gin.Context) {
 		sse.Send("log", "🎬 开始渲染 Tick 曲线视频 (TV 16:9)...")
 		sse.Send("progress", "渲染 TV 版本...")
 
-		outTV, err := tickrenderer.RenderTickVideo(body.Date, outPathTV, "tv", body.Session, nil, nil, nil)
-		if err != nil {
-			sse.Send("error", fmt.Sprintf("TV 渲染失败: %v", err))
+		outTV, rErr := tickrenderer.RenderTickVideo(body.Date, outPathTV, "tv", body.Session, nil, nil, nil, copywriteText, newsPagesTV)
+		if rErr != nil {
+			sse.Send("error", fmt.Sprintf("TV 渲染失败: %v", rErr))
 			return
 		}
 
@@ -1203,37 +1249,15 @@ func handleGenerateTick(c *gin.Context) {
 		}
 		sse.Send("log", fmt.Sprintf("✅ Tick TV 渲染完成 (%s)", fileInfo))
 	}
-	sse.Send("progress", "生成文案中...")
 
-	// 文案生成
-	points, err := tickfetcher.LoadTickCSV(body.Date, body.Session)
-	if err != nil || len(points) == 0 {
-		sse.Send("log", "⚠️ 无 tick 数据，跳过文案生成")
-	} else {
-		sectors := tickPointsToSectors(points)
-
-		var text string
-		cwType := "template_tick"
-		if body.CopyMode == "ai" {
-			sse.Send("log", "🤖 AI 文案生成中...")
-			text, err = copy.GenerateCopywritingAI(sectors, body.Date, body.Session)
-			if err != nil {
-				sse.Send("log", fmt.Sprintf("⚠️ AI 生成失败，降级模板: %v", err))
-				text = copy.GenerateCopywriting(sectors, body.Date, body.Session)
-			} else {
-				cwType = "ai_tick"
-			}
-		} else {
-			sse.Send("log", "📝 模板文案生成中...")
-			text = copy.GenerateCopywriting(sectors, body.Date, body.Session)
-		}
-
+	// 保存文案
+	if copywriteText != "" {
 		if db, err := storage.Get(); err == nil {
 			_ = db.SaveCopywriting(storage.Copywriting{
 				Date:    body.Date,
 				Session: body.Session,
 				Type:    cwType,
-				Content: text,
+				Content: copywriteText,
 			})
 		}
 		sse.Send("log", "✅ 文案已保存")

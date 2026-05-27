@@ -12,6 +12,7 @@ import (
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/copy"
 	"github.com/a-share-flow-video-go/internal/fetcher"
+	"github.com/a-share-flow-video-go/internal/hotnews"
 	"github.com/a-share-flow-video-go/internal/logger"
 	"github.com/a-share-flow-video-go/internal/renderer"
 	"github.com/a-share-flow-video-go/internal/storage"
@@ -289,14 +290,54 @@ func processTickDate(dateStr string, sessionOverride string, useAI bool, format 
 		sl := l.With(zap.String("session", sessCfg.TitleSuffix))
 		sl.Info("--- 生成 Tick " + sessCfg.TitleSuffix + " 视频 ---")
 
+		// 加载 tick 数据用于文案生成
+		points, err := tickfetcher.LoadTickCSV(dateStr, sess)
+		if err != nil || len(points) == 0 {
+			sl.Warn("无 tick 数据，跳过")
+			continue
+		}
+		sectors := snapshotToSectors(points)
+
+		// 在渲染前生成文案，用于 TTS 语音合成
+		var copywriteText string
+		if useAI {
+			text, aiErr := copy.GenerateCopywritingAI(sectors, dateStr, sess)
+			if aiErr != nil {
+				sl.Warn("AI文案生成失败，降级模板模式", zap.String("session", sessCfg.TitleSuffix), zap.Error(aiErr))
+				copywriteText = copy.GenerateCopywriting(sectors, dateStr, sess)
+			} else {
+				copywriteText = text
+			}
+		} else {
+			copywriteText = copy.GenerateCopywriting(sectors, dateStr, sess)
+		}
+
 		renderMobile := format == "all" || format == "mobile"
 		renderTV := format == "all" || format == "tv"
 
+		var newsPagesMobile, newsPagesTV []hotnews.NewsPage
+		if renderMobile {
+			pages, err := hotnews.LoadForVideo(dateStr, "mobile")
+			if err != nil {
+				sl.Warn("新闻加载失败 (mobile)", zap.Error(err))
+			} else {
+				newsPagesMobile = pages
+			}
+		}
+		if renderTV {
+			pages, err := hotnews.LoadForVideo(dateStr, "tv")
+			if err != nil {
+				sl.Warn("新闻加载失败 (tv)", zap.Error(err))
+			} else {
+				newsPagesTV = pages
+			}
+		}
+
 		if renderMobile {
 			outPathMobile := filepath.Join(outputDir, dateStr, fmt.Sprintf("%s_tick_mobile.mp4", sessCfg.FilenameSuffix))
-			outMobile, err := tickrenderer.RenderTickVideo(dateStr, outPathMobile, "mobile", sess, nil, nil, nil)
-			if err != nil {
-				sl.Error("Tick Mobile Remotion 渲染失败", zap.String("session", sessCfg.TitleSuffix), zap.Error(err))
+			outMobile, rErr := tickrenderer.RenderTickVideo(dateStr, outPathMobile, "mobile", sess, nil, nil, nil, copywriteText, newsPagesMobile)
+			if rErr != nil {
+				sl.Error("Tick Mobile Remotion 渲染失败", zap.String("session", sessCfg.TitleSuffix), zap.Error(rErr))
 			} else {
 				sl.Info("Tick Mobile 视频已保存", zap.String("output", outMobile))
 				success = true
@@ -305,43 +346,25 @@ func processTickDate(dateStr string, sessionOverride string, useAI bool, format 
 
 		if renderTV {
 			outPathTV := filepath.Join(outputDir, dateStr, fmt.Sprintf("%s_tick.mp4", sessCfg.FilenameSuffix))
-			outTV, err := tickrenderer.RenderTickVideo(dateStr, outPathTV, "tv", sess, nil, nil, nil)
-			if err != nil {
-				sl.Error("Tick TV Remotion 渲染失败", zap.String("session", sessCfg.TitleSuffix), zap.Error(err))
+			outTV, rErr := tickrenderer.RenderTickVideo(dateStr, outPathTV, "tv", sess, nil, nil, nil, copywriteText, newsPagesTV)
+			if rErr != nil {
+				sl.Error("Tick TV Remotion 渲染失败", zap.String("session", sessCfg.TitleSuffix), zap.Error(rErr))
 			} else {
 				sl.Info("Tick TV 视频已保存", zap.String("output", outTV))
 				success = true
 			}
 		}
 
-		points, err := tickfetcher.LoadTickCSV(dateStr, sess)
-		if err != nil || len(points) == 0 {
-			sl.Warn("无 tick 数据，跳过文案生成")
-			continue
-		}
-		sectors := snapshotToSectors(points)
-
-		var text string
-		if useAI {
-			text, err = copy.GenerateCopywritingAI(sectors, dateStr, sess)
-			if err != nil {
-				sl.Warn("AI文案生成失败，降级模板模式", zap.String("session", sessCfg.TitleSuffix), zap.Error(err))
-				text = copy.GenerateCopywriting(sectors, dateStr, sess)
-			}
-		} else {
-			text = copy.GenerateCopywriting(sectors, dateStr, sess)
-		}
 		cwType := "template"
 		if useAI {
 			cwType = "ai"
 		}
-
 		if db, err := storage.Get(); err == nil {
 			_ = db.SaveCopywriting(storage.Copywriting{
 				Date:    dateStr,
 				Session: sess,
 				Type:    cwType + "_tick",
-				Content: text,
+				Content: copywriteText,
 			})
 		}
 		sl.Info("文案已保存", zap.String("session", sessCfg.TitleSuffix+" (tick)"))
