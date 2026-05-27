@@ -7,8 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // Voice 可选中文语音角色
@@ -28,6 +30,11 @@ func TextToSpeech(text, outputPath string, voice Voice) error {
 		voice = Xiaoxiao
 	}
 
+	text = CleanForTTS(text)
+	if text == "" {
+		return fmt.Errorf("清洗后文本为空，跳过 TTS")
+	}
+
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
 		return fmt.Errorf("创建输出目录失败: %w", err)
 	}
@@ -41,11 +48,52 @@ func TextToSpeech(text, outputPath string, voice Voice) error {
 		return fmt.Errorf("edge-tts 合成失败: %w\n输出: %s", err, string(output))
 	}
 
-	// 验证文件已生成
 	if _, err := os.Stat(outputPath); err != nil {
 		return fmt.Errorf("TTS 输出文件未找到: %w", err)
 	}
 	return nil
+}
+
+var (
+	reMarkdownBold   = regexp.MustCompile(`\*\*(.+?)\*\*`)
+	reMarkdownItalic = regexp.MustCompile(`\*(.+?)\*`)
+	reHashtagLine    = regexp.MustCompile(`(?m)^#\S.*$`)
+	reNumberedList   = regexp.MustCompile(`(?m)^\d+[\.\)、]\s*`)
+	reBulletPoint    = regexp.MustCompile(`(?m)^[-·•]\s*`)
+	reEmoji          = regexp.MustCompile(`[\x{1F300}-\x{1F9FF}\x{2600}-\x{26FF}\x{2700}-\x{27BF}\x{FE00}-\x{FE0F}\x{1F000}-\x{1FAFF}]`)
+)
+
+// CleanForTTS 清洗文本使其适合语音合成。
+// 去除 markdown 格式、emoji、hashtag 行、列表符号等。
+func CleanForTTS(text string) string {
+	text = reMarkdownBold.ReplaceAllString(text, "$1")
+	text = reMarkdownItalic.ReplaceAllString(text, "$1")
+	text = reHashtagLine.ReplaceAllString(text, "")
+	text = reNumberedList.ReplaceAllString(text, "")
+	text = reBulletPoint.ReplaceAllString(text, "")
+	text = reEmoji.ReplaceAllString(text, "")
+
+	var cleaned strings.Builder
+	for _, r := range text {
+		if r == '*' || r == '_' || r == '`' || r == '~' {
+			continue
+		}
+		if unicode.Is(unicode.So, r) {
+			continue
+		}
+		cleaned.WriteRune(r)
+	}
+
+	lines := strings.Split(cleaned.String(), "\n")
+	var result []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+
+	return strings.Join(result, "\n")
 }
 
 // GetAudioDuration 使用 ffprobe 获取音频文件时长（秒）。

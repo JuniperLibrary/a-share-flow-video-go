@@ -3,6 +3,7 @@ package tickrenderer
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,9 +13,11 @@ import (
 	"github.com/a-share-flow-video-go/internal/analyzer"
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/fetcher"
+	"github.com/a-share-flow-video-go/internal/hotnews"
 	"github.com/a-share-flow-video-go/internal/logger"
 	"github.com/a-share-flow-video-go/internal/storage"
 	"github.com/a-share-flow-video-go/internal/tickfetcher"
+	"github.com/a-share-flow-video-go/internal/tts"
 	"go.uber.org/zap"
 )
 
@@ -44,9 +47,21 @@ type TickRenderProps struct {
 	Height         int                      `json:"height"`
 	Session        string                   `json:"session"`
 	XLim           [2]int                   `json:"xLim"`
+	// Voiceover fields — if empty, renders without voiceover
+	TitleText          string `json:"titleText,omitempty"`
+	ContentText        string `json:"contentText,omitempty"`
+	TitleAudioFile     string `json:"titleAudioFile,omitempty"`
+	ContentAudioFile   string `json:"contentAudioFile,omitempty"`
+	TitleAudioFrames   int    `json:"titleAudioFrames,omitempty"`
+	ContentAudioFrames int    `json:"contentAudioFrames,omitempty"`
+	BaseAnimationFrames int   `json:"baseAnimationFrames,omitempty"`
+	// News scene fields
+	NewsPages       []hotnews.NewsPage `json:"newsPages,omitempty"`
+	NewsAudioFiles  []string           `json:"newsAudioFiles,omitempty"`
+	NewsAudioFrames []int              `json:"newsAudioFrames,omitempty"`
 }
 
-func RenderTickVideo(dateStr, outputPath, format, session string, events []analyzer.MarketEvent, timeline []analyzer.TimelineEvent, ticker []analyzer.TickerItem) (string, error) {
+func RenderTickVideo(dateStr, outputPath, format, session string, events []analyzer.MarketEvent, timeline []analyzer.TimelineEvent, ticker []analyzer.TickerItem, copywriteText string, newsPages []hotnews.NewsPage) (string, error) {
 	t, err := time.Parse("2006-01-02", dateStr)
 	if err != nil {
 		return "", fmt.Errorf("parse date: %w", err)
@@ -140,6 +155,110 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 		XLim:           sessCfg.XLim,
 	}
 
+	baseFrames := TotalFrames
+	var titleFrames, contentFrames int
+	var newsTotalFrames int
+	var newsAudioFiles []string
+	var newsAudioFrames []int
+
+	hasVoiceover := copywriteText != "" || len(newsPages) > 0
+
+	if hasVoiceover {
+		voiceoverDir := filepath.Join(config.GetRendererDir(), "public", "voiceover")
+		if err := os.MkdirAll(voiceoverDir, 0755); err != nil {
+			return "", fmt.Errorf("create voiceover dir: %w", err)
+		}
+
+		if copywriteText != "" {
+			titleText, contentText := tts.ParseCopywriting(copywriteText)
+			titlePath := filepath.Join(voiceoverDir, "title.mp3")
+			contentPath := filepath.Join(voiceoverDir, "content.mp3")
+
+			if err := tts.TextToSpeech(titleText, titlePath, tts.Xiaoxiao); err != nil {
+				logger.Warn("Tick 标题 TTS 合成失败，跳过", zap.Error(err))
+			}
+			if err := tts.TextToSpeech(contentText, contentPath, tts.Xiaoxiao); err != nil {
+				logger.Warn("Tick 正文 TTS 合成失败，跳过", zap.Error(err))
+			}
+
+			titleDur := 0.0
+			if _, err := os.Stat(titlePath); err == nil {
+				if d, err := tts.GetAudioDuration(titlePath); err == nil {
+					titleDur = d
+				}
+			}
+			contentDur := 0.0
+			if _, err := os.Stat(contentPath); err == nil {
+				if d, err := tts.GetAudioDuration(contentPath); err == nil {
+					contentDur = d
+				}
+			}
+
+			titleFrames = int(math.Ceil(titleDur * FPS))
+			contentFrames = int(math.Ceil(contentDur * FPS))
+
+			const audioPadding = 10
+			if titleFrames > 0 {
+				titleFrames += audioPadding
+			}
+			if contentFrames > 0 {
+				contentFrames += audioPadding
+			}
+
+			props.TitleText = titleText
+			props.ContentText = contentText
+			props.TitleAudioFile = "voiceover/title.mp3"
+			props.ContentAudioFile = "voiceover/content.mp3"
+			props.TitleAudioFrames = titleFrames
+			props.ContentAudioFrames = contentFrames
+
+			logger.Info("Tick 文案语音合成完成",
+				zap.Float64("titleAudioSec", titleDur),
+				zap.Float64("contentAudioSec", contentDur))
+		}
+
+		if len(newsPages) > 0 {
+			ttsTexts := hotnews.GenerateTTSText(newsPages)
+			for i, text := range ttsTexts {
+				newsPath := filepath.Join(voiceoverDir, fmt.Sprintf("news_%d.mp3", i))
+				if err := tts.TextToSpeech(text, newsPath, tts.Xiaoxiao); err != nil {
+					logger.Warn("Tick 新闻 TTS 合成失败，跳过", zap.Int("page", i), zap.Error(err))
+					continue
+				}
+				dur := 0.0
+				if d, err := tts.GetAudioDuration(newsPath); err == nil {
+					dur = d
+				}
+				frames := int(math.Ceil(dur * FPS))
+				if frames > 0 {
+					frames += 10
+				}
+				newsAudioFiles = append(newsAudioFiles, fmt.Sprintf("voiceover/news_%d.mp3", i))
+				newsAudioFrames = append(newsAudioFrames, frames)
+				newsTotalFrames += frames
+			}
+			logger.Info("Tick 新闻语音合成完成",
+				zap.Int("pages", len(newsAudioFiles)),
+				zap.Int("newsTotalFrames", newsTotalFrames))
+		}
+	}
+
+	totalVideoFrames := titleFrames + baseFrames + newsTotalFrames + contentFrames
+	props.BaseAnimationFrames = baseFrames
+	props.NewsPages = newsPages
+	props.NewsAudioFiles = newsAudioFiles
+	props.NewsAudioFrames = newsAudioFrames
+	props.TotalFrames = totalVideoFrames
+
+	if hasVoiceover {
+		logger.Info("Tick 语音合成完成",
+			zap.Int("titleFrames", titleFrames),
+			zap.Int("baseFrames", baseFrames),
+			zap.Int("newsTotalFrames", newsTotalFrames),
+			zap.Int("contentFrames", contentFrames),
+			zap.Int("totalFrames", totalVideoFrames))
+	}
+
 	propsJSON, err := json.Marshal(props)
 	if err != nil {
 		return "", fmt.Errorf("marshal props: %w", err)
@@ -160,14 +279,14 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 		"--props", string(propsJSON),
 		"--overwrite",
 		"--fps", fmt.Sprintf("%d", FPS),
-		"--frames", fmt.Sprintf("0-%d", TotalFrames-1),
+		"--frames", fmt.Sprintf("0-%d", props.TotalFrames-1),
 		"--bitrate", "8M",
 	}
 
 	logger.Info("tick 渲染参数",
 		zap.Int("propsSize", len(propsJSON)),
 		zap.Int("sectors", len(sectorTicks)),
-		zap.Int("totalFrames", TotalFrames),
+		zap.Int("totalFrames", props.TotalFrames),
 		zap.Int("fps", FPS),
 		zap.Int("width", w),
 		zap.Int("height", h),
