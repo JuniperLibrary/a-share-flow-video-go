@@ -85,8 +85,8 @@ func LoadForVideo(dateStr, format string) ([]NewsPage, error) {
 			}
 			return items[i].ReadingNum > items[j].ReadingNum
 		})
-		if len(items) > 5 {
-			items = items[:5]
+		if len(items) > 10 {
+			items = items[:10]
 		}
 		result = append(result, SectorNews{Sector: name, News: items})
 	}
