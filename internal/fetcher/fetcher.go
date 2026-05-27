@@ -194,6 +194,11 @@ func FetchTop21HotSectors() ([]Sector, error) {
 		return absF(results[i].Net) > absF(results[j].Net)
 	})
 
+	if len(results) == 0 {
+		logger.Warn("热门板块匹配结果为空")
+		return results, nil
+	}
+
 	logger.Info("热门板块匹配",
 		zap.Int("count", len(results)),
 		zap.String("tick_symbol", results[0].Name),
