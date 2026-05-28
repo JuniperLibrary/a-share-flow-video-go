@@ -1,0 +1,12 @@
+.git
+.gitignore
+.gitattributes
+.github
+.idea
+output/
+node_modules/
+cli/
+web-server
+*.md
+AGENTS.md
+.env
