@@ -311,7 +311,7 @@ func MatchSectors(title, content string) []string {
 		score := 0
 		for _, kw := range sector.Keywords {
 			if !shortTitle && containsRune(titleRunes, kw) {
-				score += 2
+				score += 5
 			}
 			if !shortContent && containsRune(contentRunes, kw) {
 				score += 1
@@ -326,6 +326,10 @@ func MatchSectors(title, content string) []string {
 		return results[i].score > results[j].score
 	})
 
+	maxResults := 2
+	if len(results) > maxResults {
+		results = results[:maxResults]
+	}
 	out := make([]string, len(results))
 	for i, r := range results {
 		out[i] = r.name

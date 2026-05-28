@@ -126,10 +126,11 @@ func TestMatchSectors_OrderByScore(t *testing.T) {
 	// "芯片" → 半导体（标题+2，正文0，总分2）
 	// "碳酸锂" → 锂矿概念（标题0，正文+1，总分1）
 	// "银行" → 银行（标题0，正文+1，总分1）
-	if len(sectors) < 3 {
-		t.Errorf("expected 3 sectors, got %v", sectors)
+	// 限制返回 top 2 板块
+	if len(sectors) > 2 {
+		t.Errorf("expected at most 2 sectors, got %v", sectors)
 	}
-	if sectors[0] != "半导体" {
+	if len(sectors) == 0 || sectors[0] != "半导体" {
 		t.Errorf("expected semiconductor ranked #1 (title match), got %v", sectors)
 	}
 }
