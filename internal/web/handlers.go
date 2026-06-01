@@ -83,7 +83,7 @@ func runExportTask(task *ExportTask) {
 	}
 
 	fetchPage := func(fs string, pn int) ([]storage.SectorAll, bool, error) {
-		url := fmt.Sprintf("https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData?fields=f12,f14,f62,f184&pn=%d&pz=500&fid=f62&po=1&fs=%s&ut=b2884a393a59ad64002292a3e90d46a5", pn, fs)
+		url := fmt.Sprintf("https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData?fields=f12,f14,f3,f62,f66,f69,f72,f75,f184&pn=%d&pz=500&fid=f62&po=1&fs=%s&ut=b2884a393a59ad64002292a3e90d46a5", pn, fs)
 		req, err := http.NewRequest("GET", url, nil)
 		if err != nil {
 			return nil, false, err
@@ -116,12 +116,22 @@ func runExportTask(task *ExportTask) {
 			}
 			if f, ok := toFloat64(netVal); ok && f != 0 {
 				rateFloat, _ := toFloat64(rateVal)
+				changePctFloat, _ := toFloat64(item["f3"])
+				superNetFloat, _ := toFloat64(item["f66"])
+				superRateFloat, _ := toFloat64(item["f69"])
+				bigNetFloat, _ := toFloat64(item["f72"])
+				bigRateFloat, _ := toFloat64(item["f75"])
 				page = append(page, storage.SectorAll{
-					Date: task.Date,
-					Code: code,
-					Name: name,
-					Net:  roundTo2(f / 1e8),
-					Rate: roundTo2(rateFloat),
+					Date:      task.Date,
+					Code:      code,
+					Name:      name,
+					Net:       roundTo2(f / 1e8),
+					Rate:      roundTo2(rateFloat),
+					ChangePct: roundTo2(changePctFloat),
+					SuperNet:  roundTo2(superNetFloat / 1e8),
+					SuperRate: roundTo2(superRateFloat),
+					BigNet:    roundTo2(bigNetFloat / 1e8),
+					BigRate:   roundTo2(bigRateFloat),
 				})
 			}
 		}
@@ -297,6 +307,11 @@ func SetupRouter(tickSched *tickscheduler.TickScheduler, newsSched *clsnews.News
 				Name:      s.Name,
 				Net:       s.Net,
 				Rate:      s.Rate,
+				ChangePct: s.ChangePct,
+				SuperNet:  s.SuperNet,
+				SuperRate: s.SuperRate,
+				BigNet:    s.BigNet,
+				BigRate:   s.BigRate,
 				InputDate: inputDate,
 			})
 		}
@@ -606,7 +621,7 @@ func runSaveAllTask(task *SaveAllTask) {
 			task.Progress = fmt.Sprintf("获取第%d页(%s)...", pn, item.category)
 			task.mu.Unlock()
 
-			url := fmt.Sprintf("https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData?fields=f12,f14,f62,f184&pn=%d&pz=500&fid=f62&po=1&fs=%s&ut=b2884a39ad64002292a3e90d46a5", pn, item.fs)
+			url := fmt.Sprintf("https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData?fields=f12,f14,f3,f62,f66,f69,f72,f75,f184&pn=%d&pz=500&fid=f62&po=1&fs=%s&ut=b2884a39ad64002292a3e90d46a5", pn, item.fs)
 			req, err := http.NewRequest("GET", url, nil)
 			if err != nil {
 				task.mu.Lock()
@@ -666,13 +681,23 @@ func runSaveAllTask(task *SaveAllTask) {
 				}
 				if f, ok := toFloat64(netVal); ok && f != 0 {
 					rateFloat, _ := toFloat64(rateVal)
+					changePctFloat, _ := toFloat64(d["f3"])
+					superNetFloat, _ := toFloat64(d["f66"])
+					superRateFloat, _ := toFloat64(d["f69"])
+					bigNetFloat, _ := toFloat64(d["f72"])
+					bigRateFloat, _ := toFloat64(d["f75"])
 					allSectors = append(allSectors, storage.SectorAll{
-						Date:     task.Date,
-						Code:     code,
-						Name:     name,
-						Net:      roundTo2(f / 1e8),
-						Rate:     roundTo2(rateFloat),
-						Category: item.category,
+						Date:      task.Date,
+						Code:      code,
+						Name:      name,
+						Net:       roundTo2(f / 1e8),
+						Rate:      roundTo2(rateFloat),
+						ChangePct: roundTo2(changePctFloat),
+						SuperNet:  roundTo2(superNetFloat / 1e8),
+						SuperRate: roundTo2(superRateFloat),
+						BigNet:    roundTo2(bigNetFloat / 1e8),
+						BigRate:   roundTo2(bigRateFloat),
+						Category:  item.category,
 					})
 				}
 			}
