@@ -91,65 +91,86 @@ func MultiDayAnalyze(dayData map[string][]fetcher.Sector, dates []string, copyMo
 func AIGenerateMultiDay(dayData map[string][]fetcher.Sector, dates []string, aiCfg config.AIConfig) (MultiDayAnalysis, error) {
 	dataSummary := buildMultiDaySummary(dayData, dates)
 
-	prompt := fmt.Sprintf(`你是一位A股市场资深分析师。请根据以下近%d日板块资金流向数据，分析资金趋势并生成Bar Chart Race视频所需内容。
+	prompt := fmt.Sprintf(`你是一位A股市场资深分析师，专注于多日板块资金趋势的深度解读。你善于从跨日数据中识别主力资金的持续性行为和板块轮动规律。
 
-## 数据摘要
-%s
+## 任务
+
+根据下方近%d日板块资金流向数据，生成四类内容：trendInsights、rankingChanges、summaryText、tickerItems。
 
 ## 视频形式
-本视频采用「动态横向排名条形图」(Bar Chart Race) 形式展示：
+
+本视频采用「动态横向排名条形图」(Bar Chart Race) 形式：
 - 画面中央为横向条形图，按板块主力资金净流入绝对值排名
 - 条形从左到右随日期推进平滑移动，排名自动变化
 - 流入板块显示为青色，流出板块显示为粉色
 - 视频分为三段：第1日快照 → 过渡动画 → 第2日快照 → 过渡动画 → 第3日快照
 
-## 输出要求
-请严格按以下 JSON 格式输出一个对象：
+## 数据摘要
+%s
 
-### 1. trendInsights（趋势洞察，5-8条）
-用于视频封面和过渡动画期间的文字展示
-- day: 日期 "YYYY-MM-DD"
-- title: 趋势标题（10字以内，如"半导体连续三日获主力加仓"）
-- description: 详细描述（30字以内，包含板块名和具体数值，使用专业术语如"主力资金涌入""资金出逃""板块轮动""情绪分化""放量突破""资金接力"）
-- sentiment: "positive" / "negative" / "neutral"
-- sector: 核心板块名（必须是数据中实际存在的板块）
-- 分布建议：第1日2条，第2日2条，第3日2条
+## 输出格式
 
-### 2. rankingChanges（排名变化解读，3-5条）
-用于条形图排名变化时的高亮提示
-- from_day: 前一日日期
-- to_day: 当日日期
-- from_rank: 前一日排名（1-based）
-- to_rank: 当日排名（1-based）
-- sector: 板块名
-- description: 变化解读（15字以内，如"排名跃升3位，主力加速建仓"）
-- sentiment: "positive" / "negative" / "neutral"
-- 只选择排名变化≥2位的板块
+严格按以下 JSON 格式输出，不要有任何额外文本：
 
-### 3. summaryText（总结文案，1条）
-用于视频结尾的数据总结页
-- title: 总结标题（12字以内，如"近三日主力资金流向总结"）
-- content: 总结正文（80字以内，概括整体趋势、累计净流入TOP3、累计净流出TOP3、市场情绪判断）
-- key_sectors: 关键板块列表（2-4个，对趋势影响最大的板块名）
-
-### 4. tickerItems（底部滚动资讯，8-10条）
-- day: 日期 "YYYY-MM-DD"
-- text: 资讯内容（15字以内，包含板块名和数值，使用专业术语）
-
-## 注意事项
-- 所有内容必须基于实际数据，不要编造数值
-- 板块名必须与数据摘要中完全一致
-- 数值单位统一为"亿"，保留1位小数
-- 专业术语参考："主力资金涌入""资金出逃""板块轮动""情绪分化""量能萎缩""放量突破""资金接力""多空博弈""持续加仓""加速减仓"
-- 必须输出有效的 JSON 对象，不要有其他内容
-
-输出格式：
 {
   "trendInsights": [...],
   "rankingChanges": [...],
   "summaryText": {...},
   "tickerItems": [...]
-}`, len(dates), dataSummary)
+}
+
+## trendInsights（趋势洞察，5-8条）
+
+用于视频封面和过渡动画期间的文字展示。
+
+| 字段 | 要求 |
+|------|------|
+| day | 日期 "YYYY-MM-DD" |
+| title | 趋势标题，10字以内，如"半导体连续三日获主力加仓" |
+| description | 详细描述，30字以内，含板块名和具体数值，使用"主力资金涌入""资金出逃""板块轮动""情绪分化""放量突破""资金接力"等术语 |
+| sentiment | "positive" / "negative" / "neutral" |
+| sector | 核心板块名，必须是数据中实际存在的 |
+
+分布：第1日2条，第2日2条，第3日2条。
+
+## rankingChanges（排名变化解读，3-5条）
+
+用于条形图排名变化时的高亮提示。只选择排名变化≥2位的板块。
+
+| 字段 | 要求 |
+|------|------|
+| from_day | 前一日日期 |
+| to_day | 当日日期 |
+| from_rank | 前一日排名（1-based） |
+| to_rank | 当日排名（1-based） |
+| sector | 板块名 |
+| description | 变化解读，15字以内，如"排名跃升3位，主力加速建仓" |
+| sentiment | "positive" / "negative" / "neutral" |
+
+## summaryText（总结文案，1条）
+
+用于视频结尾的数据总结页。
+
+| 字段 | 要求 |
+|------|------|
+| title | 总结标题，12字以内，如"近三日主力资金流向总结" |
+| content | 总结正文，80字以内，概括整体趋势、累计净流入TOP3、累计净流出TOP3、市场情绪判断 |
+| key_sectors | 关键板块列表，2-4个，对趋势影响最大的板块名 |
+
+## tickerItems（底部滚动资讯，8-10条）
+
+| 字段 | 要求 |
+|------|------|
+| day | 日期 "YYYY-MM-DD" |
+| text | 资讯内容，15字以内，含板块名和数值，使用专业术语 |
+
+## 排序约束
+
+- trendInsights 的 day 从早到晚
+- rankingChanges 按时间顺序排列
+- tickerItems 的 day 从早到晚
+- 板块名必须与数据摘要中完全一致
+- 数值单位统一为"亿"，保留1位小数`, len(dates), dataSummary)
 
 	body := map[string]any{
 		"model":       aiCfg.Model,
