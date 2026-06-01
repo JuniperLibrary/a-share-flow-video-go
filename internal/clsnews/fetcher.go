@@ -1,6 +1,9 @@
 package clsnews
 
 import (
+	"crypto/md5"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -28,18 +31,25 @@ func DumpNews(news []CLSNews) {
 
 // API 请求参数
 const (
-	baseURL    = "https://www.cls.cn/nodeapi/telegraphList"
+	baseURL    = "https://www.cls.cn/v1/roll/get_roll_list"
 	appName    = "CailianpressWeb"
 	osName     = "web"
 	svVersion  = "8.4.6"
-	pageSize   = 200
-	userAgent  = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+	pageSize   = 50
+	userAgent  = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
+
+func generateSign(params string) string {
+	sha1Hash := sha1.Sum([]byte(params))
+	sha1Hex := hex.EncodeToString(sha1Hash[:])
+	md5Hash := md5.Sum([]byte(sha1Hex))
+	return hex.EncodeToString(md5Hash[:])
+}
 
 // telegraphResponse 财联社电报列表 API 返回结构。
 type telegraphResponse struct {
-	Code int `json:"code"`
-	Data struct {
+	ErrNo int `json:"errno"`
+	Data  struct {
 		RollData []telegraphItem `json:"roll_data"`
 	} `json:"data"`
 }
@@ -70,11 +80,13 @@ var httpClient = &http.Client{
 // FetchTelegraphList 拉取财联社电报列表。
 // lastTime: 上次最新时间戳（unix 秒），用于增量获取；0 = 获取最新。
 func FetchTelegraphList(lastTime int64) ([]CLSNews, error) {
-	url := fmt.Sprintf("%s?app=%s&os=%s&refresh_type=1&rn=%d&sv=%s",
-		baseURL, appName, osName, pageSize, svVersion)
+	params := fmt.Sprintf("app=%s&os=%s&rn=%d&sv=%s", appName, osName, pageSize, svVersion)
 	if lastTime > 0 {
-		url += fmt.Sprintf("&last_time=%d", lastTime)
+		params = fmt.Sprintf("app=%s&last_time=%d&os=%s&rn=%d&sv=%s",
+			appName, lastTime, osName, pageSize, svVersion)
 	}
+	sign := generateSign(params)
+	url := fmt.Sprintf("%s?%s&sign=%s", baseURL, params, sign)
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -99,8 +111,8 @@ func FetchTelegraphList(lastTime int64) ([]CLSNews, error) {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 
-	if result.Code != 0 {
-		return nil, fmt.Errorf("api error code: %d", result.Code)
+	if result.ErrNo != 0 {
+		return nil, fmt.Errorf("api error code: %d", result.ErrNo)
 	}
 
 	newsList := make([]CLSNews, 0, len(result.Data.RollData))
@@ -114,7 +126,6 @@ func FetchTelegraphList(lastTime int64) ([]CLSNews, error) {
 		title := strings.TrimSpace(item.Title)
 		content := strings.TrimSpace(item.Content)
 		if title == "" && content != "" {
-			// 财联社 C 级快讯没有 title 字段，用 content 前 80 字代替
 			runes := []rune(content)
 			if len(runes) > 80 {
 				title = string(runes[:80]) + "…"
@@ -197,12 +208,9 @@ func IsTradingTime() bool {
 	return totalMin >= 9*60 && totalMin < 15*60
 }
 
-// GetPollInterval 返回轮询间隔：交易时段 30s，非交易时段 5min。
 func GetPollInterval() time.Duration {
 	if IsTradingTime() {
-		return 5 * time.Minute
+		return 30 * time.Second
 	}
 	return 5 * time.Minute
 }
-
-

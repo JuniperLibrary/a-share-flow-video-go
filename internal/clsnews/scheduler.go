@@ -13,7 +13,7 @@ import (
 )
 
 // NewsScheduler 财联社新闻调度器，支持自动轮询和手动回放两种模式。
-// 自动轮询每 5 分钟拉取一次（不分交易/非交易时段），手动回放由前端按钮触发。
+// 自动轮询间隔由 GetPollInterval 决定（交易时段 30s、非交易时段 5min），手动回放由前端按钮触发。
 type NewsScheduler struct {
 	mu        sync.Mutex
 	running   bool
@@ -28,7 +28,7 @@ func NewNewsScheduler() *NewsScheduler {
 	return &NewsScheduler{}
 }
 
-// Start 启动后台自动轮询，每 5 分钟拉取一次。
+// Start 启动后台自动轮询，间隔由 GetPollInterval 决定。
 func (s *NewsScheduler) Start() {
 	s.mu.Lock()
 	if s.running {
@@ -41,7 +41,7 @@ func (s *NewsScheduler) Start() {
 
 	go s.pollOnce()
 	go s.loop()
-	logger.Info("财联社新闻自动轮询已启动（5分钟间隔）")
+	logger.Info("财联社新闻自动轮询已启动（交易时段30s/非交易时段5min）")
 }
 
 // Stop 停止后台自动轮询。
@@ -97,7 +97,7 @@ func (s *NewsScheduler) loop() {
 		select {
 		case <-s.stopCh:
 			return
-		case <-time.After(5 * time.Minute):
+		case <-time.After(GetPollInterval()):
 			s.poll()
 		}
 	}
