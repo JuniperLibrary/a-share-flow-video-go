@@ -32,10 +32,16 @@ type TickSnapshot struct {
 }
 
 type TickPoint struct {
-	Time string
-	Name string
-	Net  float64
-	Rate float64
+	Time      string
+	Name      string
+	Net       float64
+	Rate      float64
+	ChangePct float64
+	SuperNet  float64
+	SuperRate float64
+	BigNet    float64
+	BigRate   float64
+	MainRate  float64
 }
 
 type TickFetcher struct {
@@ -325,6 +331,11 @@ func saveTickToDB(dateStr, timeStr string, sectors []fetcher.Sector) error {
 			Name:      s.Name,
 			Net:       s.Net,
 			Rate:      s.Rate,
+			ChangePct: s.ChangePct,
+			SuperNet:  s.SuperNet,
+			SuperRate: s.SuperRate,
+			BigNet:    s.BigNet,
+			BigRate:   s.BigRate,
 			InputDate: inputDate,
 		})
 	}
@@ -401,10 +412,16 @@ func LoadTickCSV(dateStr, session string) ([]TickPoint, error) {
 			continue
 		}
 		points = append(points, TickPoint{
-			Time: timeStr,
-			Name: s.Name,
-			Net:  s.Net,
-			Rate: s.Rate,
+			Time:      timeStr,
+			Name:      s.Name,
+			Net:       s.Net,
+			Rate:      s.Rate,
+			ChangePct: s.ChangePct,
+			SuperNet:  s.SuperNet,
+			SuperRate: s.SuperRate,
+			BigNet:    s.BigNet,
+			BigRate:   s.BigRate,
+			MainRate:  s.SuperRate + s.BigRate,
 		})
 	}
 	return points, nil

@@ -27,11 +27,17 @@ const (
 )
 
 type SectorTick struct {
-	Name  string    `json:"name"`
-	Color string    `json:"color"`
-	Data  []float64 `json:"data"`
-	Times []string  `json:"times"`
-	Rate  float64   `json:"rate"`
+	Name      string    `json:"name"`
+	Color     string    `json:"color"`
+	Data      []float64 `json:"data"`
+	Times     []string  `json:"times"`
+	Rate      float64   `json:"rate"`
+	ChangePct float64   `json:"changePct"`
+	SuperNet  float64   `json:"superNet"`
+	SuperRate float64   `json:"superRate"`
+	BigNet    float64   `json:"bigNet"`
+	BigRate   float64   `json:"bigRate"`
+	MainRate  float64   `json:"mainRate"`
 }
 
 type TickRenderProps struct {
@@ -318,14 +324,14 @@ func buildSectorTicks(points []tickfetcher.TickPoint) []SectorTick {
 
 	sectorData := make(map[string][]float64)
 	sectorPrev := make(map[string]float64)
-	sectorLatestRate := make(map[string]float64)
+	sectorLatest := make(map[string]tickfetcher.TickPoint)
 
 	for _, p := range points {
 		prev := sectorPrev[p.Name]
 		delta := p.Net - prev
 		sectorData[p.Name] = append(sectorData[p.Name], delta)
 		sectorPrev[p.Name] = p.Net
-		sectorLatestRate[p.Name] = p.Rate
+		sectorLatest[p.Name] = p
 	}
 
 	var result []SectorTick
@@ -335,11 +341,18 @@ func buildSectorTicks(points []tickfetcher.TickPoint) []SectorTick {
 			copy(padded, data)
 			data = padded
 		}
+		latest := sectorLatest[name]
 		result = append(result, SectorTick{
-			Name:  name,
-			Data:  data,
-			Times: timeOrder,
-			Rate:  sectorLatestRate[name],
+			Name:      name,
+			Data:      data,
+			Times:     timeOrder,
+			Rate:      latest.Rate,
+			ChangePct: latest.ChangePct,
+			SuperNet:  latest.SuperNet,
+			SuperRate: latest.SuperRate,
+			BigNet:    latest.BigNet,
+			BigRate:   latest.BigRate,
+			MainRate:  latest.MainRate,
 		})
 	}
 
