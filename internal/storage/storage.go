@@ -808,52 +808,6 @@ var exportQueries = []struct {
 	{"cls_news.json", "SELECT id, title, content, brief, level, reading_num, ctime, shareurl, sectors, created_at FROM cls_news ORDER BY ctime DESC"},
 }
 
-// ImportJSON 从 data/*.json 文件导入数据到数据库。
-// 在 JSON 模式下启动时自动调用，将历史 JSON 数据载入内存 SQLite。
-func (db *DB) ImportJSON() error {
-	dir := config.GetDataDir()
-	for _, t := range exportQueries {
-		path := filepath.Join(dir, t.File)
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue // 文件不存在是正常的
-		}
-		var rows []map[string]any
-		if err := json.Unmarshal(data, &rows); err != nil {
-			logger.Warn("JSON 解析失败", zap.String("table", t.File), zap.Error(err))
-			continue
-		}
-		for _, row := range rows {
-			if err := db.insertRow(t.File, row); err != nil {
-				logger.Warn("JSON 导入失败", zap.String("table", t.File), zap.Error(err))
-			}
-		}
-		logger.Info("JSON 已导入", zap.String("table", t.File), zap.Int("rows", len(rows)))
-	}
-	return nil
-}
-
-func (db *DB) insertRow(filename string, row map[string]any) error {
-	switch filename {
-	case "sectors.json":
-		return db.RawExec(`INSERT OR REPLACE INTO sectors (datetime, name, net, rate, change_pct, super_net, super_rate, big_net, big_rate, input_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			row["datetime"], row["name"], row["net"], row["rate"], row["change_pct"], row["super_net"], row["super_rate"], row["big_net"], row["big_rate"], row["input_date"])
-	case "sectors_all.json":
-		return db.RawExec(`INSERT OR REPLACE INTO sectors_all (date, code, name, net, rate, change_pct, super_net, super_rate, big_net, big_rate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			row["date"], row["code"], row["name"], row["net"], row["rate"], row["change_pct"], row["super_net"], row["super_rate"], row["big_net"], row["big_rate"])
-	case "copywriting.json":
-		return db.RawExec(`INSERT OR REPLACE INTO copywriting (date, session, type, content) VALUES (?, ?, ?, ?)`,
-			row["date"], row["session"], row["type"], row["content"])
-	case "tick_events.json":
-		return db.RawExec(`INSERT OR REPLACE INTO tick_events (date, session, type, payload) VALUES (?, ?, ?, ?)`,
-			row["date"], row["session"], row["type"], row["payload"])
-	case "cls_news.json":
-		return db.RawExec(`INSERT OR IGNORE INTO cls_news (id, title, content, brief, level, reading_num, ctime, shareurl, sectors, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			row["id"], row["title"], row["content"], row["brief"], row["level"], row["reading_num"], row["ctime"], row["shareurl"], row["sectors"], row["created_at"])
-	}
-	return fmt.Errorf("未知文件: %s", filename)
-}
-
 // ListNotes 列出所有笔记（按创建时间倒序）。
 func (db *DB) ListNotes() ([]Note, error) {
 	db.mu.RLock()

@@ -34,9 +34,9 @@ func main() {
 	case "export":
 		db.ExportJSON()
 	case "import":
-		logger.Info("开始从 JSON 文件导入数据")
-		db.ImportJSON()
+		fmt.Println("import 已废弃：JSON 读取逻辑已移除，SQLite 是唯一数据源。")
+		fmt.Println("如需从历史 JSON 恢复数据，请使用 export 重新生成 SQLite 后再迁移。")
 	default:
-		fmt.Printf("未知命令: %s (可用: export, import)\n", os.Args[1])
+		fmt.Printf("未知命令: %s (可用: export)\n", os.Args[1])
 	}
 }
