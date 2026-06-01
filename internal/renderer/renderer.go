@@ -23,10 +23,15 @@ const (
 )
 
 type SectorData struct {
-	Name  string  `json:"name"`
-	Net   float64 `json:"net"`
-	Rate  float64 `json:"rate"`
-	Color string  `json:"color"`
+	Name      string  `json:"name"`
+	Net       float64 `json:"net"`
+	Rate      float64 `json:"rate"`
+	ChangePct float64 `json:"changePct,omitempty"`
+	SuperNet  float64 `json:"superNet,omitempty"`
+	SuperRate float64 `json:"superRate,omitempty"`
+	BigNet    float64 `json:"bigNet,omitempty"`
+	BigRate   float64 `json:"bigRate,omitempty"`
+	Color     string  `json:"color"`
 }
 
 // RenderProps 传递给 Remotion 的 JSON 属性，必须与 TypeScript types.ts 保持一致。
@@ -78,7 +83,17 @@ func RenderVideo(sectors []fetcher.Sector, dateStr, outputPath string, events []
 
 	sectorData := make([]SectorData, len(sectors))
 	for i, s := range sectors {
-		sectorData[i] = SectorData{Name: s.Name, Net: s.Net, Rate: s.Rate, Color: s.Color}
+		sectorData[i] = SectorData{
+			Name:      s.Name,
+			Net:       s.Net,
+			Rate:      s.Rate,
+			ChangePct: s.ChangePct,
+			SuperNet:  s.SuperNet,
+			SuperRate: s.SuperRate,
+			BigNet:    s.BigNet,
+			BigRate:   s.BigRate,
+			Color:     s.Color,
+		}
 	}
 
 	if len(timeline) == 0 {
