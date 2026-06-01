@@ -866,96 +866,101 @@ func AITickGenerate(points []tickfetcher.TickPoint, dateStr string, session stri
 - 午休: 11:30 - 13:00（闭盘，不产生事件）
 - 下午: 13:00 - 15:00`, dateDisplay, strings.Join(sectorLines, "\n"))
 
-	prompt := fmt.Sprintf(`你是一名顶级A股主线研究员和游资资金流分析师。
+	prompt := fmt.Sprintf(`你是一名顶级A股主线研究员和游资资金流分析师。你对资金流的嗅觉极灵敏，擅长从时序数据中捕捉主力行为、产业链联动、板块轮动的深层逻辑。
 
-下面给你的是不同时间段的板块主力资金净流入时序数据。
+## 任务
 
-## 你的任务
+根据下方板块主力资金净流入时序数据，生成三类内容：timelineEvents、tickerItems、events。
 
-从资金流变化中分析并生成视频所需的三类内容（timelineEvents、tickerItems、events）。
+## 分析视角（像游资复盘一样思考）
 
-## 分析视角（重要）
-
-不要机械复述数据，要像游资复盘一样思考：
+不要机械复述数据，要追问：
 - 资金最先攻击哪个方向？为什么？
-- 后续资金扩散路径是什么？是产业链联动还是情绪套利？
+- 后续扩散路径是什么？产业链联动还是情绪套利？
 - 是否形成主线共振？核心龙头是谁？
 - 是否出现高低切、低位补涨、资金回流？
 - 市场风险偏好是提升还是下降？
 - 主力真正想做什么？
 
-## 输出风格对比
+## 风格铁律
 
-❌ 错误（财经新闻口吻）：
+❌ 财经新闻口吻（禁止）：
 - title: "AI应用资金流入"
 - description: "AI应用板块净流入增加3.2亿"
 
-✅ 正确（游资复盘风格）：
+✅ 游资复盘风格（必须）：
 - title: "AI应用早盘抢筹"
 - description: "主力率先攻击AI应用方向，净流入+3.2亿"
 
-❌ 错误：
+❌ 平淡描述（禁止）：
 - title: "半导体板块表现良好"
 - description: "半导体板块资金持续流入"
 
-✅ 正确：
+✅ 游资视角（必须）：
 - title: "半导体产业链共振"
 - description: "CPO与半导体同步获资金，算力主线强化"
 
 ## 数据摘要
 %s
 
-## 输出要求
+## 输出格式
 
-请严格按以下 JSON 格式输出一个对象，包含三个字段：
+严格按以下 JSON 格式输出，不要有任何额外文本：
 
-### 视频5段式结构（重要）
-整个视频按以下模板组织 events 的 frame 分布：
-
-| 段落 | frame 范围 | 内容 | events 数量 |
-|------|-----------|------|------------|
-| ① 钩子 | 0-5 | 前3秒钩子（疑问/冲突/数据型） | 1个 event，event_type="market" |
-| ② 资金流动态图 | 6-40 | 板块资金流曲线展示 | 3-4个 events，早盘资金动态 |
-| ③ 排行榜变化 | 41-70 | TOP10排名变化 | 2-3个 events，板块轮动/排名变化 |
-| ④ AI总结 | 71-85 | 核心结论，今日主线判断 | 1-2个 events，主线/情绪总结 |
-| ⑤ 结论页+互动 | 86-100 | 流入TOP3/流出TOP3 + 互动引导 | 1-2个 events，event_type="market" 结论页 |
-
-### 1. timelineEvents（市场事件时间线，10-12个）
-- time: 时间 "HH:MM"（必须在 09:30-11:30 或 13:00-15:00 范围内）
-- timeMinutes: 从09:30起的分钟数（如09:35=5, 10:15=45, 13:15=225, 14:10=310）
-- sector: 相关板块名（必须是数据中实际存在的板块）
-- title: 事件标题（8-10字，游资复盘风格）
-- description: 事件描述（15-20字，使用专业交易术语如"主力抢筹""产业链共振""高低切换""补涨逻辑""主线强化""资金分歧"，并包含具体数值）
-- sentiment: "positive" / "negative" / "neutral"
-- 时间分布建议：09:30-10:00 至少2个，10:00-11:00 至少2个，11:00-11:30 至少1个，13:00-14:00 至少2个，14:00-15:00 至少2个
-
-### 2. tickerItems（底部滚动资讯，10-12条）
-- time: 时间 "HH:MM"（必须在交易时段内）
-- text: 资讯内容（12-15字，游资复盘风格）
-
-### 3. events（底部弹窗事件，8-10个）
-- event_type: "market"/"sentiment"/"rotation"/"aberration"
-- frame: 时间位置百分比（0-100），必须按照上面的5段式结构分布
-- text: 主标题（8-10字，游资风格）
-- subtext: 副标题（15-20字，包含板块名和数值）
-- importance: 重要程度 1/2/3
-- **必须包含一个结论页 event（frame 90-98）**：event_type="market"，text为"资金流总结"，subtext包含今日流入TOP3板块名和净流入金额，并在末尾追加" 你最看好哪个方向？"
-
-## 注意事项
-- timelineEvents 的 timeMinutes 必须按升序排列
-- tickerItems 的 time 从早到晚排列
-- events 的 frame 从低到高分布，严格按5段式结构
-- 所有内容必须基于实际数据，不要编造数据
-- 板块名和数值必须与数据摘要一致
-- 输出风格必须像游资复盘、私募策略会，而不是财经新闻
-- 必须输出有效的 JSON 对象，不要有其他内容
-
-输出格式：
 {
   "timelineEvents": [...],
   "tickerItems": [...],
   "events": [...]
-}`, dataSummary)
+}
+
+## timelineEvents（市场事件时间线，10-12个）
+
+| 字段 | 要求 |
+|------|------|
+| time | "HH:MM"，必须在 09:30-11:30 或 13:00-15:00 |
+| timeMinutes | 从09:30起的分钟数（09:35=5, 10:15=45, 13:15=225, 14:10=310） |
+| sector | 板块名，必须是数据中实际存在的 |
+| title | 事件标题，8-10字，游资复盘风格 |
+| description | 事件描述，15-20字，使用"主力抢筹""产业链共振""高低切换""补涨逻辑""主线强化""资金分歧"等术语，包含具体数值 |
+| sentiment | "positive" / "negative" / "neutral" |
+
+时间分布：09:30-10:00 至少2个，10:00-11:00 至少2个，11:00-11:30 至少1个，13:00-14:00 至少2个，14:00-15:00 至少2个。
+
+## tickerItems（底部滚动资讯，10-12条）
+
+| 字段 | 要求 |
+|------|------|
+| time | "HH:MM"，必须在交易时段内 |
+| text | 资讯内容，12-15字，游资复盘风格 |
+
+## events（底部弹窗事件，8-10个）
+
+| 字段 | 要求 |
+|------|------|
+| event_type | "market" / "sentiment" / "rotation" / "aberration" |
+| frame | 0-100，按5段式结构分布 |
+| text | 主标题，8-10字，游资风格 |
+| subtext | 副标题，15-20字，含板块名和数值 |
+| importance | 1 / 2 / 3 |
+
+视频5段式 frame 分布：
+
+| 段落 | frame 范围 | 内容 | events 数量 |
+|------|-----------|------|------------|
+| ① 钩子 | 0-5 | 前3秒钩子（疑问/冲突/数据型） | 1个，event_type="market" |
+| ② 资金流动态图 | 6-40 | 板块资金流曲线展示 | 3-4个，早盘资金动态 |
+| ③ 排行榜变化 | 41-70 | TOP10排名变化 | 2-3个，板块轮动/排名变化 |
+| ④ AI总结 | 71-85 | 核心结论，今日主线判断 | 1-2个，主线/情绪总结 |
+| ⑤ 结论页+互动 | 86-100 | 流入TOP3/流出TOP3 + 互动引导 | 1-2个，event_type="market" 结论页 |
+
+**必须包含一个结论页 event（frame 90-98）**：event_type="market"，text为"资金流总结"，subtext包含今日流入TOP3板块名和净流入金额，末尾追加" 你最看好哪个方向？"
+
+## 排序约束
+
+- timelineEvents 的 timeMinutes 按升序
+- tickerItems 的 time 从早到晚
+- events 的 frame 从低到高，严格按5段式结构
+- 所有板块名和数值必须与数据摘要一致，不要编造`, dataSummary)
 
 	body := map[string]any{
 		"model":       aiCfg.Model,
@@ -1056,15 +1061,16 @@ func AIGenerate(sectors []fetcher.Sector, dateStr string, aiCfg config.AIConfig)
 		formatTop5(sectorsOut),
 	)
 
-	prompt := fmt.Sprintf(`你是一位A股市场资深分析师。请根据以下板块资金流向数据，分析并生成三类内容。
+	prompt := fmt.Sprintf(`你是一位A股市场资深分析师，专注于每日板块资金流向的客观解读。你善于用数据说话，风格严谨、专业、有洞察力。
+
+## 任务
+
+根据下方板块资金流向数据，生成三类内容：timelineEvents、tickerItems、events。
 
 ## 账号品牌
 - 账号名称：主线共振Lab
-- Slogan：**资金不会说谎，主线都会留下痕迹**
+- Slogan："资金不会说谎，主线都会留下痕迹"
 - 风格：每日板块资金图谱可视化，不荐股，仅记录市场
-
-## 数据摘要
-%s
 
 ## A股交易时间规则
 - 上午: 09:30 - 11:30
@@ -1072,55 +1078,67 @@ func AIGenerate(sectors []fetcher.Sector, dateStr string, aiCfg config.AIConfig)
 - 下午: 13:00 - 15:00
 - 所有事件的 time 字段必须在以上交易时段内，禁止出现 11:31-12:59 的时间
 
-## 输出要求
-请严格按以下 JSON 格式输出一个对象，包含三个字段：
+## 数据摘要
+%s
 
-### 视频5段式结构（重要）
-整个视频按以下模板组织 events 的 frame 分布：
+## 输出格式
 
-| 段落 | frame 范围 | 内容 | events 数量 |
-|------|-----------|------|------------|
-| ① 钩子 | 0-5 | 前3秒钩子（疑问/冲突/数据型） | 1个 event，event_type="market" |
-| ② 资金流动态图 | 6-40 | 板块资金流曲线展示 | 3-4个 events，早盘资金动态 |
-| ③ 排行榜变化 | 41-70 | TOP10排名变化 | 2-3个 events，板块轮动/排名变化 |
-| ④ AI总结 | 71-85 | 核心结论，今日主线判断 | 1-2个 events，主线/情绪总结 |
-| ⑤ 结论页+互动 | 86-100 | 流入TOP3/流出TOP3 + 互动引导 | 1-2个 events，event_type="market" 结论页 |
+严格按以下 JSON 格式输出，不要有任何额外文本：
 
-### 1. timelineEvents（市场事件时间线，10-12个）
-- time: 时间 "HH:MM"（必须在 09:30-11:30 或 13:00-15:00 范围内）
-- timeMinutes: 从09:30起的分钟数（如09:35=5, 10:15=45, 13:15=225, 14:10=310）
-- sector: 相关板块名（必须是数据中实际存在的板块）
-- title: 事件标题（10字以内，包含板块名）
-- description: 事件描述（20字以内，使用专业术语如"主力资金涌入""资金出逃""板块轮动""情绪分化""量能萎缩""放量突破""主线共振"，并包含具体数值）
-- sentiment: "positive" / "negative" / "neutral"
-- 时间分布建议：09:30-10:00 至少2个，10:00-11:00 至少2个，11:00-11:30 至少1个，13:00-14:00 至少2个，14:00-15:00 至少2个
-
-### 2. tickerItems（底部滚动资讯，10-12条）
-- time: 时间 "HH:MM"（必须在交易时段内）
-- text: 资讯内容（15字以内，包含板块名和数值）
-
-### 3. events（底部弹窗事件，8-10个）
-- event_type: "market"/"sentiment"/"rotation"/"aberration"
-- frame: 时间位置百分比（0-100），必须按照上面的5段式结构分布
-- text: 主标题（10字以内）
-- subtext: 副标题（20字以内）
-- importance: 重要程度 1/2/3
-- **必须包含一个结论页 event（frame 90-98）**：event_type="market"，text为"资金流总结"，subtext包含今日流入TOP3板块名和净流入金额，并在末尾追加" 你最看好哪个方向？"
-
-## 注意事项
-- timelineEvents 的 timeMinutes 必须按升序排列
-- tickerItems 的 time 从早到晚排列
-- events 的 frame 从低到高分布，严格按5段式结构
-- 所有内容必须基于实际数据，不要编造数据
-- 板块名和数值必须与数据摘要一致
-- 必须输出有效的 JSON 对象，不要有其他内容
-
-输出格式：
 {
   "timelineEvents": [...],
   "tickerItems": [...],
   "events": [...]
-}`, dataSummary)
+}
+
+## timelineEvents（市场事件时间线，10-12个）
+
+| 字段 | 要求 |
+|------|------|
+| time | "HH:MM"，必须在 09:30-11:30 或 13:00-15:00 |
+| timeMinutes | 从09:30起的分钟数（09:35=5, 10:15=45, 13:15=225, 14:10=310） |
+| sector | 板块名，必须是数据中实际存在的 |
+| title | 事件标题，10字以内，包含板块名 |
+| description | 事件描述，20字以内，使用"主力资金涌入""资金出逃""板块轮动""情绪分化""量能萎缩""放量突破""主线共振"等术语，包含具体数值 |
+| sentiment | "positive" / "negative" / "neutral" |
+
+时间分布：09:30-10:00 至少2个，10:00-11:00 至少2个，11:00-11:30 至少1个，13:00-14:00 至少2个，14:00-15:00 至少2个。
+
+## tickerItems（底部滚动资讯，10-12条）
+
+| 字段 | 要求 |
+|------|------|
+| time | "HH:MM"，必须在交易时段内 |
+| text | 资讯内容，15字以内，包含板块名和数值 |
+
+## events（底部弹窗事件，8-10个）
+
+| 字段 | 要求 |
+|------|------|
+| event_type | "market" / "sentiment" / "rotation" / "aberration" |
+| frame | 0-100，按5段式结构分布 |
+| text | 主标题，10字以内 |
+| subtext | 副标题，20字以内 |
+| importance | 1 / 2 / 3 |
+
+视频5段式 frame 分布：
+
+| 段落 | frame 范围 | 内容 | events 数量 |
+|------|-----------|------|------------|
+| ① 钩子 | 0-5 | 前3秒钩子（疑问/冲突/数据型） | 1个，event_type="market" |
+| ② 资金流动态图 | 6-40 | 板块资金流曲线展示 | 3-4个，早盘资金动态 |
+| ③ 排行榜变化 | 41-70 | TOP10排名变化 | 2-3个，板块轮动/排名变化 |
+| ④ AI总结 | 71-85 | 核心结论，今日主线判断 | 1-2个，主线/情绪总结 |
+| ⑤ 结论页+互动 | 86-100 | 流入TOP3/流出TOP3 + 互动引导 | 1-2个，event_type="market" 结论页 |
+
+**必须包含一个结论页 event（frame 90-98）**：event_type="market"，text为"资金流总结"，subtext包含今日流入TOP3板块名和净流入金额，末尾追加" 你最看好哪个方向？"
+
+## 排序约束
+
+- timelineEvents 的 timeMinutes 按升序
+- tickerItems 的 time 从早到晚
+- events 的 frame 从低到高，严格按5段式结构
+- 所有板块名和数值必须与数据摘要一致，不要编造`, dataSummary)
 
 	body := map[string]any{
 		"model":       aiCfg.Model,
@@ -1322,7 +1340,6 @@ func formatTop5(sectors []fetcher.Sector) string {
 	return strings.Join(lines, "\n")
 }
 
-// buildConclusionText 生成"流入TOP3 / 流出TOP3"文本，用于结论页 event 的 subtext
 func buildConclusionText(sectors []fetcher.Sector) string {
 	var sorted []fetcher.Sector
 	sorted = append(sorted, sectors...)
@@ -1344,7 +1361,26 @@ func buildConclusionText(sectors []fetcher.Sector) string {
 	if outStr == "" {
 		outStr = "无"
 	}
-	return fmt.Sprintf("流入TOP3：%s | 流出TOP3：%s", inStr, outStr)
+
+	// 主力资金结构（超大单+大单）汇总，仅在字段非零时附加
+	var totalSuper, totalBig, totalMain float64
+	hasStructure := false
+	for _, s := range sectors {
+		totalSuper += s.SuperNet
+		totalBig += s.BigNet
+		totalMain += s.Net
+		if s.SuperNet != 0 || s.BigNet != 0 {
+			hasStructure = true
+		}
+	}
+	structureLine := ""
+	if hasStructure && totalMain != 0 {
+		superPct := totalSuper / totalMain * 100
+		bigPct := totalBig / totalMain * 100
+		structureLine = fmt.Sprintf(" | 主力结构：超大单%+.0f亿(%.0f%%) 大单%+.0f亿(%.0f%%)", totalSuper, superPct, totalBig, bigPct)
+	}
+
+	return fmt.Sprintf("流入TOP3：%s | 流出TOP3：%s%s", inStr, outStr, structureLine)
 }
 
 // buildConclusionFromCumulative 从 tick 累计数据生成结论页文本
