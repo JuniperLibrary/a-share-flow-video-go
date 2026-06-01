@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -25,6 +26,7 @@ const (
 
 // TextToSpeech 将文本合成为 MP3 文件。
 // 使用 edge-tts 命令行工具，不依赖额外的 API 密钥。
+// 网络不稳定时自动重试，最多重试 3 次，指数退避。
 func TextToSpeech(text, outputPath string, voice Voice) error {
 	if voice == "" {
 		voice = Xiaoxiao
@@ -39,19 +41,33 @@ func TextToSpeech(text, outputPath string, voice Voice) error {
 		return fmt.Errorf("创建输出目录失败: %w", err)
 	}
 
-	cmd := exec.Command("edge-tts",
-		"--voice", string(voice),
-		"--text", text,
-		"--write-media", outputPath,
-	)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("edge-tts 合成失败: %w\n输出: %s", err, string(output))
-	}
+	const maxRetries = 3
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			// 指数退避：1s, 2s, 4s
+			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
+			time.Sleep(backoff)
+		}
 
-	if _, err := os.Stat(outputPath); err != nil {
-		return fmt.Errorf("TTS 输出文件未找到: %w", err)
+		cmd := exec.Command("edge-tts",
+			"--voice", string(voice),
+			"--text", text,
+			"--write-media", outputPath,
+		)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			lastErr = fmt.Errorf("edge-tts 合成失败: %w\n输出: %s", err, string(output))
+			continue
+		}
+
+		if _, err := os.Stat(outputPath); err != nil {
+			lastErr = fmt.Errorf("TTS 输出文件未找到: %w", err)
+			continue
+		}
+		return nil
 	}
-	return nil
+	return fmt.Errorf("edge-tts 合成失败（重试 %d 次后放弃）: %w", maxRetries, lastErr)
 }
 
 var (
