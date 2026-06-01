@@ -83,7 +83,7 @@ func runExportTask(task *ExportTask) {
 	}
 
 	fetchPage := func(fs string, pn int) ([]storage.SectorAll, bool, error) {
-		url := fmt.Sprintf("https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData?fields=f12,f14,f62&pn=%d&pz=500&fid=f62&po=1&fs=%s&ut=b2884a393a59ad64002292a3e90d46a5", pn, fs)
+		url := fmt.Sprintf("https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData?fields=f12,f14,f62,f184&pn=%d&pz=500&fid=f62&po=1&fs=%s&ut=b2884a393a59ad64002292a3e90d46a5", pn, fs)
 		req, err := http.NewRequest("GET", url, nil)
 		if err != nil {
 			return nil, false, err
@@ -110,15 +110,18 @@ func runExportTask(task *ExportTask) {
 			name, _ := item["f14"].(string)
 			code, _ := item["f12"].(string)
 			netVal := item["f62"]
+			rateVal := item["f184"]
 			if name == "" || netVal == nil {
 				continue
 			}
 			if f, ok := toFloat64(netVal); ok && f != 0 {
+				rateFloat, _ := toFloat64(rateVal)
 				page = append(page, storage.SectorAll{
 					Date: task.Date,
 					Code: code,
 					Name: name,
 					Net:  roundTo2(f / 1e8),
+					Rate: roundTo2(rateFloat),
 				})
 			}
 		}
@@ -603,7 +606,7 @@ func runSaveAllTask(task *SaveAllTask) {
 			task.Progress = fmt.Sprintf("获取第%d页(%s)...", pn, item.category)
 			task.mu.Unlock()
 
-			url := fmt.Sprintf("https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData?fields=f12,f14,f62&pn=%d&pz=500&fid=f62&po=1&fs=%s&ut=b2884a39ad64002292a3e90d46a5", pn, item.fs)
+			url := fmt.Sprintf("https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData?fields=f12,f14,f62,f184&pn=%d&pz=500&fid=f62&po=1&fs=%s&ut=b2884a39ad64002292a3e90d46a5", pn, item.fs)
 			req, err := http.NewRequest("GET", url, nil)
 			if err != nil {
 				task.mu.Lock()
@@ -657,15 +660,18 @@ func runSaveAllTask(task *SaveAllTask) {
 				name, _ := d["f14"].(string)
 				code, _ := d["f12"].(string)
 				netVal := d["f62"]
+				rateVal := d["f184"]
 				if name == "" || netVal == nil {
 					continue
 				}
 				if f, ok := toFloat64(netVal); ok && f != 0 {
+					rateFloat, _ := toFloat64(rateVal)
 					allSectors = append(allSectors, storage.SectorAll{
 						Date:     task.Date,
 						Code:     code,
 						Name:     name,
 						Net:      roundTo2(f / 1e8),
+						Rate:     roundTo2(rateFloat),
 						Category: item.category,
 					})
 				}
