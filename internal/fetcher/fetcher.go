@@ -23,11 +23,16 @@ import (
 
 // Sector 表示一个板块的资金流向数据。
 type Sector struct {
-	Name     string  `json:"name"`
-	Net      float64 `json:"net"`      // 主力净流入（亿）
-	Rate     float64 `json:"rate"`     // 主力净占比（%），如 3.93
-	Color    string  `json:"color"`    // 运行时由前端/渲染层分配，不持久化到 CSV
-	Category string  `json:"category"` // "industry" 行业 / "concept" 概念 / "" 未知
+	Name       string  `json:"name"`
+	Net        float64 `json:"net"`        // 主力净流入（亿）
+	Rate       float64 `json:"rate"`       // 主力净占比（%），如 3.93
+	ChangePct  float64 `json:"change_pct"` // 涨跌幅（%），如 1.23（f3 字段）
+	SuperNet   float64 `json:"super_net"`  // 超大单净流入（亿）（f66 字段）
+	SuperRate  float64 `json:"super_rate"` // 超大单净占比（%）（f69 字段）
+	BigNet     float64 `json:"big_net"`    // 大单净流入（亿）（f72 字段）
+	BigRate    float64 `json:"big_rate"`   // 大单净占比（%）（f75 字段）
+	Color      string  `json:"color"`      // 运行时由前端/渲染层分配，不持久化到 CSV
+	Category   string  `json:"category"`   // "industry" 行业 / "concept" 概念 / "" 未知
 }
 
 // Top21HotSectors 当前市场最热门的 21 个板块。
@@ -76,7 +81,7 @@ func fetchEMRaw(fs string) ([]map[string]any, error) {
 		var err error
 
 		for attempt := 1; attempt <= 3; attempt++ {
-			url := fmt.Sprintf("https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData?fields=f12,f14,f62,f184&pn=%d&pz=500&fid=f62&po=1&fs=%s&ut=b2884a393a59ad64002292a3e90d46a5", pn, fs)
+			url := fmt.Sprintf("https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData?fields=f12,f14,f3,f62,f66,f69,f72,f75,f184&pn=%d&pz=500&fid=f62&po=1&fs=%s&ut=b2884a393a59ad64002292a3e90d46a5", pn, fs)
 
 			req, reqErr := newRequest("GET", url)
 			if reqErr != nil {
@@ -159,11 +164,26 @@ func fetchPrimaryData() ([]Sector, error) {
 		}
 		rateVal := item["f184"]
 		rateFloat, _ := toFloat64(rateVal)
+		changePctVal := item["f3"]
+		changePctFloat, _ := toFloat64(changePctVal)
+		superNetVal := item["f66"]
+		superNetFloat, _ := toFloat64(superNetVal)
+		superRateVal := item["f69"]
+		superRateFloat, _ := toFloat64(superRateVal)
+		bigNetVal := item["f72"]
+		bigNetFloat, _ := toFloat64(bigNetVal)
+		bigRateVal := item["f75"]
+		bigRateFloat, _ := toFloat64(bigRateVal)
 		sectors = append(sectors, Sector{
-			Name:     name,
-			Net:      roundTo2(netFloat / 1e8),
-			Rate:     roundTo2(rateFloat),
-			Category: "industry",
+			Name:      name,
+			Net:       roundTo2(netFloat / 1e8),
+			Rate:      roundTo2(rateFloat),
+			ChangePct: roundTo2(changePctFloat),
+			SuperNet:  roundTo2(superNetFloat / 1e8),
+			SuperRate: roundTo2(superRateFloat),
+			BigNet:    roundTo2(bigNetFloat / 1e8),
+			BigRate:   roundTo2(bigRateFloat),
+			Category:  "industry",
 		})
 	}
 
@@ -281,10 +301,27 @@ func fetchSingleSectorHistorical(bkCode, sectorName, dateStr string) (*Sector, b
 				if err != nil {
 					return nil, false
 				}
-				return &Sector{
+				sector := &Sector{
 					Name: sectorName,
 					Net:  roundTo2(netYuan / 1e8),
-				}, false
+				}
+				// Parse additional fields if present (f53=小单 f54=中单 f55=大单 f56=超大单 f57-61=占比 f63=涨跌幅)
+				if len(parts) > 5 {
+					if superNet, err := strconv.ParseFloat(parts[5], 64); err == nil {
+						sector.SuperNet = roundTo2(superNet / 1e8)
+					}
+				}
+				if len(parts) > 4 {
+					if bigNet, err := strconv.ParseFloat(parts[4], 64); err == nil {
+						sector.BigNet = roundTo2(bigNet / 1e8)
+					}
+				}
+				if len(parts) > 12 {
+					if changePct, err := strconv.ParseFloat(parts[12], 64); err == nil {
+						sector.ChangePct = roundTo2(changePct)
+					}
+				}
+				return sector, false
 			}
 		}
 		return nil, false
@@ -390,12 +427,17 @@ func SaveDailyData(sectors []Sector, dateStr string) error {
 	w := csv.NewWriter(f)
 	defer w.Flush()
 
-	w.Write([]string{"name", "net", "rate"})
+	w.Write([]string{"name", "net", "rate", "change_pct", "super_net", "super_rate", "big_net", "big_rate"})
 	for _, s := range sectors {
 		w.Write([]string{
 			s.Name,
 			strconv.FormatFloat(s.Net, 'f', 2, 64),
 			strconv.FormatFloat(s.Rate, 'f', 2, 64),
+			strconv.FormatFloat(s.ChangePct, 'f', 2, 64),
+			strconv.FormatFloat(s.SuperNet, 'f', 2, 64),
+			strconv.FormatFloat(s.SuperRate, 'f', 2, 64),
+			strconv.FormatFloat(s.BigNet, 'f', 2, 64),
+			strconv.FormatFloat(s.BigRate, 'f', 2, 64),
 		})
 	}
 
@@ -409,6 +451,11 @@ func SaveDailyData(sectors []Sector, dateStr string) error {
 				Name:      s.Name,
 				Net:       s.Net,
 				Rate:      s.Rate,
+				ChangePct: s.ChangePct,
+				SuperNet:  s.SuperNet,
+				SuperRate: s.SuperRate,
+				BigNet:    s.BigNet,
+				BigRate:   s.BigRate,
 				InputDate: inputDate,
 			})
 		}
@@ -524,12 +571,22 @@ func loadCSV(filename, dateStr string) ([]Sector, error) {
 
 		netVal, _ := strconv.ParseFloat(getField(record, colIdx, "net"), 64)
 		rateVal, _ := strconv.ParseFloat(getField(record, colIdx, "rate"), 64)
+		changePctVal, _ := strconv.ParseFloat(getField(record, colIdx, "change_pct"), 64)
+		superNetVal, _ := strconv.ParseFloat(getField(record, colIdx, "super_net"), 64)
+		superRateVal, _ := strconv.ParseFloat(getField(record, colIdx, "super_rate"), 64)
+		bigNetVal, _ := strconv.ParseFloat(getField(record, colIdx, "big_net"), 64)
+		bigRateVal, _ := strconv.ParseFloat(getField(record, colIdx, "big_rate"), 64)
 
 		sectors = append(sectors, Sector{
-			Name:  getField(record, colIdx, "name"),
-			Net:   netVal,
-			Rate:  rateVal,
-			Color: getField(record, colIdx, "color"),
+			Name:      getField(record, colIdx, "name"),
+			Net:       netVal,
+			Rate:      rateVal,
+			ChangePct: changePctVal,
+			SuperNet:  superNetVal,
+			SuperRate: superRateVal,
+			BigNet:    bigNetVal,
+			BigRate:   bigRateVal,
+			Color:     getField(record, colIdx, "color"),
 		})
 	}
 
