@@ -116,19 +116,7 @@ go build -o cli ./cmd/cli/
 go build -o web-server ./cmd/web/
 ```
 
-### 5. JSON 数据管理
-
-JSON 文件是 Git 友好的数据格式，用于 GitHub Pages 部署或跨环境同步数据：
-
-```bash
-# 导出 SQLite 数据到 JSON 文件 (data/*.json)
-go run ./cmd/datajson/ export
-
-# 从 JSON 文件导入数据到 SQLite
-go run ./cmd/datajson/ import
-```
-
-### 6. SQLite 数据库初始化
+### 5. SQLite 数据库初始化
 
 数据库在 Web/CLI 启动时自动初始化。也可手动初始化：
 
@@ -429,8 +417,7 @@ a-share-flow-video-go/
 ├── cmd/
 │   ├── cli/main.go              # CLI 入口：命令行视频生成器
 │   ├── web/main.go              # Web 服务入口：gin HTTP 服务器（端口 8084）
-│   ├── initdb/main.go           # SQLite 数据库手动初始化脚本
-│   └── datajson/main.go         # JSON 导入导出工具（Git 友好部署）
+│   └── initdb/main.go           # SQLite 数据库手动初始化脚本
 ├── internal/
 │   ├── config/config.go         # 集中配置：视频参数、SessionConfigs、AI 配置、路径管理
 │   ├── fetcher/fetcher.go       # 东方财富 API：数据获取、CSV 保存/加载、Top21 过滤
@@ -488,7 +475,6 @@ go run ./cmd/cli/
 ```
 
 - 数据写入 `data/a-share-flow.db`（被 gitignore）
-- JSON 文件不自动更新，需要手动 `go run ./cmd/datajson/ export`
 
 ### GitHub Pages 部署
 

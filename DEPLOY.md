@@ -107,7 +107,6 @@ on:
 ```
 
 - 数据持久化在 SQLite 文件，性能最好
-- JSON 不会被更新，需要手动 `go run ./cmd/datajson/ export`
 
 ### 部署模式 (`DATA_MODE=json`)
 
@@ -120,14 +119,6 @@ on:
 - 不产生 `.db` 文件（被 gitignore）
 - JSON 文件是唯一的持久化格式
 - 适用于 GitHub Actions 等无持久化存储的环境
-
-### 从 JSON 恢复到本地 SQLite
-
-```bash
-git pull                      # 拉到最新 JSON
-go run ./cmd/datajson/ import # 导入到 SQLite
-# 现在可以正常本地开发
-```
 
 ## 操作步骤
 
@@ -223,8 +214,7 @@ GitHub Actions 上**不渲染视频**，原因：
 | 文件 | 说明 |
 |------|------|
 | `.github/workflows/data-collection.yml` | 定时数据采集工作流 |
-| `cmd/datajson/main.go` | JSON 导入导出工具 |
-| `internal/storage/storage.go` | ExportJSON / ImportJSON 方法 |
+| `internal/storage/storage.go` | ExportJSON 方法 |
 | `internal/config/config.go` | DataMode 配置 |
 | `internal/storage/global.go` | 模式切换（内存/文件 SQLite） |
 | `.gitignore` | data/*.db* 忽略数据库文件 |
