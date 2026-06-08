@@ -21,7 +21,7 @@
 
 ```
 GET https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData
-  ?fields=f12,f14,f62,f184
+  ?fields=f12,f14,f3,f5,f6,f62,f66,f69,f72,f75,f184
   &pn={pageNo}
   &pz=500
   &fid=f62

@@ -1,6 +1,8 @@
 package web
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,6 +23,7 @@ import (
 	"github.com/a-share-flow-video-go/internal/clsnews"
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/copy"
+	"github.com/a-share-flow-video-go/internal/debate"
 	"github.com/a-share-flow-video-go/internal/fetcher"
 	"github.com/a-share-flow-video-go/internal/hotnews"
 	"github.com/a-share-flow-video-go/internal/logger"
@@ -46,6 +50,16 @@ type ExportTask struct {
 var exportTasks = make(map[string]*ExportTask)
 var exportMu sync.Mutex
 var exportHTTPClient = &http.Client{Timeout: 15 * time.Second}
+
+type debateMeta struct {
+	StockCode     string
+	StockName     string
+	ReportSummary string
+	TurnCount     int
+	Format        string
+}
+var debateTaskMeta = make(map[string]*debateMeta)
+var debateMetaMu sync.RWMutex
 
 func getTask(dateStr string) (*ExportTask, bool) {
 	exportMu.Lock()
@@ -83,7 +97,7 @@ func runExportTask(task *ExportTask) {
 	}
 
 	fetchPage := func(fs string, pn int) ([]storage.SectorAll, bool, error) {
-		url := fmt.Sprintf("https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData?fields=f12,f14,f3,f62,f66,f69,f72,f75,f184&pn=%d&pz=500&fid=f62&po=1&fs=%s&ut=b2884a393a59ad64002292a3e90d46a5", pn, fs)
+		url := fmt.Sprintf("https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData?fields=f12,f14,f3,f5,f6,f62,f66,f69,f72,f75,f184&pn=%d&pz=500&fid=f62&po=1&fs=%s&ut=b2884a393a59ad64002292a3e90d46a5", pn, fs)
 		req, err := http.NewRequest("GET", url, nil)
 		if err != nil {
 			return nil, false, err
@@ -121,6 +135,8 @@ func runExportTask(task *ExportTask) {
 				superRateFloat, _ := toFloat64(item["f69"])
 				bigNetFloat, _ := toFloat64(item["f72"])
 				bigRateFloat, _ := toFloat64(item["f75"])
+				volumeFloat, _ := toFloat64(item["f5"])
+				turnoverFloat, _ := toFloat64(item["f6"])
 				page = append(page, storage.SectorAll{
 					Date:      task.Date,
 					Code:      code,
@@ -132,6 +148,8 @@ func runExportTask(task *ExportTask) {
 					SuperRate: roundTo2(superRateFloat),
 					BigNet:    roundTo2(bigNetFloat / 1e8),
 					BigRate:   roundTo2(bigRateFloat),
+					Volume:    roundTo2(volumeFloat),
+					Turnover:  roundTo2(turnoverFloat / 1e8),
 				})
 			}
 		}
@@ -247,6 +265,19 @@ func SetupRouter(tickSched *tickscheduler.TickScheduler, newsSched *clsnews.News
 	r.PUT("/api/notes/:id", handleUpdateNote)
 	r.DELETE("/api/notes/:id", handleDeleteNote)
 
+	r.POST("/api/debate/generate", handleDebateGenerate)
+	r.POST("/api/debate/audio", handleDebateAudio)
+	r.POST("/api/debate/render", handleDebateRender)
+	r.GET("/api/debate/render-status/:task_id", handleDebateRenderStatus)
+	r.POST("/api/debate/render-cancel/:task_id", handleDebateRenderCancel)
+	r.GET("/api/debate/file/:task_id", handleDebateFile)
+	r.POST("/api/debate/fetch-report", handleDebateFetchReport)
+	r.POST("/api/debate/search-stock", handleDebateSearchStock)
+	r.GET("/api/debate/audio/:task_id/:turn_index", handleDebateAudioFile)
+	r.GET("/api/debate/history", handleDebateHistoryList)
+	r.GET("/api/debate/history/:task_id", handleDebateHistoryDetail)
+	r.DELETE("/api/debate/history/:task_id", handleDebateHistoryDelete)
+
 	r.POST("/api/generate-multiday", handleGenerateMultiDay)
 	r.GET("/api/config", handleGetConfig)
 	r.POST("/api/config", handleSaveConfig)
@@ -258,7 +289,7 @@ func SetupRouter(tickSched *tickscheduler.TickScheduler, newsSched *clsnews.News
 	})
 	r.POST("/api/tick/start", func(c *gin.Context) {
 		if err := tickSched.StartManual(); err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
+			logger.BadRequest(c, err.Error())
 			return
 		}
 		c.JSON(200, gin.H{"ok": true, "message": "tick 采集已启动"})
@@ -269,11 +300,11 @@ func SetupRouter(tickSched *tickscheduler.TickScheduler, newsSched *clsnews.News
 			Date string `json:"date"` // 可选，默认当天
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
+			logger.BadRequest(c, err.Error())
 			return
 		}
 		if body.Time == "" {
-			c.JSON(400, gin.H{"error": "缺少 time 参数"})
+			logger.BadRequest(c, "缺少 time 参数")
 			return
 		}
 		dateStr := body.Date
@@ -284,7 +315,7 @@ func SetupRouter(tickSched *tickscheduler.TickScheduler, newsSched *clsnews.News
 
 		db, err := storage.Get()
 		if err != nil {
-			c.JSON(500, gin.H{"error": "数据库初始化失败"})
+			logger.InternalError(c, "数据库初始化失败", err)
 			return
 		}
 		exists, _ := db.HasTickData(datetime)
@@ -295,7 +326,7 @@ func SetupRouter(tickSched *tickscheduler.TickScheduler, newsSched *clsnews.News
 
 		sectors, err := fetcher.FetchTop21HotSectors()
 		if err != nil {
-			c.JSON(502, gin.H{"error": fmt.Sprintf("东方财富 API 请求失败: %v", err)})
+			logger.ErrorResponse(c, 502, "东方财富 API 请求失败", err)
 			return
 		}
 
@@ -312,11 +343,13 @@ func SetupRouter(tickSched *tickscheduler.TickScheduler, newsSched *clsnews.News
 				SuperRate: s.SuperRate,
 				BigNet:    s.BigNet,
 				BigRate:   s.BigRate,
+				Volume:    s.Volume,
+				Turnover:  s.Turnover,
 				InputDate: inputDate,
 			})
 		}
 		if err := db.SaveSectors(records); err != nil {
-			c.JSON(500, gin.H{"error": fmt.Sprintf("保存失败: %v", err)})
+			logger.InternalError(c, "保存失败", err)
 			return
 		}
 
@@ -335,7 +368,7 @@ func SetupRouter(tickSched *tickscheduler.TickScheduler, newsSched *clsnews.News
 			Enabled bool `json:"enabled"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
+			logger.BadRequest(c, err.Error())
 			return
 		}
 		tickSched.SetEnabled(body.Enabled)
@@ -349,7 +382,7 @@ func SetupRouter(tickSched *tickscheduler.TickScheduler, newsSched *clsnews.News
 			IntervalMinutes int `json:"intervalMinutes"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
+			logger.BadRequest(c, err.Error())
 			return
 		}
 		tickSched.GetFetcher().SetIntervalMinutes(body.IntervalMinutes)
@@ -360,7 +393,7 @@ func SetupRouter(tickSched *tickscheduler.TickScheduler, newsSched *clsnews.News
 		session := c.DefaultQuery("session", "full")
 		points, err := tickfetcher.LoadTickCSV(dateStr, session)
 		if err != nil {
-			c.JSON(404, gin.H{"error": "no tick data"})
+			logger.NotFound(c, "no tick data")
 			return
 		}
 		c.JSON(200, gin.H{"date": dateStr, "session": session, "points": points})
@@ -396,6 +429,28 @@ func SetupRouter(tickSched *tickscheduler.TickScheduler, newsSched *clsnews.News
 	}
 
 	r.GET("/output/:date/:file", serveVideo)
+
+	debate.GlobalRenderManager.OnComplete = func(taskID string, probe *debate.ProbeResult) {
+		debateMetaMu.RLock()
+		meta, ok := debateTaskMeta[taskID]
+		debateMetaMu.RUnlock()
+		if !ok || meta == nil {
+			return
+		}
+		outputPath := filepath.Join(config.GetOutputDir(), "debate", taskID+".mp4")
+		history := storage.DebateHistory{
+			TaskID:        taskID,
+			StockCode:     meta.StockCode,
+			StockName:     meta.StockName,
+			ReportSummary: meta.ReportSummary,
+			TurnCount:     meta.TurnCount,
+			Format:        meta.Format,
+			VideoPath:     outputPath,
+		}
+		if db, err := storage.Get(); err == nil {
+			_ = db.SaveDebateHistory(history)
+		}
+	}
 
 	return r
 }
@@ -462,7 +517,7 @@ func handleExportStatus(c *gin.Context) {
 	exportMu.Unlock()
 
 	if !ok {
-		c.JSON(404, gin.H{"error": "任务不存在"})
+		logger.NotFound(c, "任务不存在")
 		return
 	}
 
@@ -486,7 +541,7 @@ func handleExportFile(c *gin.Context) {
 	exportMu.Unlock()
 
 	if !ok || task.Status != "done" {
-		c.JSON(404, gin.H{"error": "文件未就绪"})
+		logger.NotFound(c, "文件未就绪")
 		return
 	}
 
@@ -503,9 +558,9 @@ func handleExportHotSectors(c *gin.Context) {
 
 	sectors, err := fetcher.FetchTop21HotSectors()
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
+			logger.InternalError(c, "操作失败", err)
+			return
+		}
 
 	c.JSON(200, gin.H{
 		"date":    dateStr,
@@ -567,7 +622,7 @@ func handleSaveAllStatus(c *gin.Context) {
 
 	if !ok {
 		logger.Warn("全板块数据任务状态查询失败，任务不存在", zap.String("task_id", taskID))
-		c.JSON(404, gin.H{"error": "任务不存在"})
+		logger.NotFound(c, "任务不存在")
 		return
 	}
 
@@ -621,7 +676,7 @@ func runSaveAllTask(task *SaveAllTask) {
 			task.Progress = fmt.Sprintf("获取第%d页(%s)...", pn, item.category)
 			task.mu.Unlock()
 
-			url := fmt.Sprintf("https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData?fields=f12,f14,f3,f62,f66,f69,f72,f75,f184&pn=%d&pz=500&fid=f62&po=1&fs=%s&ut=b2884a39ad64002292a3e90d46a5", pn, item.fs)
+			url := fmt.Sprintf("https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData?fields=f12,f14,f3,f5,f6,f62,f66,f69,f72,f75,f184&pn=%d&pz=500&fid=f62&po=1&fs=%s&ut=b2884a39ad64002292a3e90d46a5", pn, item.fs)
 			req, err := http.NewRequest("GET", url, nil)
 			if err != nil {
 				task.mu.Lock()
@@ -686,6 +741,8 @@ func runSaveAllTask(task *SaveAllTask) {
 					superRateFloat, _ := toFloat64(d["f69"])
 					bigNetFloat, _ := toFloat64(d["f72"])
 					bigRateFloat, _ := toFloat64(d["f75"])
+					volumeFloat, _ := toFloat64(d["f5"])
+					turnoverFloat, _ := toFloat64(d["f6"])
 					allSectors = append(allSectors, storage.SectorAll{
 						Date:      task.Date,
 						Code:      code,
@@ -697,6 +754,8 @@ func runSaveAllTask(task *SaveAllTask) {
 						SuperRate: roundTo2(superRateFloat),
 						BigNet:    roundTo2(bigNetFloat / 1e8),
 						BigRate:   roundTo2(bigRateFloat),
+						Volume:    roundTo2(volumeFloat),
+						Turnover:  roundTo2(turnoverFloat / 1e8),
 						Category:  item.category,
 					})
 				}
@@ -765,15 +824,15 @@ func handleGetAllSectors(c *gin.Context) {
 
 	db, err := storage.Get()
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
+			logger.InternalError(c, "操作失败", err)
+			return
+		}
 
 	sectors, err := db.LoadSectorsAll(dateStr)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
+			logger.InternalError(c, "操作失败", err)
+			return
+		}
 
 	c.JSON(200, gin.H{
 		"date":    dateStr,
@@ -786,21 +845,21 @@ func handleGetSectorsAllRange(c *gin.Context) {
 	endDate := c.Query("end_date")
 
 	if startDate == "" || endDate == "" {
-		c.JSON(400, gin.H{"error": "缺少参数: start_date, end_date"})
+		logger.BadRequest(c, "缺少参数: start_date, end_date")
 		return
 	}
 
 	db, err := storage.Get()
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
+			logger.InternalError(c, "操作失败", err)
+			return
+		}
 
 	sectors, err := db.LoadSectorsAllRange(startDate, endDate)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
+			logger.InternalError(c, "操作失败", err)
+			return
+		}
 
 	c.JSON(200, gin.H{
 		"sectors": sectors,
@@ -810,15 +869,15 @@ func handleGetSectorsAllRange(c *gin.Context) {
 func handleGetSectorsAllNames(c *gin.Context) {
 	db, err := storage.Get()
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
+			logger.InternalError(c, "操作失败", err)
+			return
+		}
 
 	names, err := db.ListSectorsAllNames()
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
+			logger.InternalError(c, "操作失败", err)
+			return
+		}
 
 	c.JSON(200, gin.H{
 		"names": names,
@@ -828,15 +887,15 @@ func handleGetSectorsAllNames(c *gin.Context) {
 func handleGetSectorsAllDates(c *gin.Context) {
 	db, err := storage.Get()
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
+			logger.InternalError(c, "操作失败", err)
+			return
+		}
 
 	dates, err := db.ListSectorsAllDates()
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
+			logger.InternalError(c, "操作失败", err)
+			return
+		}
 
 	c.JSON(200, gin.H{
 		"dates": dates,
@@ -866,7 +925,7 @@ func handleGenerateMultiDay(c *gin.Context) {
 		CopyMode string `json:"copy_mode"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		logger.BadRequest(c, err.Error())
 		return
 	}
 	if body.Date == "" {
@@ -974,7 +1033,7 @@ func handleSaveConfig(c *gin.Context) {
 		Model   string `json:"model"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		logger.BadRequest(c, err.Error())
 		return
 	}
 	aiCfg := config.GetAIConfig()
@@ -988,7 +1047,7 @@ func handleSaveConfig(c *gin.Context) {
 		aiCfg.Model = body.Model
 	}
 	if err := config.SaveAIConfig(aiCfg); err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		logger.InternalError(c, "保存AI配置失败", err)
 		return
 	}
 	c.JSON(200, gin.H{"ok": true})
@@ -1000,25 +1059,25 @@ func handleOptimizeCopy(c *gin.Context) {
 		Session string `json:"session"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(400, gin.H{"error": "缺少参数 date 或 session"})
+		logger.BadRequest(c, "缺少参数 date 或 session")
 		return
 	}
 	if body.Date == "" || body.Session == "" {
-		c.JSON(400, gin.H{"error": "缺少参数 date 或 session"})
+		logger.BadRequest(c, "缺少参数 date 或 session")
 		return
 	}
 
 	sectors, err := fetcher.LoadSessionData(body.Date, body.Session)
 	if err != nil || len(sectors) == 0 {
-		c.JSON(400, gin.H{"error": fmt.Sprintf("%s 无%s板块数据", body.Date, config.SessionConfigs[body.Session].TitleSuffix)})
+		logger.BadRequest(c, fmt.Sprintf("%s 无%s板块数据", body.Date, config.SessionConfigs[body.Session].TitleSuffix))
 		return
 	}
 
 	aiText, err := copy.GenerateCopywritingAI(sectors, body.Date, body.Session)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
+			logger.InternalError(c, "操作失败", err)
+			return
+		}
 
 	if db, err := storage.Get(); err == nil {
 		_ = db.SaveCopywriting(storage.Copywriting{
@@ -1037,7 +1096,7 @@ func serveVideo(c *gin.Context) {
 	filename := c.Param("file")
 	p := filepath.Join(config.GetOutputDir(), dateStr, filename)
 	if _, err := os.Stat(p); err != nil {
-		c.JSON(404, gin.H{"error": "not found"})
+		logger.NotFound(c, "not found")
 		return
 	}
 	c.File(p)
@@ -1083,9 +1142,13 @@ func getDates() []string {
 		}
 	}
 
+	datePattern := regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+
 	var dates []string
 	for d := range seen {
-		dates = append(dates, d)
+		if datePattern.MatchString(d) {
+			dates = append(dates, d)
+		}
 	}
 	sort.Sort(sort.Reverse(sort.StringSlice(dates)))
 	return dates
@@ -1159,7 +1222,7 @@ func handleGenerateTick(c *gin.Context) {
 		Format   string `json:"format"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		logger.BadRequest(c, err.Error())
 		return
 	}
 	if body.Date == "" {
@@ -1306,7 +1369,7 @@ func tickPointsToSectors(points []tickfetcher.TickPoint) []fetcher.Sector {
 	}
 	var sectors []fetcher.Sector
 	for _, p := range latest {
-		sectors = append(sectors, fetcher.Sector{Name: p.Name, Net: p.Net, Rate: p.Rate})
+		sectors = append(sectors, fetcher.Sector{Name: p.Name, Net: p.Net, Rate: p.Rate, Volume: p.Volume, Turnover: p.Turnover})
 	}
 	return sectors
 }
@@ -1484,15 +1547,15 @@ func handleNewsList(c *gin.Context) {
 
 	db, err := storage.Get()
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
+			logger.InternalError(c, "操作失败", err)
+			return
+		}
 
 	records, err := db.LoadLatestNews(limit, offset)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
+			logger.InternalError(c, "操作失败", err)
+			return
+		}
 
 	total, err := db.GetCLSNewsCount()
 	if err != nil {
@@ -1514,7 +1577,7 @@ func handleNewsList(c *gin.Context) {
 func handleNewsSearch(c *gin.Context) {
 	keyword := c.Query("q")
 	if keyword == "" {
-		c.JSON(400, gin.H{"error": "缺少搜索关键词 q"})
+		logger.BadRequest(c, "缺少搜索关键词 q")
 		return
 	}
 
@@ -1528,15 +1591,15 @@ func handleNewsSearch(c *gin.Context) {
 
 	db, err := storage.Get()
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
+			logger.InternalError(c, "操作失败", err)
+			return
+		}
 
 	records, total, err := db.SearchCLSNews(keyword, limit, offset)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
+			logger.InternalError(c, "操作失败", err)
+			return
+		}
 
 	if records == nil {
 		records = []storage.CLSNewsRecord{}
@@ -1567,15 +1630,15 @@ func handleNewsByDate(c *gin.Context) {
 
 	db, err := storage.Get()
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
+			logger.InternalError(c, "操作失败", err)
+			return
+		}
 
 	records, total, err := db.LoadNewsByDate(dateStr, limit, offset)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
+			logger.InternalError(c, "操作失败", err)
+			return
+		}
 
 	if records == nil {
 		records = []storage.CLSNewsRecord{}
@@ -1593,15 +1656,15 @@ func handleNewsByDate(c *gin.Context) {
 func handleListNotes(c *gin.Context) {
 	db, err := storage.Get()
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
+			logger.InternalError(c, "操作失败", err)
+			return
+		}
 
 	notes, err := db.ListNotes()
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
+			logger.InternalError(c, "操作失败", err)
+			return
+		}
 	if notes == nil {
 		notes = []storage.Note{}
 	}
@@ -1615,11 +1678,11 @@ func handleCreateNote(c *gin.Context) {
 		Content string `json:"content"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		logger.BadRequest(c, err.Error())
 		return
 	}
 	if body.Content == "" {
-		c.JSON(400, gin.H{"error": "内容不能为空"})
+		logger.BadRequest(c, "内容不能为空")
 		return
 	}
 	if body.Type != "completed" && body.Type != "planned" {
@@ -1628,15 +1691,15 @@ func handleCreateNote(c *gin.Context) {
 
 	db, err := storage.Get()
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
+			logger.InternalError(c, "操作失败", err)
+			return
+		}
 
 	id, err := db.SaveNote(storage.Note{Type: body.Type, Content: body.Content})
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
+			logger.InternalError(c, "操作失败", err)
+			return
+		}
 
 	c.JSON(200, gin.H{"ok": true, "id": id})
 }
@@ -1645,7 +1708,7 @@ func handleUpdateNote(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		c.JSON(400, gin.H{"error": "无效的 id"})
+		logger.BadRequest(c, "无效的 id")
 		return
 	}
 
@@ -1654,11 +1717,11 @@ func handleUpdateNote(c *gin.Context) {
 		Content string `json:"content"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		logger.BadRequest(c, err.Error())
 		return
 	}
 	if body.Content == "" {
-		c.JSON(400, gin.H{"error": "内容不能为空"})
+		logger.BadRequest(c, "内容不能为空")
 		return
 	}
 	if body.Type != "completed" && body.Type != "planned" {
@@ -1667,12 +1730,12 @@ func handleUpdateNote(c *gin.Context) {
 
 	db, err := storage.Get()
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
+			logger.InternalError(c, "操作失败", err)
+			return
+		}
 
 	if err := db.UpdateNote(id, body.Type, body.Content); err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		logger.InternalError(c, "更新笔记失败", err)
 		return
 	}
 
@@ -1683,22 +1746,290 @@ func handleDeleteNote(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		c.JSON(400, gin.H{"error": "无效的 id"})
+		logger.BadRequest(c, "无效的 id")
 		return
 	}
 
 	db, err := storage.Get()
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
+			logger.InternalError(c, "操作失败", err)
+			return
+		}
 
 	if err := db.DeleteNote(id); err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		logger.InternalError(c, "删除笔记失败", err)
 		return
 	}
 
 	c.JSON(200, gin.H{"ok": true})
+}
+
+func handleDebateGenerate(c *gin.Context) {
+	var body struct {
+		Report           string         `json:"report"`
+		StructuredReport map[string]any `json:"structuredReport,omitempty"`
+		StockCode        string         `json:"stockCode,omitempty"`
+		StockName        string         `json:"stockName,omitempty"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		logger.BadRequest(c, "请求体需为 JSON 且含 report 字段")
+		return
+	}
+	aiCfg := config.GetAIConfig()
+	if aiCfg.APIKey == "" {
+		logger.BadRequest(c, "未配置 AI API Key，请先在 AI 配置页填写")
+		return
+	}
+
+	script, err := debate.GenerateScript(body.Report, aiCfg, body.StructuredReport)
+	if err != nil {
+		logger.InternalError(c, "LLM 编排失败", err)
+		return
+	}
+
+	taskID := newDebateTaskID()
+
+	summary := body.Report
+	if len([]rune(summary)) > 200 {
+		summary = string([]rune(summary)[:200])
+	}
+
+	debateMetaMu.Lock()
+	debateTaskMeta[taskID] = &debateMeta{
+		StockCode:     body.StockCode,
+		StockName:     body.StockName,
+		ReportSummary: summary,
+		TurnCount:     len(script.Turns),
+	}
+	debateMetaMu.Unlock()
+
+	c.JSON(200, gin.H{
+		"taskId": taskID,
+		"script": script,
+	})
+}
+
+func handleDebateAudio(c *gin.Context) {
+	var body struct {
+		TaskID string         `json:"taskId"`
+		Script debate.Script  `json:"script"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		logger.BadRequest(c, "请求体需为 JSON 且含 taskId/script 字段")
+		return
+	}
+	if body.TaskID == "" {
+		logger.BadRequest(c, "taskID 不能为空")
+		return
+	}
+
+	audioTurns, err := debate.GenerateAudio(body.TaskID, body.Script)
+	if err != nil {
+		logger.InternalError(c, "TTS 合成失败", err)
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"taskId":     body.TaskID,
+		"audioTurns": audioTurns,
+	})
+}
+
+func handleDebateRender(c *gin.Context) {
+	var body struct {
+		TaskID     string              `json:"taskId"`
+		Script     debate.Script       `json:"script"`
+		AudioTurns []debate.AudioTurn  `json:"audioTurns"`
+		Format     string              `json:"format"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		logger.BadRequest(c, "请求体需为 JSON 且含 taskId/script/audioTurns 字段")
+		return
+	}
+	if body.TaskID == "" {
+		logger.BadRequest(c, "taskID 不能为空")
+		return
+	}
+	if body.Format == "" {
+		body.Format = "mobile"
+	}
+
+	debateMetaMu.Lock()
+	if meta, ok := debateTaskMeta[body.TaskID]; ok {
+		meta.Format = body.Format
+	}
+	debateMetaMu.Unlock()
+
+	debate.GlobalRenderManager.Start(body.TaskID, body.Script, body.AudioTurns, body.Format)
+
+	c.JSON(200, gin.H{
+		"taskId": body.TaskID,
+		"status": "pending",
+	})
+}
+
+func handleDebateRenderStatus(c *gin.Context) {
+	taskID := c.Param("task_id")
+	task := debate.GlobalRenderManager.GetStatus(taskID)
+	if task == nil {
+		logger.NotFound(c, "渲染任务不存在")
+		return
+	}
+	resp := gin.H{
+		"taskId":   task.ID,
+		"status":   task.Status,
+		"progress": task.Progress,
+	}
+	if task.Status == "done" {
+		resp["videoUrl"] = "/api/debate/file/" + task.ID
+		resp["path"] = task.OutputPath
+	}
+	if task.Probe != nil {
+		resp["probe"] = task.Probe
+	}
+	if task.Err != "" {
+		resp["error"] = task.Err
+	}
+	c.JSON(200, resp)
+}
+
+func handleDebateRenderCancel(c *gin.Context) {
+	taskID := c.Param("task_id")
+	if err := debate.GlobalRenderManager.Cancel(taskID); err != nil {
+		logger.BadRequest(c, err.Error())
+		return
+	}
+	c.JSON(200, gin.H{"status": "cancelled"})
+}
+
+func handleDebateFile(c *gin.Context) {
+	taskID := c.Param("task_id")
+	if taskID == "" {
+		logger.BadRequest(c, "task_id 不能为空")
+		return
+	}
+	p := filepath.Join(config.GetOutputDir(), "debate", taskID+".mp4")
+	if _, err := os.Stat(p); err != nil {
+		logger.NotFound(c, "视频文件不存在，可能还在渲染")
+		return
+	}
+	c.File(p)
+}
+
+func handleDebateFetchReport(c *gin.Context) {
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		logger.BadRequest(c, "请求体需为 JSON 且含 code 字段")
+		return
+	}
+	if body.Code == "" {
+		logger.BadRequest(c, "股票代码不能为空")
+		return
+	}
+
+	report, err := fetcher.FetchFinanceReport(body.Code)
+	if err != nil {
+		logger.InternalError(c, "获取财报数据失败", err)
+		return
+	}
+
+	text := fetcher.FormatFinanceReport(report)
+
+	c.JSON(200, gin.H{
+		"report": report,
+		"text":   text,
+	})
+}
+
+func handleDebateSearchStock(c *gin.Context) {
+	var body struct {
+		Keyword string `json:"keyword"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Keyword == "" {
+		logger.BadRequest(c, "请提供搜索关键词")
+		return
+	}
+
+	stocks, err := fetcher.SearchStock(body.Keyword)
+	if err != nil {
+		logger.InternalError(c, "搜索失败", err)
+		return
+	}
+
+	c.JSON(200, gin.H{"stocks": stocks})
+}
+
+func handleDebateAudioFile(c *gin.Context) {
+	taskID := c.Param("task_id")
+	turnIdx := c.Param("turn_index")
+	if taskID == "" || turnIdx == "" {
+		logger.BadRequest(c, "task_id 和 turn_index 不能为空")
+		return
+	}
+	p := filepath.Join(config.GetRendererDir(), "public", "debate", taskID, fmt.Sprintf("turn_%s.mp3", turnIdx))
+	if _, err := os.Stat(p); err != nil {
+		logger.NotFound(c, "音频文件不存在")
+		return
+	}
+	c.File(p)
+}
+
+func handleDebateHistoryList(c *gin.Context) {
+	db, err := storage.Get()
+	if err != nil {
+		logger.InternalError(c, "数据库连接失败", err)
+		return
+	}
+	history, err := db.ListDebateHistory(100, 0)
+	if err != nil {
+		logger.InternalError(c, "查询历史失败", err)
+		return
+	}
+	if history == nil {
+		history = []storage.DebateHistory{}
+	}
+	c.JSON(200, gin.H{"history": history})
+}
+
+func handleDebateHistoryDetail(c *gin.Context) {
+	taskID := c.Param("task_id")
+	db, err := storage.Get()
+	if err != nil {
+		logger.InternalError(c, "数据库连接失败", err)
+		return
+	}
+	h, err := db.GetDebateHistory(taskID)
+	if err != nil {
+		logger.InternalError(c, "查询失败", err)
+		return
+	}
+	if h == nil {
+		logger.NotFound(c, "记录不存在")
+		return
+	}
+	c.JSON(200, gin.H{"entry": h})
+}
+
+func handleDebateHistoryDelete(c *gin.Context) {
+	taskID := c.Param("task_id")
+	db, err := storage.Get()
+	if err != nil {
+		logger.InternalError(c, "数据库连接失败", err)
+		return
+	}
+	if err := db.DeleteDebateHistory(taskID); err != nil {
+		logger.InternalError(c, "删除失败", err)
+		return
+	}
+	c.JSON(200, gin.H{"status": "deleted"})
+}
+
+func newDebateTaskID() string {
+	b := make([]byte, 6)
+	_, _ = rand.Read(b)
+	return "d_" + time.Now().Format("20060102_150405") + "_" + hex.EncodeToString(b)
 }
 
 func corsMiddleware() gin.HandlerFunc {
