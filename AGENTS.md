@@ -49,7 +49,7 @@ Go backend + React/Remotion frontend. Data flows: 东方财富 API → Go fetche
 | `internal/web/` | HTTP handlers + SSE streaming |
 | `internal/config/` | Central config: FPS=30, TotalFrames=900, resolutions, .env loading |
 | `internal/storage/` | SQLite persistence: sectors (datetime+name PK) + copywriting tables |
-| `internal/logger/` | zap structured logging: colored terminal, request tracing, panic recovery |
+| `internal/logger/` | zap structured logging: env-var config, colored console/JSON dual output, Gin request logging, panic recovery |
 | `internal/tickfetcher/` | Tick collector with observer pattern (Subscribe/GetSnapshot/broadcast) |
 | `internal/tickrenderer/` | Tick video rendering based on real tick data curves |
 | `internal/tickscheduler/` | Tick auto-start scheduler: 09:28 morning / 12:58 full |
@@ -125,6 +125,72 @@ Hardcoded in `fetcher.go`: 半导体, AI应用, CPO概念, 有色金属, 锂矿�
 - Output: `output/YYYY-MM-DD/全天.mp4` (mobile), `全天_tv.mp4` (TV)
 - Copywriting: `copy/YYYY-MM-DD/文案_全天.txt`, `文案_ai_全天.txt`
 - `.env` is loaded by Go config, not by shell — contains `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `AI_MODEL`
+
+## Logging Conventions
+
+### Initialization
+
+Use `logger.InitFromEnv()` at startup (reads from env vars). Do NOT hardcode `logger.Init(...)`:
+
+```go
+import "github.com/a-share-flow-video-go/internal/logger"
+
+func main() {
+    if err := logger.InitFromEnv(); err != nil {
+        panic(err)
+    }
+    defer logger.Sync()
+}
+```
+
+### Available Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
+| `LOG_FORMAT` | `console` | `console` (colored terminal) / `json` (production) |
+| `LOG_OUTPUT` | `stdout` | `stdout` / file path |
+
+### Structured Fields
+
+Always use `zap.Field` for context — never string concatenation in the message:
+
+```go
+// ✅ Correct: structured fields
+logger.Info("处理日期", zap.String("date", dateStr), zap.Int("count", len(sectors)))
+
+// ❌ Wrong: string concatenation
+logger.Info("处理日期: " + dateStr)
+
+// ❌ Wrong: fmt.Sprintf in zap.Field value
+zap.String("net", fmt.Sprintf("%+.1f亿", v))  // use zap.Float64("net", v) instead
+```
+
+### Context-Peristent Logger
+
+Use `logger.With()` to attach request/module-scoped fields:
+
+```go
+l := logger.With(zap.String("date", dateStr), zap.String("session", "morning"))
+l.Info("加载数据", zap.Int("sectors", len(sectors)))
+// date and session are automatically included in all subsequent logs via l
+```
+
+### HTTP Request Logging
+
+The `RequestLoggerMiddleware` produces structured logs at varying levels:
+- Success (<400): `Debug` level
+- Client error (4xx): `Warn` level
+- Server error (5xx): `Error` level
+
+Fields: `status`, `method`, `path`, `api` (Chinese description), `latency`, `ip`, `user_agent`
+
+### What NOT to Do
+
+- No decorative banners in logs (`===`, `---`, `sep70`)
+- No emoji in log messages
+- No `fmt.Sprintf(...)` inside `logger.Info/Warn/Error` calls — use structured fields
+- CLI `fmt.Println` is acceptable for user-facing tables (e.g., `printSectorsTable`), keep it separate from structured logging
 
 ## Testing Quirks
 

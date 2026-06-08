@@ -7,13 +7,13 @@ import (
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/logger"
 	"github.com/a-share-flow-video-go/internal/storage"
-	"github.com/a-share-flow-video-go/internal/tickscheduler"
+	"github.com/a-share-flow-video-go/internal/tick"
 	"github.com/a-share-flow-video-go/internal/web"
 	"go.uber.org/zap"
 )
 
 func main() {
-	if err := logger.Init("info", "console", "stdout"); err != nil {
+	if err := logger.InitFromEnv(); err != nil {
 		panic(err)
 	}
 	defer logger.Sync()
@@ -26,7 +26,7 @@ func main() {
 		logger.Fatal("SQLite 初始化失败", zap.Error(err))
 	}
 
-	tickSched := tickscheduler.New()
+	tickSched := tick.NewScheduler()
 	tickSched.Start()
 	defer tickSched.Shutdown()
 

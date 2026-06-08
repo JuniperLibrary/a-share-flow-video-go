@@ -1,32 +1,22 @@
-package tickscheduler
+package tick
 
 import (
 	"fmt"
 	"sync"
 	"time"
-
-	"github.com/a-share-flow-video-go/internal/tickfetcher"
 )
-
-var shanghaiTZ = func() *time.Location {
-	loc, err := time.LoadLocation("Asia/Shanghai")
-	if err != nil {
-		return time.FixedZone("CST", 8*60*60)
-	}
-	return loc
-}()
 
 type TickScheduler struct {
 	mu      sync.Mutex
 	enabled bool
-	fetcher *tickfetcher.TickFetcher
+	fetcher *TickFetcher
 	stopCh  chan struct{}
 	running bool
 }
 
-func New() *TickScheduler {
+func NewScheduler() *TickScheduler {
 	s := &TickScheduler{
-		fetcher: tickfetcher.New(),
+		fetcher: NewFetcher(),
 		stopCh:  make(chan struct{}),
 	}
 	return s
@@ -159,6 +149,6 @@ func (s *TickScheduler) SetEnabled(on bool) {
 	s.mu.Unlock()
 }
 
-func (s *TickScheduler) GetFetcher() *tickfetcher.TickFetcher {
+func (s *TickScheduler) GetFetcher() *TickFetcher {
 	return s.fetcher
 }

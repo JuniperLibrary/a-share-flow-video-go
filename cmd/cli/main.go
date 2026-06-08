@@ -16,18 +16,14 @@ import (
 	"github.com/a-share-flow-video-go/internal/logger"
 	"github.com/a-share-flow-video-go/internal/renderer"
 	"github.com/a-share-flow-video-go/internal/storage"
-	"github.com/a-share-flow-video-go/internal/tickfetcher"
-	"github.com/a-share-flow-video-go/internal/tickrenderer"
+	"github.com/a-share-flow-video-go/internal/tick"
 	"go.uber.org/zap"
 )
-
-var sep70 = strings.Repeat("=", 70)
-var sep65 = strings.Repeat("-", 65)
 
 // CLI 入口：命令行视频生成器。
 // 支持参数：--ai(AI文案模式) --session=morning/full YYYY-MM-DD(指定日期)
 func main() {
-	if err := logger.Init("info", "console", "stdout"); err != nil {
+	if err := logger.InitFromEnv(); err != nil {
 		panic(err)
 	}
 	defer logger.Sync()
@@ -75,17 +71,18 @@ func main() {
 		if len(dates) == 0 {
 			dates = []string{time.Now().Format("2006-01-02")}
 		}
-		logger.Info("=== Tick 资金流动视频生成 ===")
-		logger.Info("将处理日期", zap.Int("count", len(dates)), zap.String("dates", strings.Join(dates, ", ")))
+		logger.Info("Tick 视频生成",
+			zap.String("mode", "tick"),
+			zap.Int("count", len(dates)),
+			zap.String("dates", strings.Join(dates, ", ")),
+		)
 		successCount := 0
 		for _, dateStr := range dates {
 			if processTickDate(dateStr, session, useAI, format) {
 				successCount++
 			}
 		}
-		logger.Info(sep70)
 		logger.Info("Tick 视频生成完成", zap.Int("success", successCount), zap.Int("total", len(dates)))
-		logger.Info(sep70)
 		return
 	}
 
@@ -93,16 +90,20 @@ func main() {
 		dates = []string{time.Now().Format("2006-01-02")}
 	}
 
-	mode := "模板"
+	mode := "template"
 	if useAI {
-		mode = "AI"
+		mode = "ai"
 	}
-	sessLabel := "自动检测"
+	sessLabel := "auto"
 	if session != "" {
 		sessLabel = config.SessionConfigs[session].TitleSuffix
 	}
-	logger.Info("=== 板块资金流向视频生成 ===", zap.String("session", mode+"模式, "+sessLabel))
-	logger.Info("将处理日期", zap.Int("count", len(dates)), zap.String("dates", strings.Join(dates, ", ")))
+	logger.Info("板块资金流向视频生成",
+		zap.String("mode", mode),
+		zap.String("session", sessLabel),
+		zap.Int("count", len(dates)),
+		zap.String("dates", strings.Join(dates, ", ")),
+	)
 
 	successCount := 0
 	for _, dateStr := range dates {
@@ -111,21 +112,20 @@ func main() {
 		}
 	}
 
-	logger.Info(sep70)
-	logger.Info("完成", zap.Int("success", successCount), zap.Int("total", len(dates)))
-	logger.Info("输出目录: output/YYYY-MM-DD/")
-	logger.Info("数据目录: data/YYYY-MM-DD/")
-	logger.Info(sep70)
+	logger.Info("处理完成",
+		zap.Int("success", successCount),
+		zap.Int("total", len(dates)),
+		zap.String("output", "output/YYYY-MM-DD/"),
+		zap.String("data", "data/YYYY-MM-DD/"),
+	)
 }
 
 func processDate(dateStr string, useAI bool, sessionOverride string, collectOnly bool) bool {
 	l := logger.With(zap.String("date", dateStr))
-	l.Info(sep70)
-	l.Info("处理日期: " + dateStr)
-	l.Info(sep70)
+	l.Info("处理日期")
 
 	if _, err := time.Parse("2006-01-02", dateStr); err != nil {
-		l.Error("无效日期格式，请使用 YYYY-MM-DD 格式", zap.String("date", dateStr))
+		l.Error("无效日期格式", zap.String("date", dateStr), zap.String("expected", "YYYY-MM-DD"))
 		return false
 	}
 
@@ -159,7 +159,7 @@ func processDate(dateStr string, useAI bool, sessionOverride string, collectOnly
 	for _, session := range sessions {
 		sessCfg := config.SessionConfigs[session]
 		sl := l.With(zap.String("session", sessCfg.TitleSuffix))
-		sl.Info("--- 生成 " + sessCfg.TitleSuffix + " 视频 ---")
+		sl.Info("生成视频")
 
 		var sectors []fetcher.Sector
 		var err error
@@ -183,7 +183,9 @@ func processDate(dateStr string, useAI bool, sessionOverride string, collectOnly
 			sectors, err = fetcher.FetchHistoricalSectors(dateStr)
 			if err != nil || len(sectors) == 0 {
 				sl.Error("历史数据获取失败", zap.String("date", dateStr), zap.Error(err))
-				sl.Warn("请检查网络连接，或手动保存数据到 data/" + dateStr + "/sectors.csv")
+				sl.Warn("历史数据获取失败，请检查网络或手动保存数据",
+				zap.String("hint", "data/"+dateStr+"/sectors.csv"),
+			)
 				continue
 			}
 			fetcher.SaveDailyData(sectors, dateStr)
@@ -226,7 +228,7 @@ func generateSession(sectors []fetcher.Sector, dateStr, dateDir string, useAI bo
 		var err error
 		copywriteText, err = copy.GenerateCopywritingAI(sectors, dateStr, session)
 		if err != nil {
-			l.Warn("AI文案生成失败，降级模板模式", zap.String("session", sessCfg.TitleSuffix), zap.Error(err))
+			l.Warn("AI文案生成失败，降级模板模式", zap.Error(err))
 			copywriteText = copy.GenerateCopywriting(sectors, dateStr, session)
 		}
 	} else {
@@ -234,7 +236,7 @@ func generateSession(sectors []fetcher.Sector, dateStr, dateDir string, useAI bo
 	}
 
 	if _, err := renderer.RenderVideo(sectors, dateStr, outPath, events, timeline, ticker, "tv", session, copywriteText); err != nil {
-		l.Error("Remotion 渲染失败", zap.String("session", sessCfg.TitleSuffix), zap.Error(err))
+		l.Error("Remotion 渲染失败", zap.Error(err))
 	} else {
 		l.Info("视频已保存", zap.String("output", outPath))
 	}
@@ -254,17 +256,15 @@ func generateSession(sectors []fetcher.Sector, dateStr, dateDir string, useAI bo
 			Content: copywriteText,
 		})
 	}
-	l.Info("文案已保存", zap.String("session", sessCfg.TitleSuffix))
+	l.Info("文案已保存")
 }
 
 func processTickDate(dateStr string, sessionOverride string, useAI bool, format string) bool {
 	l := logger.With(zap.String("date", dateStr))
-	l.Info(sep70)
-	l.Info("处理 Tick 视频: " + dateStr)
-	l.Info(sep70)
+	l.Info("处理 Tick 视频")
 
 	if _, err := time.Parse("2006-01-02", dateStr); err != nil {
-		l.Error("无效日期格式，请使用 YYYY-MM-DD 格式", zap.String("date", dateStr))
+		l.Error("无效日期格式", zap.String("expected", "YYYY-MM-DD"))
 		return false
 	}
 
@@ -288,10 +288,10 @@ func processTickDate(dateStr string, sessionOverride string, useAI bool, format 
 	for _, sess := range sessions {
 		sessCfg := config.SessionConfigs[sess]
 		sl := l.With(zap.String("session", sessCfg.TitleSuffix))
-		sl.Info("--- 生成 Tick " + sessCfg.TitleSuffix + " 视频 ---")
+		sl.Info("生成 Tick 视频")
 
 		// 加载 tick 数据用于文案生成
-		points, err := tickfetcher.LoadTickCSV(dateStr, sess)
+		points, err := tick.LoadTickCSV(dateStr, sess)
 		if err != nil || len(points) == 0 {
 			sl.Warn("无 tick 数据，跳过")
 			continue
@@ -303,7 +303,7 @@ func processTickDate(dateStr string, sessionOverride string, useAI bool, format 
 		if useAI {
 			text, aiErr := copy.GenerateCopywritingAI(sectors, dateStr, sess)
 			if aiErr != nil {
-				sl.Warn("AI文案生成失败，降级模板模式", zap.String("session", sessCfg.TitleSuffix), zap.Error(aiErr))
+				sl.Warn("AI文案生成失败，降级模板模式", zap.Error(aiErr))
 				copywriteText = copy.GenerateCopywriting(sectors, dateStr, sess)
 			} else {
 				copywriteText = text
@@ -335,9 +335,9 @@ func processTickDate(dateStr string, sessionOverride string, useAI bool, format 
 
 		if renderMobile {
 			outPathMobile := filepath.Join(outputDir, dateStr, fmt.Sprintf("%s_tick_mobile.mp4", sessCfg.FilenameSuffix))
-			outMobile, rErr := tickrenderer.RenderTickVideo(dateStr, outPathMobile, "mobile", sess, nil, nil, nil, copywriteText, newsPagesMobile)
+			outMobile, rErr := tick.RenderTickVideo(dateStr, outPathMobile, "mobile", sess, nil, nil, nil, copywriteText, newsPagesMobile)
 			if rErr != nil {
-				sl.Error("Tick Mobile Remotion 渲染失败", zap.String("session", sessCfg.TitleSuffix), zap.Error(rErr))
+				sl.Error("Tick Mobile Remotion 渲染失败", zap.Error(rErr))
 			} else {
 				sl.Info("Tick Mobile 视频已保存", zap.String("output", outMobile))
 				success = true
@@ -346,9 +346,9 @@ func processTickDate(dateStr string, sessionOverride string, useAI bool, format 
 
 		if renderTV {
 			outPathTV := filepath.Join(outputDir, dateStr, fmt.Sprintf("%s_tick.mp4", sessCfg.FilenameSuffix))
-			outTV, rErr := tickrenderer.RenderTickVideo(dateStr, outPathTV, "tv", sess, nil, nil, nil, copywriteText, newsPagesTV)
+			outTV, rErr := tick.RenderTickVideo(dateStr, outPathTV, "tv", sess, nil, nil, nil, copywriteText, newsPagesTV)
 			if rErr != nil {
-				sl.Error("Tick TV Remotion 渲染失败", zap.String("session", sessCfg.TitleSuffix), zap.Error(rErr))
+				sl.Error("Tick TV Remotion 渲染失败", zap.Error(rErr))
 			} else {
 				sl.Info("Tick TV 视频已保存", zap.String("output", outTV))
 				success = true
@@ -367,7 +367,7 @@ func processTickDate(dateStr string, sessionOverride string, useAI bool, format 
 				Content: copywriteText,
 			})
 		}
-		sl.Info("文案已保存", zap.String("session", sessCfg.TitleSuffix+" (tick)"))
+		sl.Info("文案已保存", zap.String("type", "tick"))
 	}
 
 	if config.DataMode() == "json" {
@@ -378,8 +378,8 @@ func processTickDate(dateStr string, sessionOverride string, useAI bool, format 
 	return success
 }
 
-func snapshotToSectors(points []tickfetcher.TickPoint) []fetcher.Sector {
-	latest := make(map[string]tickfetcher.TickPoint)
+func snapshotToSectors(points []tick.TickPoint) []fetcher.Sector {
+	latest := make(map[string]tick.TickPoint)
 	for _, p := range points {
 		latest[p.Name] = p
 	}
@@ -391,9 +391,11 @@ func snapshotToSectors(points []tickfetcher.TickPoint) []fetcher.Sector {
 }
 
 func printSectorsTable(sectors []fetcher.Sector) {
+	sep := strings.Repeat("-", 65)
+	end := strings.Repeat("=", 70)
 	fmt.Println()
 	fmt.Printf("%-12s | %14s | %s\n", "板块", "主力资金净流入(亿)", "趋势")
-	fmt.Println(sep65)
+	fmt.Println(sep)
 	for _, info := range sectors {
 		trend := "↓ 净流出"
 		if info.Net > 0 {
@@ -401,22 +403,20 @@ func printSectorsTable(sectors []fetcher.Sector) {
 		}
 		fmt.Printf("%-12s | %14.2f | %s\n", info.Name, info.Net, trend)
 	}
-	fmt.Println(sep70)
+	fmt.Println(end)
 	fmt.Println()
 }
 
 func generateMultiDayVideo(endDate string, days int, useAI bool) {
-	l := logger.Get()
-	l.Info(sep70)
-	l.Info("=== 近N日板块资金流向 Bar Chart Race 视频生成 ===", zap.Int("days", days), zap.String("date", endDate))
-	l.Info(sep70)
+	l := logger.With(zap.String("date", endDate), zap.Int("days", days))
+	l.Info("Bar Chart Race 视频生成")
 
 	tradingDays, err := fetcher.GetTradingDays(endDate, days)
 	if err != nil {
 		l.Error("无法获取交易日", zap.Error(err))
 		return
 	}
-	l.Info("交易日", zap.String("days", strings.Join(tradingDays, ", ")))
+	l.Info("交易日", zap.Strings("days", tradingDays))
 
 	dayData, err := fetcher.LoadMultiDaySectors(tradingDays)
 	if err != nil {
@@ -427,7 +427,7 @@ func generateMultiDayVideo(endDate string, days int, useAI bool) {
 	l.Info("成功加载数据", zap.Int("days", len(dayData)))
 	for _, d := range tradingDays {
 		if sectors, ok := dayData[d]; ok {
-			l.Info("  "+d, zap.Int("sectors", len(sectors)))
+			l.Info("日期数据", zap.String("date", d), zap.Int("sectors", len(sectors)))
 		}
 	}
 
@@ -460,8 +460,7 @@ func generateMultiDayVideo(endDate string, days int, useAI bool) {
 		l.Info("视频已保存", zap.String("output", outPath))
 	}
 
-	l.Info(sep70)
-	l.Info("完成！Bar Chart Race 视频已生成")
-	l.Info("输出目录: output/" + dateLabel + "/")
-	l.Info(sep70)
+	l.Info("Bar Chart Race 视频生成完成",
+		zap.String("output", "output/"+dateLabel+"/"),
+	)
 }

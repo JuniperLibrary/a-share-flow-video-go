@@ -29,9 +29,7 @@ import (
 	"github.com/a-share-flow-video-go/internal/logger"
 	"github.com/a-share-flow-video-go/internal/renderer"
 	"github.com/a-share-flow-video-go/internal/storage"
-	"github.com/a-share-flow-video-go/internal/tickfetcher"
-	"github.com/a-share-flow-video-go/internal/tickrenderer"
-	"github.com/a-share-flow-video-go/internal/tickscheduler"
+	"github.com/a-share-flow-video-go/internal/tick"
 	"go.uber.org/zap"
 )
 
@@ -238,7 +236,7 @@ func jsonStr(s string) string {
 }
 
 // SetupRouter 注册所有 HTTP 路由。
-func SetupRouter(tickSched *tickscheduler.TickScheduler, newsSched *clsnews.NewsScheduler) *gin.Engine {
+func SetupRouter(tickSched *tick.TickScheduler, newsSched *clsnews.NewsScheduler) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(logger.RecoveryMiddleware())
@@ -391,7 +389,7 @@ func SetupRouter(tickSched *tickscheduler.TickScheduler, newsSched *clsnews.News
 	r.GET("/api/tick-data/:date", func(c *gin.Context) {
 		dateStr := c.Param("date")
 		session := c.DefaultQuery("session", "full")
-		points, err := tickfetcher.LoadTickCSV(dateStr, session)
+		points, err := tick.LoadTickCSV(dateStr, session)
 		if err != nil {
 			logger.NotFound(c, "no tick data")
 			return
@@ -1249,7 +1247,7 @@ func handleGenerateTick(c *gin.Context) {
 	sessCfg := config.SessionConfigs[body.Session]
 
 	// 预览 tick 数据量
-	if pts, err := tickfetcher.LoadTickCSV(body.Date, body.Session); err == nil {
+	if pts, err := tick.LoadTickCSV(body.Date, body.Session); err == nil {
 		timeSet := make(map[string]bool)
 		sectorSet := make(map[string]bool)
 		for _, p := range pts {
@@ -1262,7 +1260,7 @@ func handleGenerateTick(c *gin.Context) {
 	}
 
 	// 在渲染前生成文案，用于 TTS 语音合成
-	points, pErr := tickfetcher.LoadTickCSV(body.Date, body.Session)
+	points, pErr := tick.LoadTickCSV(body.Date, body.Session)
 	var copywriteText string
 	cwType := "template_tick"
 	if pErr != nil || len(points) == 0 {
@@ -1314,7 +1312,7 @@ func handleGenerateTick(c *gin.Context) {
 		sse.Send("log", "🎬 开始渲染 Tick 曲线视频 (Mobile 9:16)...")
 		sse.Send("progress", "渲染 Mobile 版本...")
 
-		outMobile, rErr := tickrenderer.RenderTickVideo(body.Date, outPathMobile, "mobile", body.Session, nil, nil, nil, copywriteText, newsPagesMobile)
+		outMobile, rErr := tick.RenderTickVideo(body.Date, outPathMobile, "mobile", body.Session, nil, nil, nil, copywriteText, newsPagesMobile)
 		if rErr != nil {
 			sse.Send("log", fmt.Sprintf("⚠️ Mobile 渲染失败: %v", rErr))
 		} else {
@@ -1331,7 +1329,7 @@ func handleGenerateTick(c *gin.Context) {
 		sse.Send("log", "🎬 开始渲染 Tick 曲线视频 (TV 16:9)...")
 		sse.Send("progress", "渲染 TV 版本...")
 
-		outTV, rErr := tickrenderer.RenderTickVideo(body.Date, outPathTV, "tv", body.Session, nil, nil, nil, copywriteText, newsPagesTV)
+		outTV, rErr := tick.RenderTickVideo(body.Date, outPathTV, "tv", body.Session, nil, nil, nil, copywriteText, newsPagesTV)
 		if rErr != nil {
 			sse.Send("error", fmt.Sprintf("TV 渲染失败: %v", rErr))
 			return
@@ -1362,8 +1360,8 @@ func handleGenerateTick(c *gin.Context) {
 	sse.Send("done", "生成完毕")
 }
 
-func tickPointsToSectors(points []tickfetcher.TickPoint) []fetcher.Sector {
-	latest := make(map[string]tickfetcher.TickPoint)
+func tickPointsToSectors(points []tick.TickPoint) []fetcher.Sector {
+	latest := make(map[string]tick.TickPoint)
 	for _, p := range points {
 		latest[p.Name] = p
 	}
@@ -1374,7 +1372,7 @@ func tickPointsToSectors(points []tickfetcher.TickPoint) []fetcher.Sector {
 	return sectors
 }
 
-func handleTickStream(c *gin.Context, tickSched *tickscheduler.TickScheduler) {
+func handleTickStream(c *gin.Context, tickSched *tick.TickScheduler) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
@@ -1392,12 +1390,18 @@ func handleTickStream(c *gin.Context, tickSched *tickscheduler.TickScheduler) {
 	c.Writer.Write([]byte(line + "\n"))
 	c.Writer.Flush()
 
-	// Stream updates
 	ctx := c.Request.Context()
+	keepalive := time.NewTicker(3 * time.Second)
+	defer keepalive.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-keepalive.C:
+			if _, err := c.Writer.Write([]byte(": keepalive\n")); err != nil {
+				return
+			}
+			c.Writer.Flush()
 		case snap, ok := <-ch:
 			if !ok {
 				return
@@ -1785,6 +1789,16 @@ func handleDebateGenerate(c *gin.Context) {
 	if err != nil {
 		logger.InternalError(c, "LLM 编排失败", err)
 		return
+	}
+
+	script.StockCode = body.StockCode
+	script.StockName = body.StockName
+	if body.StructuredReport != nil {
+		if rd, ok := body.StructuredReport["reportDate"]; ok {
+			if s, ok := rd.(string); ok {
+				script.ReportPeriod = s
+			}
+		}
 	}
 
 	taskID := newDebateTaskID()

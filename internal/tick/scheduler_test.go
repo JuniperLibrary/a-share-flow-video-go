@@ -1,4 +1,4 @@
-package tickscheduler
+package tick
 
 import (
 	"testing"

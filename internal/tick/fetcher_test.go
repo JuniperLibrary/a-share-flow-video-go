@@ -1,4 +1,4 @@
-package tickfetcher
+package tick
 
 import (
 	"testing"

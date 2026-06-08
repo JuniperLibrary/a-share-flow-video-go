@@ -1,4 +1,4 @@
-package tickfetcher
+package tick
 
 import (
 	"fmt"
@@ -61,7 +61,7 @@ type TickFetcher struct {
 	subscribers map[chan TickSnapshot]bool
 }
 
-func New() *TickFetcher {
+func NewFetcher() *TickFetcher {
 	cfg := config.LoadTickConfig()
 	return &TickFetcher{
 		intervalMinutes: cfg.IntervalMinutes,

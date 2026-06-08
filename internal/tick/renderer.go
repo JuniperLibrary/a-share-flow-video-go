@@ -1,4 +1,4 @@
-package tickrenderer
+package tick
 
 import (
 	"encoding/json"
@@ -16,7 +16,6 @@ import (
 	"github.com/a-share-flow-video-go/internal/hotnews"
 	"github.com/a-share-flow-video-go/internal/logger"
 	"github.com/a-share-flow-video-go/internal/storage"
-	"github.com/a-share-flow-video-go/internal/tickfetcher"
 	"github.com/a-share-flow-video-go/internal/tts"
 	"go.uber.org/zap"
 )
@@ -95,7 +94,7 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 		sessCfg = config.SessionConfigs["full"]
 	}
 
-	points, err := tickfetcher.LoadTickCSV(dateStr, session)
+	points, err := LoadTickCSV(dateStr, session)
 	if err != nil || len(points) == 0 {
 		return "", fmt.Errorf("no tick data for %s session=%s", dateStr, session)
 	}
@@ -139,7 +138,7 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 			}
 		}
 		if len(events) == 0 {
-			events, timeline, ticker = analyzer.AnalyzeTickContent(points, dateStr, session)
+			events, timeline, ticker = AnalyzeTickContent(points, dateStr, session)
 		}
 	}
 	if len(events) == 0 {
@@ -384,12 +383,12 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 	return outputPath, nil
 }
 
-func buildSectorTicks(points []tickfetcher.TickPoint) []SectorTick {
+func buildSectorTicks(points []TickPoint) []SectorTick {
 	timeOrder := uniqueTimes(points)
 
 	sectorData := make(map[string][]float64)
 	sectorPrev := make(map[string]float64)
-	sectorLatest := make(map[string]tickfetcher.TickPoint)
+	sectorLatest := make(map[string]TickPoint)
 
 	for _, p := range points {
 		prev := sectorPrev[p.Name]
@@ -432,7 +431,7 @@ func buildSectorTicks(points []tickfetcher.TickPoint) []SectorTick {
 	return result
 }
 
-func uniqueTimes(points []tickfetcher.TickPoint) []string {
+func uniqueTimes(points []TickPoint) []string {
 	seen := make(map[string]bool)
 	var times []string
 	for _, p := range points {
@@ -471,8 +470,8 @@ func sumAbs(data []float64) float64 {
 	return s
 }
 
-func snapshotToSectors(points []tickfetcher.TickPoint) []fetcher.Sector {
-	latest := make(map[string]tickfetcher.TickPoint)
+func snapshotToSectors(points []TickPoint) []fetcher.Sector {
+	latest := make(map[string]TickPoint)
 	for _, p := range points {
 		latest[p.Name] = p
 	}
