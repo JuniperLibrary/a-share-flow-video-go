@@ -31,6 +31,8 @@ type SectorData struct {
 	SuperRate float64 `json:"superRate,omitempty"`
 	BigNet    float64 `json:"bigNet,omitempty"`
 	BigRate   float64 `json:"bigRate,omitempty"`
+	Volume    float64 `json:"volume,omitempty"`
+	Turnover  float64 `json:"turnover,omitempty"`
 	Color     string  `json:"color"`
 }
 
@@ -48,13 +50,21 @@ type RenderProps struct {
 	Height         int                      `json:"height"`
 	Session        string                   `json:"session"`
 	XLim           [2]int                   `json:"xLim"`
-	// Voiceover fields — if empty, renders without voiceover
-	TitleText         string `json:"titleText,omitempty"`
-	ContentText       string `json:"contentText,omitempty"`
-	TitleAudioFile    string `json:"titleAudioFile,omitempty"`
-	ContentAudioFile  string `json:"contentAudioFile,omitempty"`
-	TitleAudioFrames  int    `json:"titleAudioFrames,omitempty"`
-	ContentAudioFrames int   `json:"contentAudioFrames,omitempty"`
+	Scene1Text     string `json:"scene1Text,omitempty"`
+	Scene2Text     string `json:"scene2Text,omitempty"`
+	Scene3Text     string `json:"scene3Text,omitempty"`
+	Scene4Text     string `json:"scene4Text,omitempty"`
+	Scene5Text     string `json:"scene5Text,omitempty"`
+	Scene1Audio    string `json:"scene1Audio,omitempty"`
+	Scene2Audio    string `json:"scene2Audio,omitempty"`
+	Scene3Audio    string `json:"scene3Audio,omitempty"`
+	Scene4Audio    string `json:"scene4Audio,omitempty"`
+	Scene5Audio    string `json:"scene5Audio,omitempty"`
+	Scene1Frames   int    `json:"scene1Frames,omitempty"`
+	Scene2Frames   int    `json:"scene2Frames,omitempty"`
+	Scene3Frames   int    `json:"scene3Frames,omitempty"`
+	Scene4Frames   int    `json:"scene4Frames,omitempty"`
+	Scene5Frames   int    `json:"scene5Frames,omitempty"`
 	BaseAnimationFrames int  `json:"baseAnimationFrames,omitempty"`
 }
 
@@ -92,6 +102,8 @@ func RenderVideo(sectors []fetcher.Sector, dateStr, outputPath string, events []
 			SuperRate: s.SuperRate,
 			BigNet:    s.BigNet,
 			BigRate:   s.BigRate,
+			Volume:    s.Volume,
+			Turnover:  s.Turnover,
 			Color:     s.Color,
 		}
 	}
@@ -125,58 +137,60 @@ func RenderVideo(sectors []fetcher.Sector, dateStr, outputPath string, events []
 			return "", fmt.Errorf("create voiceover dir: %w", err)
 		}
 
-		titleText, contentText := tts.ParseCopywriting(copywriteText)
-		titlePath := filepath.Join(voiceoverDir, "title.mp3")
-		contentPath := filepath.Join(voiceoverDir, "content.mp3")
+		scenes := tts.ParseCopywriting(copywriteText)
+		sceneNames := []string{"hook1", "suspense", "twist", "answer", "hook2"}
 		baseFrames := TotalFrames
 
-		if err := tts.TextToSpeech(titleText, titlePath, tts.Xiaoxiao); err != nil {
-			logger.Warn("标题 TTS 合成失败，跳过", zap.Error(err))
-		}
-		if err := tts.TextToSpeech(contentText, contentPath, tts.Xiaoxiao); err != nil {
-			logger.Warn("正文 TTS 合成失败，跳过", zap.Error(err))
-		}
-
-		titleDur := 0.0
-		if _, err := os.Stat(titlePath); err == nil {
-			if d, err := tts.GetAudioDuration(titlePath); err == nil {
-				titleDur = d
+		for i := 0; i < 5; i++ {
+			if i >= len(scenes) || scenes[i] == "" {
+				continue
+			}
+			audioPath := filepath.Join(voiceoverDir, fmt.Sprintf("%s.mp3", sceneNames[i]))
+			if err := tts.TextToSpeech(scenes[i], audioPath, tts.Xiaoxiao); err != nil {
+				logger.Warn("场景 TTS 合成失败", zap.Int("scene", i+1), zap.Error(err))
+				continue
+			}
+			dur := 0.0
+			if _, err := os.Stat(audioPath); err == nil {
+				if d, err := tts.GetAudioDuration(audioPath); err == nil {
+					dur = d
+				}
+			}
+			frames := int(math.Ceil(dur * FPS))
+			const audioPadding = 10
+			if frames > 0 {
+				frames += audioPadding
+			}
+			switch i {
+			case 0:
+				props.Scene1Text = scenes[i]
+				props.Scene1Audio = fmt.Sprintf("voiceover/%s.mp3", sceneNames[i])
+				props.Scene1Frames = frames
+			case 1:
+				props.Scene2Text = scenes[i]
+				props.Scene2Audio = fmt.Sprintf("voiceover/%s.mp3", sceneNames[i])
+				props.Scene2Frames = frames
+			case 2:
+				props.Scene3Text = scenes[i]
+				props.Scene3Audio = fmt.Sprintf("voiceover/%s.mp3", sceneNames[i])
+				props.Scene3Frames = frames
+			case 3:
+				props.Scene4Text = scenes[i]
+				props.Scene4Audio = fmt.Sprintf("voiceover/%s.mp3", sceneNames[i])
+				props.Scene4Frames = frames
+			case 4:
+				props.Scene5Text = scenes[i]
+				props.Scene5Audio = fmt.Sprintf("voiceover/%s.mp3", sceneNames[i])
+				props.Scene5Frames = frames
 			}
 		}
-		contentDur := 0.0
-		if _, err := os.Stat(contentPath); err == nil {
-			if d, err := tts.GetAudioDuration(contentPath); err == nil {
-				contentDur = d
-			}
-		}
 
-		titleFrames := int(math.Ceil(titleDur * FPS))
-		contentFrames := int(math.Ceil(contentDur * FPS))
-
-		// 保留给音频播放的头部/尾部静音帧
-		const audioPadding = 10 // frames
-		if titleFrames > 0 {
-			titleFrames += audioPadding
-		}
-		if contentFrames > 0 {
-			contentFrames += audioPadding
-		}
-
-		totalVideoFrames := titleFrames + baseFrames + contentFrames
-
-		props.TitleText = titleText
-		props.ContentText = contentText
-		props.TitleAudioFile = "voiceover/title.mp3"
-		props.ContentAudioFile = "voiceover/content.mp3"
-		props.TitleAudioFrames = titleFrames
-		props.ContentAudioFrames = contentFrames
+		sceneTotalFrames := props.Scene1Frames + props.Scene2Frames + props.Scene3Frames + props.Scene4Frames + props.Scene5Frames
 		props.BaseAnimationFrames = baseFrames
-		props.TotalFrames = totalVideoFrames
+		props.TotalFrames = sceneTotalFrames + baseFrames
 
 		logger.Info("语音合成完成",
-			zap.Float64("titleAudioSec", titleDur),
-			zap.Float64("contentAudioSec", contentDur),
-			zap.Int("totalFrames", totalVideoFrames))
+			zap.Int("totalFrames", props.TotalFrames))
 	}
 
 	propsJSON, err := json.Marshal(props)

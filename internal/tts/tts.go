@@ -112,6 +112,53 @@ func CleanForTTS(text string) string {
 	return strings.Join(result, "\n")
 }
 
+// TextToSpeechRate 与 TextToSpeech 相同，但可指定语速（如 "+20%" 加快 20%，"-20%" 放慢 20%）。
+func TextToSpeechRate(text, outputPath string, voice Voice, rate string) error {
+	if voice == "" {
+		voice = Xiaoxiao
+	}
+	if rate == "" {
+		rate = "+0%"
+	}
+
+	text = CleanForTTS(text)
+	if text == "" {
+		return fmt.Errorf("清洗后文本为空，跳过 TTS")
+	}
+
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
+		return fmt.Errorf("创建输出目录失败: %w", err)
+	}
+
+	const maxRetries = 3
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
+			time.Sleep(backoff)
+		}
+
+		cmd := exec.Command("edge-tts",
+			"--voice", string(voice),
+			"--text", text,
+			"--write-media", outputPath,
+			"--rate", rate,
+		)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			lastErr = fmt.Errorf("edge-tts 合成失败: %w\n输出: %s", err, string(output))
+			continue
+		}
+
+		if _, err := os.Stat(outputPath); err != nil {
+			lastErr = fmt.Errorf("TTS 输出文件未找到: %w", err)
+			continue
+		}
+		return nil
+	}
+	return fmt.Errorf("edge-tts 合成失败（重试 %d 次后放弃）: %w", maxRetries, lastErr)
+}
+
 // GetAudioDuration 使用 ffprobe 获取音频文件时长（秒）。
 func GetAudioDuration(audioPath string) (float64, error) {
 	cmd := exec.Command("ffprobe",
@@ -131,52 +178,43 @@ func GetAudioDuration(audioPath string) (float64, error) {
 	return duration, nil
 }
 
-// ParseCopywriting 解析 AI 生成的文案，提取标题和正文。
-// 标题：第一段非空连续文本中的第一行（去掉 # 标签行和空行后的第一个有意义行）
-// 正文：从"前3秒钩子"或第二段开始到第一个 # 标签之前的所有内容（去掉 hashtag 行）
-func ParseCopywriting(text string) (title, body string) {
+// ParseCopywriting 解析 AI 生成的文案，提取 5 个场景。
+// 格式：[场景名] 内容
+func ParseCopywriting(text string) (scenes []string) {
 	lines := strings.Split(text, "\n")
 
-	// 过滤空行和纯 hashtag 行，提取有意义行
-	var meaningful []string
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
 			continue
 		}
-		// 跳过纯 hashtag 行
-		if strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		meaningful = append(meaningful, trimmed)
-	}
 
-	if len(meaningful) == 0 {
-		return "", text
-	}
-
-	// 第一行当标题
-	title = meaningful[0]
-
-	// 从第二行开始到第一个 # 标签（原始行）之前作为正文
-	bodyLines := []string{}
-	inHashtag := false
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "#") {
-			inHashtag = true
-			continue
-		}
-		if !inHashtag && trimmed != "" && trimmed != title {
-			bodyLines = append(bodyLines, trimmed)
+		if strings.HasPrefix(trimmed, "[") {
+			if idx := strings.Index(trimmed, "]"); idx > 0 {
+				content := strings.TrimSpace(trimmed[idx+1:])
+				if content != "" {
+					scenes = append(scenes, content)
+				}
+			}
 		}
 	}
-	body = strings.Join(bodyLines, "\n")
-	if body == "" {
-		body = strings.Join(meaningful[1:], "\n")
+
+	if len(scenes) == 0 {
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed != "" {
+				scenes = append(scenes, trimmed)
+			}
+		}
 	}
 
-	return title, body
+	if len(scenes) < 5 {
+		for len(scenes) < 5 {
+			scenes = append(scenes, "")
+		}
+	}
+
+	return scenes[:5]
 }
 
 // EnsureEdgeTTS 检查 edge-tts 是否可用。

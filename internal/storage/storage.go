@@ -31,6 +31,8 @@ type Sector struct {
 	SuperRate  float64 `json:"super_rate"` // 超大单净占比（%）
 	BigNet     float64 `json:"big_net"`    // 大单净流入（亿）
 	BigRate    float64 `json:"big_rate"`   // 大单净占比（%）
+	Volume     float64 `json:"volume"`     // 成交量（手，tick 数据用）
+	Turnover   float64 `json:"turnover"`   // 成交额（亿，tick 数据用）
 	InputDate  string  `json:"input_date"` // 录入时间 "2026-05-22 13:14:19"
 }
 
@@ -45,6 +47,8 @@ type SectorAll struct {
 	SuperRate float64 `json:"super_rate"` // 超大单净占比（%）
 	BigNet    float64 `json:"big_net"`    // 大单净流入（亿）
 	BigRate   float64 `json:"big_rate"`   // 大单净占比（%）
+	Volume    float64 `json:"volume"`     // 成交量（手）
+	Turnover  float64 `json:"turnover"`   // 成交额（亿）
 	Category  string  `json:"category"`  // "industry" 行业板块 / "concept" 概念板块
 }
 
@@ -61,6 +65,18 @@ type Note struct {
 	Content   string `json:"content"`   // 笔记内容
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
+}
+
+// DebateHistory 财报辩论历史记录。
+type DebateHistory struct {
+	TaskID        string `json:"task_id"`
+	StockCode     string `json:"stock_code"`
+	StockName     string `json:"stock_name"`
+	ReportSummary string `json:"report_summary"`
+	TurnCount     int    `json:"turn_count"`
+	Format        string `json:"format"`
+	VideoPath     string `json:"video_path"`
+	CreatedAt     string `json:"created_at"`
 }
 
 func New(dbPath string) (*DB, error) {
@@ -104,6 +120,8 @@ func (db *DB) initSchema() error {
 		super_rate  REAL    NOT NULL DEFAULT 0,  -- 超大单净占比（%）
 		big_net     REAL    NOT NULL DEFAULT 0,  -- 大单净流入（亿）
 		big_rate    REAL    NOT NULL DEFAULT 0,  -- 大单净占比（%）
+		volume      REAL    NOT NULL DEFAULT 0,  -- 成交量（手，tick 数据用）
+		turnover    REAL    NOT NULL DEFAULT 0,  -- 成交额（亿，tick 数据用）
 		input_date  TEXT    NOT NULL DEFAULT '',  -- 录入时间 "2026-05-22 13:14:19"
 		PRIMARY KEY (datetime, name)
 	);
@@ -127,6 +145,8 @@ func (db *DB) initSchema() error {
 		super_rate REAL    NOT NULL DEFAULT 0,  -- 超大单净占比（%）
 		big_net    REAL    NOT NULL DEFAULT 0,  -- 大单净流入（亿）
 		big_rate   REAL    NOT NULL DEFAULT 0,  -- 大单净占比（%）
+		volume     REAL    NOT NULL DEFAULT 0,  -- 成交量（手）
+		turnover   REAL    NOT NULL DEFAULT 0,  -- 成交额（亿）
 		category   TEXT    NOT NULL DEFAULT '',  -- "industry" 行业 / "concept" 概念
 		PRIMARY KEY (date, name)
 	);
@@ -165,6 +185,17 @@ func (db *DB) initSchema() error {
 		created_at TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
 		updated_at TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
 	);
+
+	CREATE TABLE IF NOT EXISTS debate_history (
+		task_id        TEXT PRIMARY KEY,
+		stock_code     TEXT NOT NULL DEFAULT '',
+		stock_name     TEXT NOT NULL DEFAULT '',
+		report_summary TEXT NOT NULL DEFAULT '',
+		turn_count     INTEGER NOT NULL DEFAULT 0,
+		format         TEXT NOT NULL DEFAULT 'mobile',
+		video_path     TEXT NOT NULL DEFAULT '',
+		created_at     TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+	);
 	`
 	if _, err := db.db.Exec(schema); err != nil {
 		return err
@@ -178,6 +209,8 @@ func (db *DB) initSchema() error {
 	_, _ = db.db.Exec("ALTER TABLE sectors ADD COLUMN super_rate REAL NOT NULL DEFAULT 0")
 	_, _ = db.db.Exec("ALTER TABLE sectors ADD COLUMN big_net REAL NOT NULL DEFAULT 0")
 	_, _ = db.db.Exec("ALTER TABLE sectors ADD COLUMN big_rate REAL NOT NULL DEFAULT 0")
+	_, _ = db.db.Exec("ALTER TABLE sectors ADD COLUMN volume REAL NOT NULL DEFAULT 0")
+	_, _ = db.db.Exec("ALTER TABLE sectors ADD COLUMN turnover REAL NOT NULL DEFAULT 0")
 	_, _ = db.db.Exec("ALTER TABLE sectors_all ADD COLUMN rate REAL NOT NULL DEFAULT 0")
 	_, _ = db.db.Exec("ALTER TABLE sectors_all ADD COLUMN category TEXT NOT NULL DEFAULT ''")
 	_, _ = db.db.Exec("ALTER TABLE sectors_all ADD COLUMN change_pct REAL NOT NULL DEFAULT 0")
@@ -185,6 +218,8 @@ func (db *DB) initSchema() error {
 	_, _ = db.db.Exec("ALTER TABLE sectors_all ADD COLUMN super_rate REAL NOT NULL DEFAULT 0")
 	_, _ = db.db.Exec("ALTER TABLE sectors_all ADD COLUMN big_net REAL NOT NULL DEFAULT 0")
 	_, _ = db.db.Exec("ALTER TABLE sectors_all ADD COLUMN big_rate REAL NOT NULL DEFAULT 0")
+	_, _ = db.db.Exec("ALTER TABLE sectors_all ADD COLUMN volume REAL NOT NULL DEFAULT 0")
+	_, _ = db.db.Exec("ALTER TABLE sectors_all ADD COLUMN turnover REAL NOT NULL DEFAULT 0")
 
 	return nil
 }
@@ -203,14 +238,14 @@ func (db *DB) SaveSectors(sectors []Sector) error {
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO sectors (datetime, name, net, rate, change_pct, super_net, super_rate, big_net, big_rate, input_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO sectors (datetime, name, net, rate, change_pct, super_net, super_rate, big_net, big_rate, volume, turnover, input_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
 	for _, s := range sectors {
-		if _, err := stmt.Exec(s.Datetime, s.Name, s.Net, s.Rate, s.ChangePct, s.SuperNet, s.SuperRate, s.BigNet, s.BigRate, s.InputDate); err != nil {
+		if _, err := stmt.Exec(s.Datetime, s.Name, s.Net, s.Rate, s.ChangePct, s.SuperNet, s.SuperRate, s.BigNet, s.BigRate, s.Volume, s.Turnover, s.InputDate); err != nil {
 			return err
 		}
 	}
@@ -224,7 +259,7 @@ func (db *DB) LoadFullSectors(date string) ([]Sector, error) {
 
 	prefix := date + "%"
 	rows, err := db.db.Query(`
-		SELECT s.datetime, s.name, s.net, s.rate, s.change_pct, s.super_net, s.super_rate, s.big_net, s.big_rate, s.input_date
+		SELECT s.datetime, s.name, s.net, s.rate, s.change_pct, s.super_net, s.super_rate, s.big_net, s.big_rate, s.volume, s.turnover, s.input_date
 		FROM sectors s
 		INNER JOIN (
 			SELECT name, MAX(datetime) AS max_dt
@@ -242,7 +277,7 @@ func (db *DB) LoadFullSectors(date string) ([]Sector, error) {
 	var sectors []Sector
 	for rows.Next() {
 		var s Sector
-		if err := rows.Scan(&s.Datetime, &s.Name, &s.Net, &s.Rate, &s.ChangePct, &s.SuperNet, &s.SuperRate, &s.BigNet, &s.BigRate, &s.InputDate); err != nil {
+		if err := rows.Scan(&s.Datetime, &s.Name, &s.Net, &s.Rate, &s.ChangePct, &s.SuperNet, &s.SuperRate, &s.BigNet, &s.BigRate, &s.Volume, &s.Turnover, &s.InputDate); err != nil {
 			return nil, err
 		}
 		sectors = append(sectors, s)
@@ -263,7 +298,7 @@ func (db *DB) LoadDaySnapshots(date string) ([]TimeSnapshot, error) {
 
 	prefix := date + "%"
 	rows, err := db.db.Query(`
-		SELECT datetime, name, net, rate, change_pct, super_net, super_rate, big_net, big_rate, input_date
+		SELECT datetime, name, net, rate, change_pct, super_net, super_rate, big_net, big_rate, volume, turnover, input_date
 		FROM sectors
 		WHERE datetime LIKE ?
 		ORDER BY datetime ASC
@@ -279,7 +314,7 @@ func (db *DB) LoadDaySnapshots(date string) ([]TimeSnapshot, error) {
 
 	for rows.Next() {
 		var s Sector
-		if err := rows.Scan(&s.Datetime, &s.Name, &s.Net, &s.Rate, &s.ChangePct, &s.SuperNet, &s.SuperRate, &s.BigNet, &s.BigRate, &s.InputDate); err != nil {
+		if err := rows.Scan(&s.Datetime, &s.Name, &s.Net, &s.Rate, &s.ChangePct, &s.SuperNet, &s.SuperRate, &s.BigNet, &s.BigRate, &s.Volume, &s.Turnover, &s.InputDate); err != nil {
 			return nil, err
 		}
 		if s.Datetime != currentDT {
@@ -302,7 +337,7 @@ func (db *DB) LoadTickSectors(date string) ([]Sector, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	rows, err := db.db.Query("SELECT datetime, name, net, rate, change_pct, super_net, super_rate, big_net, big_rate, input_date FROM sectors WHERE datetime LIKE ? AND datetime != ? ORDER BY datetime, ABS(net) DESC", date+" %", date)
+	rows, err := db.db.Query("SELECT datetime, name, net, rate, change_pct, super_net, super_rate, big_net, big_rate, volume, turnover, input_date FROM sectors WHERE datetime LIKE ? AND datetime != ? ORDER BY datetime, ABS(net) DESC", date+" %", date)
 	if err != nil {
 		return nil, err
 	}
@@ -311,7 +346,7 @@ func (db *DB) LoadTickSectors(date string) ([]Sector, error) {
 	var sectors []Sector
 	for rows.Next() {
 		var s Sector
-		if err := rows.Scan(&s.Datetime, &s.Name, &s.Net, &s.Rate, &s.ChangePct, &s.SuperNet, &s.SuperRate, &s.BigNet, &s.BigRate, &s.InputDate); err != nil {
+		if err := rows.Scan(&s.Datetime, &s.Name, &s.Net, &s.Rate, &s.ChangePct, &s.SuperNet, &s.SuperRate, &s.BigNet, &s.BigRate, &s.Volume, &s.Turnover, &s.InputDate); err != nil {
 			return nil, err
 		}
 		sectors = append(sectors, s)
@@ -353,14 +388,14 @@ func (db *DB) SaveSectorsAll(sectors []SectorAll) error {
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO sectors_all (date, code, name, net, rate, change_pct, super_net, super_rate, big_net, big_rate, category) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO sectors_all (date, code, name, net, rate, change_pct, super_net, super_rate, big_net, big_rate, volume, turnover, category) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 
 	for _, s := range sectors {
-		if _, err := stmt.Exec(s.Date, s.Code, s.Name, s.Net, s.Rate, s.ChangePct, s.SuperNet, s.SuperRate, s.BigNet, s.BigRate, s.Category); err != nil {
+		if _, err := stmt.Exec(s.Date, s.Code, s.Name, s.Net, s.Rate, s.ChangePct, s.SuperNet, s.SuperRate, s.BigNet, s.BigRate, s.Volume, s.Turnover, s.Category); err != nil {
 			return err
 		}
 	}
@@ -372,7 +407,7 @@ func (db *DB) LoadSectorsAll(date string) ([]SectorAll, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	rows, err := db.db.Query("SELECT date, code, name, net, rate, change_pct, super_net, super_rate, big_net, big_rate, category FROM sectors_all WHERE date = ? ORDER BY ABS(net) DESC", date)
+	rows, err := db.db.Query("SELECT date, code, name, net, rate, change_pct, super_net, super_rate, big_net, big_rate, volume, turnover, category FROM sectors_all WHERE date = ? ORDER BY ABS(net) DESC", date)
 	if err != nil {
 		return nil, err
 	}
@@ -381,7 +416,7 @@ func (db *DB) LoadSectorsAll(date string) ([]SectorAll, error) {
 	var sectors []SectorAll
 	for rows.Next() {
 		var s SectorAll
-		if err := rows.Scan(&s.Date, &s.Code, &s.Name, &s.Net, &s.Rate, &s.ChangePct, &s.SuperNet, &s.SuperRate, &s.BigNet, &s.BigRate, &s.Category); err != nil {
+		if err := rows.Scan(&s.Date, &s.Code, &s.Name, &s.Net, &s.Rate, &s.ChangePct, &s.SuperNet, &s.SuperRate, &s.BigNet, &s.BigRate, &s.Volume, &s.Turnover, &s.Category); err != nil {
 			return nil, err
 		}
 		sectors = append(sectors, s)
@@ -414,7 +449,7 @@ func (db *DB) LoadSectorsAllRange(startDate, endDate string) ([]SectorAll, error
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	rows, err := db.db.Query("SELECT date, code, name, net, rate, change_pct, super_net, super_rate, big_net, big_rate, category FROM sectors_all WHERE date >= ? AND date <= ? ORDER BY date, ABS(net) DESC", startDate, endDate)
+	rows, err := db.db.Query("SELECT date, code, name, net, rate, change_pct, super_net, super_rate, big_net, big_rate, volume, turnover, category FROM sectors_all WHERE date >= ? AND date <= ? ORDER BY date, ABS(net) DESC", startDate, endDate)
 	if err != nil {
 		return nil, err
 	}
@@ -423,7 +458,7 @@ func (db *DB) LoadSectorsAllRange(startDate, endDate string) ([]SectorAll, error
 	var sectors []SectorAll
 	for rows.Next() {
 		var s SectorAll
-		if err := rows.Scan(&s.Date, &s.Code, &s.Name, &s.Net, &s.Rate, &s.ChangePct, &s.SuperNet, &s.SuperRate, &s.BigNet, &s.BigRate, &s.Category); err != nil {
+		if err := rows.Scan(&s.Date, &s.Code, &s.Name, &s.Net, &s.Rate, &s.ChangePct, &s.SuperNet, &s.SuperRate, &s.BigNet, &s.BigRate, &s.Volume, &s.Turnover, &s.Category); err != nil {
 			return nil, err
 		}
 		sectors = append(sectors, s)
@@ -435,7 +470,7 @@ func (db *DB) LoadSectorTrend(name, startDate, endDate string) ([]SectorAll, err
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	rows, err := db.db.Query("SELECT date, code, name, net, rate, change_pct, super_net, super_rate, big_net, big_rate, category FROM sectors_all WHERE name = ? AND date >= ? AND date <= ? ORDER BY date", name, startDate, endDate)
+	rows, err := db.db.Query("SELECT date, code, name, net, rate, change_pct, super_net, super_rate, big_net, big_rate, volume, turnover, category FROM sectors_all WHERE name = ? AND date >= ? AND date <= ? ORDER BY date", name, startDate, endDate)
 	if err != nil {
 		return nil, err
 	}
@@ -444,7 +479,7 @@ func (db *DB) LoadSectorTrend(name, startDate, endDate string) ([]SectorAll, err
 	var sectors []SectorAll
 	for rows.Next() {
 		var s SectorAll
-		if err := rows.Scan(&s.Date, &s.Code, &s.Name, &s.Net, &s.Rate, &s.ChangePct, &s.SuperNet, &s.SuperRate, &s.BigNet, &s.BigRate, &s.Category); err != nil {
+		if err := rows.Scan(&s.Date, &s.Code, &s.Name, &s.Net, &s.Rate, &s.ChangePct, &s.SuperNet, &s.SuperRate, &s.BigNet, &s.BigRate, &s.Volume, &s.Turnover, &s.Category); err != nil {
 			return nil, err
 		}
 		sectors = append(sectors, s)
@@ -797,12 +832,64 @@ func (db *DB) RawExec(query string, args ...any) error {
 	return err
 }
 
+func (db *DB) SaveDebateHistory(h DebateHistory) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	_, err := db.db.Exec(`INSERT OR REPLACE INTO debate_history (task_id, stock_code, stock_name, report_summary, turn_count, format, video_path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now','localtime')))`,
+		h.TaskID, h.StockCode, h.StockName, h.ReportSummary, h.TurnCount, h.Format, h.VideoPath, h.CreatedAt)
+	return err
+}
+
+func (db *DB) ListDebateHistory(limit, offset int) ([]DebateHistory, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	rows, err := db.db.Query("SELECT task_id, stock_code, stock_name, report_summary, turn_count, format, video_path, created_at FROM debate_history ORDER BY created_at DESC LIMIT ? OFFSET ?", limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var history []DebateHistory
+	for rows.Next() {
+		var h DebateHistory
+		if err := rows.Scan(&h.TaskID, &h.StockCode, &h.StockName, &h.ReportSummary, &h.TurnCount, &h.Format, &h.VideoPath, &h.CreatedAt); err != nil {
+			return nil, err
+		}
+		history = append(history, h)
+	}
+	return history, rows.Err()
+}
+
+func (db *DB) GetDebateHistory(taskID string) (*DebateHistory, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	row := db.db.QueryRow("SELECT task_id, stock_code, stock_name, report_summary, turn_count, format, video_path, created_at FROM debate_history WHERE task_id = ?", taskID)
+	var h DebateHistory
+	if err := row.Scan(&h.TaskID, &h.StockCode, &h.StockName, &h.ReportSummary, &h.TurnCount, &h.Format, &h.VideoPath, &h.CreatedAt); err == sql.ErrNoRows {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	return &h, nil
+}
+
+func (db *DB) DeleteDebateHistory(taskID string) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	_, err := db.db.Exec("DELETE FROM debate_history WHERE task_id = ?", taskID)
+	return err
+}
+
 var exportQueries = []struct {
 	File  string
 	Query string
 }{
-	{"sectors.json", "SELECT datetime, name, net, rate, change_pct, super_net, super_rate, big_net, big_rate, input_date FROM sectors ORDER BY datetime, name"},
-	{"sectors_all.json", "SELECT date, code, name, net, rate, change_pct, super_net, super_rate, big_net, big_rate FROM sectors_all ORDER BY date, name"},
+	{"sectors.json", "SELECT datetime, name, net, rate, change_pct, super_net, super_rate, big_net, big_rate, volume, turnover, input_date FROM sectors ORDER BY datetime, name"},
+	{"sectors_all.json", "SELECT date, code, name, net, rate, change_pct, super_net, super_rate, big_net, big_rate, volume, turnover FROM sectors_all ORDER BY date, name"},
 	{"copywriting.json", "SELECT date, session, type, content FROM copywriting ORDER BY date, session, type"},
 	{"tick_events.json", "SELECT date, session, type, payload FROM tick_events ORDER BY date, session, type"},
 	{"cls_news.json", "SELECT id, title, content, brief, level, reading_num, ctime, shareurl, sectors, created_at FROM cls_news ORDER BY ctime DESC"},

@@ -15,8 +15,11 @@ import (
 
 // Video parameters
 const (
-	FPS         = 30
+	FPS = 30
+	// TotalFrames Default main-animation duration (TV / 90s @30fps).
 	TotalFrames = 2700
+	// MobileTotalFrames 抖音规格:30s @30fps,主图动画压缩到 1/3 速度以适配完播率。
+	MobileTotalFrames = 900
 
 	// MobileWidth Mobile dimensions (9:16)
 	MobileWidth  = 1080
@@ -29,6 +32,15 @@ const (
 	// MinSectorCount Minimum sectors to display
 	MinSectorCount = 20
 )
+
+// GetBaseFrames returns the main-animation frame count for the given format.
+// TV uses the default 90s; mobile uses the shortened 30s for short-video platforms.
+func GetBaseFrames(format string) int {
+	if format == "tv" {
+		return TotalFrames
+	}
+	return MobileTotalFrames
+}
 
 // SessionConfig defines time-axis configuration for a trading session.
 type SessionConfig struct {
