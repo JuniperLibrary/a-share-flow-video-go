@@ -229,8 +229,8 @@ func FetchTop21HotSectors() ([]Sector, error) {
 
 	logger.Info("热门板块匹配",
 		zap.Int("count", len(results)),
-		zap.String("tick_symbol", results[0].Name),
-		zap.String("session", fmt.Sprintf("%+.1f亿", results[0].Net)))
+		zap.String("top", results[0].Name),
+		zap.Float64("top_net", results[0].Net))
 
 	return results, nil
 }
@@ -411,9 +411,9 @@ func FetchHistoricalSectors(dateStr string) ([]Sector, error) {
 		zap.Int("outflow", len(outflow)),
 		zap.Int("total", len(result)))
 	if len(result) > 0 {
-		logger.Info("流入榜首", zap.String("tick_symbol", result[0].Name), zap.String("session", fmt.Sprintf("%+.1f亿", result[0].Net)))
+		logger.Info("流入榜首", zap.String("name", result[0].Name), zap.Float64("net", result[0].Net))
 		if len(inflow) < len(result) {
-			logger.Info("流出榜首", zap.String("tick_symbol", result[len(inflow)].Name), zap.String("session", fmt.Sprintf("%+.1f亿", result[len(inflow)].Net)))
+			logger.Info("流出榜首", zap.String("name", result[len(inflow)].Name), zap.Float64("net", result[len(inflow)].Net))
 		}
 	}
 	return result, nil

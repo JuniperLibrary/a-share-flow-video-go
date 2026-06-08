@@ -19,7 +19,7 @@ import (
 // DumpNews 打印新闻摘要到日志。
 func DumpNews(news []CLSNews) {
 	for _, n := range news {
-		logger.Info("📰 财联社电报",
+		logger.Info("财联社电报",
 			zap.Int64("id", n.ID),
 			zap.String("level", n.Level),
 			zap.Time("ctime", n.CTime),

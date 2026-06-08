@@ -1,10 +1,10 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"time"
+	"unicode/utf8"
 
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/hotnews"
@@ -15,7 +15,7 @@ import (
 )
 
 func main() {
-	if err := logger.Init("info", "console", "stdout"); err != nil {
+	if err := logger.InitFromEnv(); err != nil {
 		panic(err)
 	}
 	defer logger.Sync()
@@ -29,10 +29,10 @@ func main() {
 		dateStr = os.Args[1]
 	}
 
-	logger.Info("=== 热点新闻管道测试 ===", zap.String("date", dateStr))
+	logger.Info("热点新闻管道测试", zap.String("date", dateStr))
 
 	// 1. Load news for video (TV format = 3 sectors per page)
-	logger.Info("--- 加载新闻 ---")
+	logger.Info("加载新闻")
 	pagesTV, err := hotnews.LoadForVideo(dateStr, "tv")
 	if err != nil {
 		logger.Fatal("新闻加载失败 (tv)", zap.Error(err))
@@ -45,14 +45,22 @@ func main() {
 			sectorNames[si] = sn.Sector
 			totalNews += len(sn.News)
 		}
-		logger.Info(fmt.Sprintf("  第%d页: %v (共%d条新闻)", i+1, sectorNames, totalNews))
+		logger.Info("新闻页",
+			zap.Int("page", i+1),
+			zap.Strings("sectors", sectorNames),
+			zap.Int("news_count", totalNews),
+		)
 	}
 
 	// 2. Generate TTS text
-	logger.Info("--- 生成 TTS 文本 ---")
+	logger.Info("生成 TTS 文本")
 	ttsTexts := hotnews.GenerateTTSText(pagesTV)
 	for i, text := range ttsTexts {
-		logger.Info(fmt.Sprintf("  第%d页 TTS文本 (%d字): %s", i+1, len([]rune(text)), text))
+		logger.Info("TTS 文本",
+			zap.Int("page", i+1),
+			zap.Int("chars", utf8.RuneCountInString(text)),
+			zap.String("preview", truncate(text, 100)),
+		)
 	}
 
 	// 3. Test TTS generation on first page only (save time)
@@ -61,7 +69,7 @@ func main() {
 		os.MkdirAll(voiceoverDir, 0755)
 		testPath := filepath.Join(voiceoverDir, "test_news_0.mp3")
 
-		logger.Info("--- 测试 TTS 合成 (仅第1页) ---", zap.String("output", testPath))
+		logger.Info("测试 TTS 合成 (第1页)", zap.String("output", testPath))
 		if err := tts.TextToSpeech(ttsTexts[0], testPath, tts.Xiaoxiao); err != nil {
 			logger.Warn("TTS 合成失败 (非致命)", zap.Error(err))
 		} else if fi, err := os.Stat(testPath); err == nil {
@@ -90,12 +98,23 @@ func main() {
 
 	ttsTextsMobile := hotnews.GenerateTTSText(pagesMobile)
 	for i, text := range ttsTextsMobile {
-		logger.Info(fmt.Sprintf("  第%d页 TTS (%d字): %s...", i+1, len([]rune(text)), text[:min(60, len([]rune(text)))]))
+		logger.Info("TTS 文本",
+			zap.Int("page", i+1),
+			zap.Int("chars", utf8.RuneCountInString(text)),
+			zap.String("preview", truncate(text, 60)),
+		)
 	}
 
-	logger.Info("=== 管道测试完成 ===",
+	logger.Info("管道测试完成",
 		zap.Int("tvPages", len(pagesTV)),
 		zap.Int("mobilePages", len(pagesMobile)))
+}
+
+func truncate(s string, maxLen int) string {
+	if utf8.RuneCountInString(s) <= maxLen {
+		return s
+	}
+	return string([]rune(s)[:maxLen]) + "..."
 }
 
 func min(a, b int) int {
