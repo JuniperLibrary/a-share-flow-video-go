@@ -25,6 +25,30 @@ type NewsPage struct {
 	Sectors []SectorNews `json:"sectors"`
 }
 
+var noisePrefixes = []string{
+	"财联社",
+	"投资日历",
+	"三大指数",
+	"竞价看龙头",
+	"今日申购",
+	"南向资金",
+	"美股",
+	"欧股",
+	"亚太",
+	"国际油价",
+	"黄金价格",
+	"美元指数",
+}
+
+func isNoise(title string) bool {
+	for _, p := range noisePrefixes {
+		if strings.HasPrefix(title, p) {
+			return true
+		}
+	}
+	return false
+}
+
 func LoadForVideo(dateStr, format string) ([]NewsPage, error) {
 	db, err := storage.Get()
 	if err != nil {
@@ -42,6 +66,7 @@ func LoadForVideo(dateStr, format string) ([]NewsPage, error) {
 	}
 
 	sectorMap := make(map[string][]NewsItem)
+	seenTitles := make(map[string]bool)
 	for _, r := range records {
 		var sectors []string
 		if err := json.Unmarshal([]byte(r.Sectors), &sectors); err != nil {
@@ -59,6 +84,9 @@ func LoadForVideo(dateStr, format string) ([]NewsPage, error) {
 		if title == "" {
 			continue
 		}
+		if isNoise(title) {
+			continue
+		}
 		item := NewsItem{
 			Title:      title,
 			Level:      r.Level,
@@ -66,10 +94,25 @@ func LoadForVideo(dateStr, format string) ([]NewsPage, error) {
 			ReadingNum: r.ReadingNum,
 		}
 		for _, s := range sectors {
-			if hotSet[s] {
-				sectorMap[s] = append(sectorMap[s], item)
+			if !hotSet[s] {
+				continue
 			}
+			if seenTitles[title] {
+				continue
+			}
+			seenTitles[title] = true
+			sectorMap[s] = append(sectorMap[s], item)
+			break
 		}
+	}
+
+	perSectorLimit := 3
+	perPage := 2
+	totalPageCap := 1
+	if format == "tv" {
+		perSectorLimit = 5
+		perPage = 3
+		totalPageCap = 2
 	}
 
 	var result []SectorNews
@@ -85,15 +128,10 @@ func LoadForVideo(dateStr, format string) ([]NewsPage, error) {
 			}
 			return items[i].ReadingNum > items[j].ReadingNum
 		})
-		if len(items) > 10 {
-			items = items[:10]
+		if len(items) > perSectorLimit {
+			items = items[:perSectorLimit]
 		}
 		result = append(result, SectorNews{Sector: name, News: items})
-	}
-
-	perPage := 3
-	if format != "tv" {
-		perPage = 2
 	}
 
 	var pages []NewsPage
@@ -102,7 +140,23 @@ func LoadForVideo(dateStr, format string) ([]NewsPage, error) {
 		if end > len(result) {
 			end = len(result)
 		}
-		pages = append(pages, NewsPage{Sectors: result[i:end]})
+		page := NewsPage{Sectors: result[i:end]}
+		pageTitles := make(map[string]bool)
+		for si := range page.Sectors {
+			var deduped []NewsItem
+			for _, item := range page.Sectors[si].News {
+				if pageTitles[item.Title] {
+					continue
+				}
+				pageTitles[item.Title] = true
+				deduped = append(deduped, item)
+			}
+			page.Sectors[si].News = deduped
+		}
+		pages = append(pages, page)
+	}
+	if len(pages) > totalPageCap {
+		pages = pages[:totalPageCap]
 	}
 
 	return pages, nil
@@ -113,7 +167,7 @@ func GenerateTTSText(pages []NewsPage) []string {
 	for i, page := range pages {
 		var parts []string
 		if i == 0 {
-			parts = append(parts, "接下来看看今天的板块热点新闻。")
+			parts = append(parts, "今日热点速览。")
 		}
 		for si, sn := range page.Sectors {
 			var titles []string

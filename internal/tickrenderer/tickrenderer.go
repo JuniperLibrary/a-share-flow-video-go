@@ -38,6 +38,8 @@ type SectorTick struct {
 	BigNet    float64   `json:"bigNet"`
 	BigRate   float64   `json:"bigRate"`
 	MainRate  float64   `json:"mainRate"`
+	Volume    float64   `json:"volume"`
+	Turnover  float64   `json:"turnover"`
 }
 
 type TickRenderProps struct {
@@ -53,18 +55,25 @@ type TickRenderProps struct {
 	Height         int                      `json:"height"`
 	Session        string                   `json:"session"`
 	XLim           [2]int                   `json:"xLim"`
-	// Voiceover fields — if empty, renders without voiceover
-	TitleText          string `json:"titleText,omitempty"`
-	ContentText        string `json:"contentText,omitempty"`
-	TitleAudioFile     string `json:"titleAudioFile,omitempty"`
-	ContentAudioFile   string `json:"contentAudioFile,omitempty"`
-	TitleAudioFrames   int    `json:"titleAudioFrames,omitempty"`
-	ContentAudioFrames int    `json:"contentAudioFrames,omitempty"`
-	BaseAnimationFrames int   `json:"baseAnimationFrames,omitempty"`
-	// News scene fields
-	NewsPages       []hotnews.NewsPage `json:"newsPages,omitempty"`
-	NewsAudioFiles  []string           `json:"newsAudioFiles,omitempty"`
-	NewsAudioFrames []int              `json:"newsAudioFrames,omitempty"`
+	Scene1Text     string                   `json:"scene1Text,omitempty"`
+	Scene2Text     string                   `json:"scene2Text,omitempty"`
+	Scene3Text     string                   `json:"scene3Text,omitempty"`
+	Scene4Text     string                   `json:"scene4Text,omitempty"`
+	Scene5Text     string                   `json:"scene5Text,omitempty"`
+	Scene1Audio    string                   `json:"scene1Audio,omitempty"`
+	Scene2Audio    string                   `json:"scene2Audio,omitempty"`
+	Scene3Audio    string                   `json:"scene3Audio,omitempty"`
+	Scene4Audio    string                   `json:"scene4Audio,omitempty"`
+	Scene5Audio    string                   `json:"scene5Audio,omitempty"`
+	Scene1Frames   int                      `json:"scene1Frames,omitempty"`
+	Scene2Frames   int                      `json:"scene2Frames,omitempty"`
+	Scene3Frames   int                      `json:"scene3Frames,omitempty"`
+	Scene4Frames   int                      `json:"scene4Frames,omitempty"`
+	Scene5Frames   int                      `json:"scene5Frames,omitempty"`
+	NewsPages       []hotnews.NewsPage       `json:"newsPages,omitempty"`
+	NewsAudioFiles  []string                 `json:"newsAudioFiles,omitempty"`
+	NewsAudioFrames []int                    `json:"newsAudioFrames,omitempty"`
+	BaseAnimationFrames int                  `json:"baseAnimationFrames,omitempty"`
 }
 
 func RenderTickVideo(dateStr, outputPath, format, session string, events []analyzer.MarketEvent, timeline []analyzer.TimelineEvent, ticker []analyzer.TickerItem, copywriteText string, newsPages []hotnews.NewsPage) (string, error) {
@@ -161,8 +170,7 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 		XLim:           sessCfg.XLim,
 	}
 
-	baseFrames := TotalFrames
-	var titleFrames, contentFrames int
+	baseFrames := config.GetBaseFrames(format)
 	var newsTotalFrames int
 	var newsAudioFiles []string
 	var newsAudioFrames []int
@@ -176,51 +184,57 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 		}
 
 		if copywriteText != "" {
-			titleText, contentText := tts.ParseCopywriting(copywriteText)
-			titlePath := filepath.Join(voiceoverDir, "title.mp3")
-			contentPath := filepath.Join(voiceoverDir, "content.mp3")
+			scenes := tts.ParseCopywriting(copywriteText)
+			sceneNames := []string{"hook1", "suspense", "twist", "answer", "hook2"}
+			sceneTexts := []string{props.Scene1Text, props.Scene2Text, props.Scene3Text, props.Scene4Text, props.Scene5Text}
 
-			if err := tts.TextToSpeech(titleText, titlePath, tts.Xiaoxiao); err != nil {
-				logger.Warn("Tick 标题 TTS 合成失败，跳过", zap.Error(err))
-			}
-			if err := tts.TextToSpeech(contentText, contentPath, tts.Xiaoxiao); err != nil {
-				logger.Warn("Tick 正文 TTS 合成失败，跳过", zap.Error(err))
-			}
-
-			titleDur := 0.0
-			if _, err := os.Stat(titlePath); err == nil {
-				if d, err := tts.GetAudioDuration(titlePath); err == nil {
-					titleDur = d
+			for i := 0; i < 5; i++ {
+				if scenes[i] == "" {
+					continue
+				}
+				audioPath := filepath.Join(voiceoverDir, fmt.Sprintf("%s.mp3", sceneNames[i]))
+				if err := tts.TextToSpeech(scenes[i], audioPath, tts.Xiaoxiao); err != nil {
+					logger.Warn("Tick 场景 TTS 合成失败", zap.Int("scene", i+1), zap.Error(err))
+					continue
+				}
+				dur := 0.0
+				if _, err := os.Stat(audioPath); err == nil {
+					if d, err := tts.GetAudioDuration(audioPath); err == nil {
+						dur = d
+					}
+				}
+				frames := int(math.Ceil(dur * FPS))
+				const audioPadding = 10
+				if frames > 0 {
+					frames += audioPadding
+				}
+				sceneTexts[i] = scenes[i]
+				switch i {
+				case 0:
+					props.Scene1Text = scenes[i]
+					props.Scene1Audio = fmt.Sprintf("voiceover/%s.mp3", sceneNames[i])
+					props.Scene1Frames = frames
+				case 1:
+					props.Scene2Text = scenes[i]
+					props.Scene2Audio = fmt.Sprintf("voiceover/%s.mp3", sceneNames[i])
+					props.Scene2Frames = frames
+				case 2:
+					props.Scene3Text = scenes[i]
+					props.Scene3Audio = fmt.Sprintf("voiceover/%s.mp3", sceneNames[i])
+					props.Scene3Frames = frames
+				case 3:
+					props.Scene4Text = scenes[i]
+					props.Scene4Audio = fmt.Sprintf("voiceover/%s.mp3", sceneNames[i])
+					props.Scene4Frames = frames
+				case 4:
+					props.Scene5Text = scenes[i]
+					props.Scene5Audio = fmt.Sprintf("voiceover/%s.mp3", sceneNames[i])
+					props.Scene5Frames = frames
 				}
 			}
-			contentDur := 0.0
-			if _, err := os.Stat(contentPath); err == nil {
-				if d, err := tts.GetAudioDuration(contentPath); err == nil {
-					contentDur = d
-				}
-			}
-
-			titleFrames = int(math.Ceil(titleDur * FPS))
-			contentFrames = int(math.Ceil(contentDur * FPS))
-
-			const audioPadding = 10
-			if titleFrames > 0 {
-				titleFrames += audioPadding
-			}
-			if contentFrames > 0 {
-				contentFrames += audioPadding
-			}
-
-			props.TitleText = titleText
-			props.ContentText = contentText
-			props.TitleAudioFile = "voiceover/title.mp3"
-			props.ContentAudioFile = "voiceover/content.mp3"
-			props.TitleAudioFrames = titleFrames
-			props.ContentAudioFrames = contentFrames
 
 			logger.Info("Tick 文案语音合成完成",
-				zap.Float64("titleAudioSec", titleDur),
-				zap.Float64("contentAudioSec", contentDur))
+				zap.Int("scenes", 5))
 		}
 
 		if len(newsPages) > 0 {
@@ -249,7 +263,55 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 		}
 	}
 
-	totalVideoFrames := titleFrames + baseFrames + newsTotalFrames + contentFrames
+	sceneTotalFrames := props.Scene1Frames + props.Scene2Frames + props.Scene3Frames + props.Scene4Frames + props.Scene5Frames
+	totalVideoFrames := sceneTotalFrames + baseFrames + newsTotalFrames
+
+	const mobileTotalCap = 1800
+	if format != "tv" && totalVideoFrames > mobileTotalCap {
+		over := totalVideoFrames - mobileTotalCap
+
+		if newsTotalFrames > over {
+			newsTotalFrames -= over
+		} else {
+			newsTotalFrames = 0
+		}
+
+		if len(newsAudioFrames) > 0 {
+			var trimmed []int
+			var trimmedFiles []string
+			var trimmedPages []hotnews.NewsPage
+			remaining := newsTotalFrames
+			for i, f := range newsAudioFrames {
+				if f <= remaining {
+					trimmed = append(trimmed, f)
+					trimmedFiles = append(trimmedFiles, newsAudioFiles[i])
+					if i < len(newsPages) {
+						trimmedPages = append(trimmedPages, newsPages[i])
+					}
+					remaining -= f
+				}
+			}
+			newsAudioFrames = trimmed
+			newsAudioFiles = trimmedFiles
+			newsPages = trimmedPages
+		}
+
+		totalVideoFrames = sceneTotalFrames + baseFrames + newsTotalFrames
+		logger.Warn("移动端总时长超 cap,已截断新闻段",
+			zap.Int("totalFrames", totalVideoFrames),
+			zap.Int("cap", mobileTotalCap))
+	}
+
+	if format != "tv" {
+		const sceneCap = 150
+		if props.Scene1Frames > sceneCap {
+			props.Scene1Frames = sceneCap
+		}
+		if props.Scene5Frames > sceneCap {
+			props.Scene5Frames = sceneCap
+		}
+	}
+
 	props.BaseAnimationFrames = baseFrames
 	props.NewsPages = newsPages
 	props.NewsAudioFiles = newsAudioFiles
@@ -258,10 +320,13 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 
 	if hasVoiceover {
 		logger.Info("Tick 语音合成完成",
-			zap.Int("titleFrames", titleFrames),
+			zap.Int("scene1Frames", props.Scene1Frames),
+			zap.Int("scene2Frames", props.Scene2Frames),
+			zap.Int("scene3Frames", props.Scene3Frames),
+			zap.Int("scene4Frames", props.Scene4Frames),
+			zap.Int("scene5Frames", props.Scene5Frames),
 			zap.Int("baseFrames", baseFrames),
 			zap.Int("newsTotalFrames", newsTotalFrames),
-			zap.Int("contentFrames", contentFrames),
 			zap.Int("totalFrames", totalVideoFrames))
 	}
 
@@ -353,6 +418,8 @@ func buildSectorTicks(points []tickfetcher.TickPoint) []SectorTick {
 			BigNet:    latest.BigNet,
 			BigRate:   latest.BigRate,
 			MainRate:  latest.MainRate,
+			Volume:    latest.Volume,
+			Turnover:  latest.Turnover,
 		})
 	}
 
@@ -411,7 +478,7 @@ func snapshotToSectors(points []tickfetcher.TickPoint) []fetcher.Sector {
 	}
 	var sectors []fetcher.Sector
 	for _, p := range latest {
-		sectors = append(sectors, fetcher.Sector{Name: p.Name, Net: p.Net, Rate: p.Rate})
+		sectors = append(sectors, fetcher.Sector{Name: p.Name, Net: p.Net, Rate: p.Rate, Volume: p.Volume, Turnover: p.Turnover})
 	}
 	return sectors
 }

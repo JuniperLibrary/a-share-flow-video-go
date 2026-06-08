@@ -385,7 +385,7 @@ func snapshotToSectors(points []tickfetcher.TickPoint) []fetcher.Sector {
 	}
 	var sectors []fetcher.Sector
 	for _, p := range latest {
-		sectors = append(sectors, fetcher.Sector{Name: p.Name, Net: p.Net, Rate: p.Rate})
+		sectors = append(sectors, fetcher.Sector{Name: p.Name, Net: p.Net, Rate: p.Rate, Volume: p.Volume, Turnover: p.Turnover})
 	}
 	return sectors
 }

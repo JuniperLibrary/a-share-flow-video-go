@@ -42,6 +42,8 @@ type TickPoint struct {
 	BigNet    float64
 	BigRate   float64
 	MainRate  float64
+	Volume    float64
+	Turnover  float64
 }
 
 type TickFetcher struct {
@@ -336,6 +338,8 @@ func saveTickToDB(dateStr, timeStr string, sectors []fetcher.Sector) error {
 			SuperRate: s.SuperRate,
 			BigNet:    s.BigNet,
 			BigRate:   s.BigRate,
+			Volume:    s.Volume,
+			Turnover:  s.Turnover,
 			InputDate: inputDate,
 		})
 	}
@@ -422,6 +426,8 @@ func LoadTickCSV(dateStr, session string) ([]TickPoint, error) {
 			BigNet:    s.BigNet,
 			BigRate:   s.BigRate,
 			MainRate:  s.SuperRate + s.BigRate,
+			Volume:    s.Volume,
+			Turnover:  s.Turnover,
 		})
 	}
 	return points, nil

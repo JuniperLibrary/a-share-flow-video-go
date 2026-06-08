@@ -122,11 +122,7 @@ func (s *TickScheduler) shouldStop(now time.Time) bool {
 	if min >= 11*60+31 && min < 12*60+55 {
 		return true
 	}
-	// 预留足够余量让最后一笔 tick（15:00）完成采集
-	// fetcher 以 interval 为周期循环（默认 5min，可配置最大 10min）
-	// 最后一笔在 15:00 采集后还需等待 interval 才能结束循环
-	// 用 15:15 = 15:00 + 最大间隔 10min + 5min 缓冲确保最后一笔不被提前停止
-	if min >= 15*60+15 {
+	if min >= 15*60+6 {
 		return true
 	}
 	return false

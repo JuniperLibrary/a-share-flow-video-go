@@ -172,6 +172,40 @@ func TestMatchSectors_MultiKeywordCumulative(t *testing.T) {
 	}
 }
 
+func TestMatchSectors_NonAShareMilitary_Blocked(t *testing.T) {
+	title := "乌克兰称俄军向乌发射8枚高超音速巡航导弹"
+	content := "财联社6月2日电，乌克兰空军2日说，1日晚至2日清晨，俄军再次对乌克兰首都基辅市及第聂伯罗彼得罗夫斯克州等多地发动导弹和无人机袭击。俄军共发射73枚导弹，其中包括8枚锆石高超音速巡航导弹。"
+	sectors := MatchSectors(title, content)
+	if len(sectors) != 0 {
+		t.Errorf("expected nil for military news, got %v", sectors)
+	}
+}
+
+func TestMatchSectors_NonAShareMidEast_Blocked(t *testing.T) {
+	title := "以色列国防军空袭加沙地带"
+	content := "哈马斯武装向以色列发射火箭弹，双方冲突持续升级"
+	sectors := MatchSectors(title, content)
+	if len(sectors) != 0 {
+		t.Errorf("expected nil for middle-east news, got %v", sectors)
+	}
+}
+
+func TestMatchSectors_AShareChipsMention_NotBlocked(t *testing.T) {
+	title := "美国升级对华芯片出口管制"
+	content := "国内半导体行业加快自主可控进程，光刻机国产化取得新突破"
+	sectors := MatchSectors(title, content)
+	matched := false
+	for _, s := range sectors {
+		if s == "半导体" {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		t.Errorf("expected '半导体' matched for chip news, got %v", sectors)
+	}
+}
+
 func TestContainsRune(t *testing.T) {
 	tests := []struct {
 		text string

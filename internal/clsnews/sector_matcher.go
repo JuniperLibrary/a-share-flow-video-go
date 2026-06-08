@@ -10,6 +10,26 @@ type sectorDef struct {
 	Keywords []string
 }
 
+// nonAShareKeywords: military / war / international-politics terms that should never
+// receive A-share sector tags. Tuned conservatively to avoid blocking domestic news
+// (e.g. "美军" is fine because chip-export-restriction news is still A-share relevant
+// — see TestMatchSectors_AShareChipsMention_NotBlocked).
+var nonAShareKeywords = []string{
+	"俄军", "乌军", "俄乌", "泽连斯基", "普京",
+	"顿巴斯", "顿涅茨克", "卢甘斯克", "基辅", "哈尔科夫", "克里米亚",
+	"高超音速", "巡航导弹", "弹道导弹", "锆石",
+	"巴以", "以军", "哈马斯", "真主党", "胡塞武装",
+	"加沙", "内塔尼亚胡", "黎巴嫩", "伊朗",
+	"美军", "驻韩美军", "驻日美军", "北约", "五角大楼",
+	"航空母舰", "航母战斗群", "战斧导弹",
+	"核武器", "核武", "战斗机", "轰炸机", "空袭", "袭",
+	"军事基地", "弹药库", "军火库",
+	"战时", "战俘", "停火协议", "人道主义危机",
+	"国防部", "国防大臣", "参谋长联席会议",
+	"联合国安理会", "维和部队",
+	"难民", "难民营",
+}
+
 // sectorDB 板块关键词库（名称 + 同义词/术语），标题命中权重 > 正文命中。
 var sectorDB = []sectorDef{
 	{
@@ -291,9 +311,14 @@ var sectorDB = []sectorDef{
 	},
 }
 
-// MatchSectors matches sectors to news by keyword scoring:
-// title hit = +2, content hit = +1; returns sectors sorted by score descending, min score 1.
+// MatchSectors matches sectors to news by keyword scoring: title hit = +5,
+// content hit = +1; returns sectors sorted by score descending. Returns nil
+// for non-A-share news (military / war / international politics).
 func MatchSectors(title, content string) []string {
+	if isNonAShareNews(title, content) {
+		return nil
+	}
+
 	type match struct {
 		name  string
 		score int
@@ -335,6 +360,26 @@ func MatchSectors(title, content string) []string {
 		out[i] = r.name
 	}
 	return out
+}
+
+func isNonAShareNews(title, content string) bool {
+	if utf8.RuneCountInString(title) >= 2 {
+		titleRunes := []rune(title)
+		for _, kw := range nonAShareKeywords {
+			if containsRune(titleRunes, kw) {
+				return true
+			}
+		}
+	}
+	if utf8.RuneCountInString(content) >= 2 {
+		contentRunes := []rune(content)
+		for _, kw := range nonAShareKeywords {
+			if containsRune(contentRunes, kw) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // containsRune checks if kw exists within textRunes (rune-based for CJK support).
