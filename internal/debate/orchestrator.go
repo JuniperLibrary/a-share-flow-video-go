@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/debate/prompts"
+	"github.com/a-share-flow-video-go/internal/logger"
+	"go.uber.org/zap"
 )
 
 type Orchestrator struct {
@@ -80,26 +81,69 @@ func (o *Orchestrator) Run(ctx context.Context, state DebateState) (Script, erro
 		state.StockName = state.StockCode
 	}
 
+	logger.Info("辩论开始",
+		zap.String("sessionId", state.SessionID),
+		zap.String("stockCode", state.StockCode),
+		zap.String("stockName", state.StockName),
+		zap.Int("reportLen", len(state.ReportText)),
+		zap.String("period", state.ReportPeriod),
+	)
+
 	if state.PreviousRefs == "" && state.StockCode != "" {
 		prev, err := o.memory.GetRecentSessions(ctx, state.StockCode, 1)
 		if err == nil && len(prev) > 0 && prev[0].Verdict != "" {
 			state.PreviousRefs = fmt.Sprintf("[历史 verdict %s] %s", prev[0].Date, prev[0].Verdict)
+			logger.Info("加载历史 verdict", zap.String("sessionId", state.SessionID), zap.String("prevVerdict", prev[0].Verdict))
 		}
 	}
 
+	totalTurns := 0
 	for _, step := range defaultPhasePlan {
+		logger.Info("辩论阶段开始",
+			zap.String("sessionId", state.SessionID),
+			zap.String("phase", string(step.Phase)),
+			zap.Int("speakers", len(step.Speakers)),
+			zap.Int("rounds", step.Rounds),
+			zap.Bool("allowTools", step.AllowTools),
+		)
+
 		for round := 0; round < step.Rounds; round++ {
 			for _, speaker := range step.Speakers {
+				start := time.Now()
 				turn, err := o.runTurn(ctx, &state, speaker, step.Phase, step.AllowTools)
 				if err != nil {
+					logger.Error("辩论轮次失败",
+						zap.String("sessionId", state.SessionID),
+						zap.String("phase", string(step.Phase)),
+						zap.String("speaker", string(speaker)),
+						zap.Int("round", round+1),
+						zap.Error(err),
+					)
 					return Script{}, fmt.Errorf("phase=%s speaker=%s 失败: %w", step.Phase, speaker, err)
 				}
 				state.Turns = append(state.Turns, turn)
 				state.PreviousRefs = updatePreviousRefs(state.PreviousRefs, turn)
+				totalTurns++
+
+				logger.Info("辩论轮次完成",
+					zap.String("sessionId", state.SessionID),
+					zap.Int("index", turn.Index),
+					zap.String("phase", string(step.Phase)),
+					zap.String("speaker", string(speaker)),
+					zap.Int("round", round+1),
+					zap.Int("textLen", len(turn.Text)),
+					zap.Int("citations", len(turn.Citations)),
+					zap.Int("toolCalls", len(turn.ToolCalls)),
+					zap.Duration("latency", time.Since(start)),
+				)
 
 				if step.AllowTools && len(turn.ToolCalls) > 0 {
 					results := o.executeTools(ctx, turn.ToolCalls)
 					state.PreviousRefs = state.PreviousRefs + "\n[tool results]\n" + results
+					logger.Info("工具调用完成",
+						zap.String("sessionId", state.SessionID),
+						zap.Int("tools", len(turn.ToolCalls)),
+					)
 				}
 			}
 		}
@@ -116,6 +160,12 @@ func (o *Orchestrator) Run(ctx context.Context, state DebateState) (Script, erro
 		Verdict:      verdict,
 	}
 
+	logger.Info("辩论完成",
+		zap.String("sessionId", state.SessionID),
+		zap.Int("totalTurns", totalTurns),
+		zap.Int("verdictLen", len(verdict)),
+	)
+
 	if err := o.memory.SaveSession(ctx, SessionEntry{
 		SessionID:  state.SessionID,
 		StockCode:  state.StockCode,
@@ -125,17 +175,28 @@ func (o *Orchestrator) Run(ctx context.Context, state DebateState) (Script, erro
 		TurnsCount: len(state.Turns),
 		Script:     script,
 	}); err != nil {
-		log.Printf("[debate/orchestrator] SaveSession 失败: %v", err)
+		logger.Warn("保存辩论记录失败", zap.String("sessionId", state.SessionID), zap.Error(err))
 	}
 
 	return script, nil
 }
 
 func (o *Orchestrator) RunLegacy(ctx context.Context, reportText string, structuredData ...map[string]any) (Script, error) {
+	logger.Info("辩论(legacy 模式)",
+		zap.Int("reportLen", len(reportText)),
+		zap.Int("structuredCount", len(structuredData)),
+	)
 	return GenerateScript(reportText, o.cfg, structuredData...)
 }
 
 func (o *Orchestrator) runTurn(ctx context.Context, state *DebateState, speaker Speaker, phase Phase, allowTools bool) (Turn, error) {
+	logger.Debug("构建 prompt",
+		zap.String("sessionId", state.SessionID),
+		zap.String("speaker", string(speaker)),
+		zap.String("phase", string(phase)),
+		zap.Int("transcriptLen", len(state.Turns)),
+	)
+
 	systemPrompt := prompts.SystemPromptFor(string(speaker))
 	ctx2 := prompts.TurnContext{
 		ReportText:        state.ReportText,
@@ -149,17 +210,47 @@ func (o *Orchestrator) runTurn(ctx context.Context, state *DebateState, speaker 
 	userPrompt := prompts.BuildUserPrompt(string(speaker), string(phase), ctx2)
 	combined := systemPrompt + "\n\n" + userPrompt
 
+	llmStart := time.Now()
 	raw, err := callLLM(o.cfg, combined, 0.8, 500)
+	llmLatency := time.Since(llmStart)
 	if err != nil {
+		logger.Error("LLM 调用失败",
+			zap.String("sessionId", state.SessionID),
+			zap.String("speaker", string(speaker)),
+			zap.String("phase", string(phase)),
+			zap.Duration("latency", llmLatency),
+			zap.Error(err),
+		)
 		return Turn{}, err
 	}
 
+	logger.Debug("LLM 返回原始结果",
+		zap.String("sessionId", state.SessionID),
+		zap.Duration("latency", llmLatency),
+		zap.Int("rawLen", len(raw)),
+	)
+
 	turn, err := parseTurn(raw, speaker, phase)
 	if err != nil {
+		logger.Warn("解析 LLM 输出失败",
+			zap.String("sessionId", state.SessionID),
+			zap.String("speaker", string(speaker)),
+			zap.String("phase", string(phase)),
+			zap.Int("rawLen", len(raw)),
+			zap.String("rawPreview", truncateString(raw, 200)),
+			zap.Error(err),
+		)
 		return Turn{}, err
 	}
 	turn.Index = len(state.Turns)
 	return turn, nil
+}
+
+func truncateString(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "..."
 }
 
 func (o *Orchestrator) executeTools(ctx context.Context, calls []ToolCall) string {

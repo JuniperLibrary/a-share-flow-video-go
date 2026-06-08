@@ -51,14 +51,15 @@ type Turn struct {
 }
 
 type Script struct {
-	Turns       []Turn  `json:"turns"`
-	ReportHash  string  `json:"reportHash,omitempty"`
-	StockCode   string  `json:"stockCode,omitempty"`
-	StockName   string  `json:"stockName,omitempty"`
-	SessionID   string  `json:"sessionId,omitempty"`
-	PreviousRefs string  `json:"previousRefs,omitempty"`
-	Verdict     string  `json:"verdict,omitempty"`
-	Phase       Phase   `json:"phase,omitempty"`
+	Turns        []Turn `json:"turns"`
+	ReportHash   string `json:"reportHash,omitempty"`
+	StockCode    string `json:"stockCode,omitempty"`
+	StockName    string `json:"stockName,omitempty"`
+	ReportPeriod string `json:"reportPeriod,omitempty"`
+	SessionID    string `json:"sessionId,omitempty"`
+	PreviousRefs string `json:"previousRefs,omitempty"`
+	Verdict      string `json:"verdict,omitempty"`
+	Phase        Phase  `json:"phase,omitempty"`
 }
 
 // AudioTurn 单轮发言的音频元数据。
@@ -73,18 +74,20 @@ type AudioTurn struct {
 
 // RenderProps 传递给 DebateVideo Remotion 组件的 props。
 type RenderProps struct {
-	TaskID           string      `json:"taskId"`
-	ModeratorName    string      `json:"moderatorName"`
-	BullName         string      `json:"bullName"`
-	BearName         string      `json:"bearName"`
-	SectorName       string      `json:"sectorName"`
-	RiskName         string      `json:"riskName"`
-	SynthesizerName  string      `json:"synthesizerName"`
-	ReportTitle      string      `json:"reportTitle"`
-	Turns            []Turn      `json:"turns"`
-	AudioTurns       []AudioTurn `json:"audioTurns"`
-	TotalFrames      int         `json:"totalFrames"`
-	Width            int         `json:"width"`
-	Height           int         `json:"height"`
-	Format           string      `json:"format"`
+	TaskID          string      `json:"taskId"`
+	ModeratorName   string      `json:"moderatorName"`
+	BullName        string      `json:"bullName"`
+	BearName        string      `json:"bearName"`
+	SectorName      string      `json:"sectorName"`
+	RiskName        string      `json:"riskName"`
+	SynthesizerName string      `json:"synthesizerName"`
+	StockName       string      `json:"stockName"`
+	ReportPeriod    string      `json:"reportPeriod"`
+	ReportTitle     string      `json:"reportTitle"`
+	Turns           []Turn      `json:"turns"`
+	AudioTurns      []AudioTurn `json:"audioTurns"`
+	TotalFrames     int         `json:"totalFrames"`
+	Width           int         `json:"width"`
+	Height          int         `json:"height"`
+	Format          string      `json:"format"`
 }

@@ -34,11 +34,22 @@ func Render(taskID string, script Script, audioTurns []AudioTurn, outputPath str
 		w, h = config.TVWidth, config.TVHeight
 	}
 
+	reportTitle := "财报辩论"
+	if script.StockName != "" {
+		if script.ReportPeriod != "" {
+			reportTitle = script.StockName + " · " + script.ReportPeriod + " · 多空辩论"
+		} else {
+			reportTitle = script.StockName + " · 多空辩论"
+		}
+	}
+
 	props := RenderProps{
 		TaskID:      taskID,
 		BullName:    "乐观派",
 		BearName:    "谨慎派",
-		ReportTitle: "财报辩论",
+		StockName:   script.StockName,
+		ReportPeriod: script.ReportPeriod,
+		ReportTitle: reportTitle,
 		Turns:       script.Turns,
 		AudioTurns:  audioTurns,
 		TotalFrames: totalFrames,

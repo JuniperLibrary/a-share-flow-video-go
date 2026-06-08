@@ -44,6 +44,11 @@ func GenerateAudio(taskID string, script Script) ([]AudioTurn, error) {
 		_ = os.Remove(audioDir)
 	}
 
+	logger.Info("辩论 TTS 合成开始",
+		zap.String("taskId", taskID),
+		zap.Int("turns", len(script.Turns)),
+	)
+
 	for i, turn := range script.Turns {
 		voice := debateVoiceBear
 		if turn.Speaker == Bull {
@@ -53,7 +58,16 @@ func GenerateAudio(taskID string, script Script) ([]AudioTurn, error) {
 		relPath := fmt.Sprintf("debate/%s/turn_%d.mp3", taskID, i)
 		absPath := filepath.Join(rendererDir, "public", relPath)
 
+		logger.Debug("辩论 TTS 合成轮次",
+			zap.String("taskId", taskID),
+			zap.Int("index", i),
+			zap.String("speaker", string(turn.Speaker)),
+			zap.Int("textLen", len(turn.Text)),
+			zap.String("voice", string(voice)),
+		)
+
 		if err := tts.TextToSpeechRate(turn.Text, absPath, voice, debateSpeechRate); err != nil {
+			logger.Error("辩论 TTS 合成失败", zap.String("taskId", taskID), zap.Int("turn", i), zap.Error(err))
 			rollback()
 			return nil, fmt.Errorf("第 %d 轮 TTS 失败: %w", i, err)
 		}
@@ -61,6 +75,7 @@ func GenerateAudio(taskID string, script Script) ([]AudioTurn, error) {
 
 		duration, err := tts.GetAudioDuration(absPath)
 		if err != nil {
+			logger.Error("辩论 TTS 获取时长失败", zap.String("taskId", taskID), zap.Int("turn", i), zap.Error(err))
 			rollback()
 			return nil, fmt.Errorf("第 %d 轮获取时长失败: %w", i, err)
 		}
@@ -73,11 +88,20 @@ func GenerateAudio(taskID string, script Script) ([]AudioTurn, error) {
 			DurationSec: duration,
 			Frames:      framesForAudio(duration),
 		})
+
+		logger.Debug("辩论 TTS 轮次完成",
+			zap.String("taskId", taskID),
+			zap.Int("index", i),
+			zap.Float64("durationSec", duration),
+			zap.Int("frames", framesForAudio(duration)),
+		)
 	}
 
-	logger.Info("辩论 TTS 全部合成完成",
+	logger.Info("辩论 TTS 合成完成",
 		zap.String("taskId", taskID),
-		zap.Int("turns", len(results)))
+		zap.Int("turns", len(results)),
+		zap.Float64("totalDurationSec", totalDuration(results)),
+	)
 
 	return results, nil
 }
@@ -85,4 +109,12 @@ func GenerateAudio(taskID string, script Script) ([]AudioTurn, error) {
 // framesForAudio 音频时长 → 帧数（@FPS），加 debatePadFrames 帧 padding。
 func framesForAudio(sec float64) int {
 	return int(sec*float64(config.FPS)) + debatePadFrames
+}
+
+func totalDuration(turns []AudioTurn) float64 {
+	var total float64
+	for _, t := range turns {
+		total += t.DurationSec
+	}
+	return total
 }

@@ -5,9 +5,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
 	"time"
 
+	"github.com/a-share-flow-video-go/internal/logger"
+	"go.uber.org/zap"
 	_ "modernc.org/sqlite"
 )
 
@@ -35,7 +36,11 @@ func (m *DebateMemoryNoop) GetRecentSessions(ctx context.Context, stockCode stri
 }
 
 func (m *DebateMemoryNoop) SaveSession(ctx context.Context, entry SessionEntry) error {
-	log.Printf("[debate/memory] (noop) session=%s stock=%s turns=%d", entry.SessionID, entry.StockCode, entry.TurnsCount)
+	logger.Debug("辩论记录(noop)",
+		zap.String("sessionId", entry.SessionID),
+		zap.String("stockCode", entry.StockCode),
+		zap.Int("turns", entry.TurnsCount),
+	)
 	return nil
 }
 
@@ -95,8 +100,18 @@ func (m *DebateMemorySQLite) SaveSession(ctx context.Context, entry SessionEntry
 		nil,
 	)
 	if err != nil {
+		logger.Error("辩论记录保存失败",
+			zap.String("sessionId", entry.SessionID),
+			zap.String("stockCode", entry.StockCode),
+			zap.Error(err),
+		)
 		return fmt.Errorf("保存 session 失败: %w", err)
 	}
+	logger.Debug("辩论记录已保存",
+		zap.String("sessionId", entry.SessionID),
+		zap.String("stockCode", entry.StockCode),
+		zap.Int("turns", entry.TurnsCount),
+	)
 	return nil
 }
 

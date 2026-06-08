@@ -59,7 +59,7 @@ func TestParseScript_NewRange(t *testing.T) {
 	avgChars := float64(totalChars) / float64(len(script.Turns))
 
 	fmt.Printf("\n=== parseScript Test Results ===\n")
-	fmt.Printf("Turns: %d (target 8-16 even) — PASS\n", len(script.Turns))
+	fmt.Printf("Turns: %d (target 8-12 even) — PASS\n", len(script.Turns))
 	fmt.Printf("Speakers: bull=%d bear=%d (must be equal) — %s\n",
 		bullCount, bearCount, map[bool]string{true: "PASS", false: "FAIL"}[bullCount == bearCount])
 	fmt.Printf("Char range: min=%d max=%d avg=%.1f\n", minChars, maxChars, avgChars)
