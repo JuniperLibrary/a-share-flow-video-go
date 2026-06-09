@@ -134,7 +134,7 @@ func mapStructureType(superPct, bigPct float64, netTotal float64) string {
 	return "机构和大户同步减仓"
 }
 
-func GenerateCopywritingAI(sectors []fetcher.Sector, dateStr, session string) (string, error) {
+func GenerateCopywritingAI(sectors []fetcher.Sector, dateStr, session, prevPrediction string) (string, error) {
 	var inflows, outflows []struct {
 		Name     string
 		Net      float64
@@ -225,6 +225,7 @@ func GenerateCopywritingAI(sectors []fetcher.Sector, dateStr, session string) (s
 		outflowTop3,
 		inflowTop3,
 		outlookHint,
+		prevPrediction,
 	)
 
 	aiCfg := config.GetAIConfig()

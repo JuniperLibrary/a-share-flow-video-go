@@ -420,10 +420,6 @@ func SetupRouter(tickSched *tick.TickScheduler, newsSched *clsnews.NewsScheduler
 			newsSched.Stop()
 			c.JSON(200, gin.H{"ok": true, "message": "新闻轮询已停止"})
 		})
-		r.POST("/api/news/replay", func(c *gin.Context) {
-			count := newsSched.PollOnce()
-			c.JSON(200, gin.H{"ok": true, "count": count, "message": fmt.Sprintf("回放完成，新增 %d 条新闻", count)})
-		})
 	}
 
 	r.GET("/output/:date/:file", serveVideo)
@@ -1071,7 +1067,8 @@ func handleOptimizeCopy(c *gin.Context) {
 		return
 	}
 
-	aiText, err := copy.GenerateCopywritingAI(sectors, body.Date, body.Session)
+	prevPrediction := loadPrevCopywriting(body.Date, body.Session)
+	aiText, err := copy.GenerateCopywritingAI(sectors, body.Date, body.Session, prevPrediction)
 	if err != nil {
 			logger.InternalError(c, "操作失败", err)
 			return
@@ -1271,7 +1268,8 @@ func handleGenerateTick(c *gin.Context) {
 		if body.CopyMode == "ai" {
 			sse.Send("log", "🤖 AI 文案生成中...")
 			var aiErr error
-			copywriteText, aiErr = copy.GenerateCopywritingAI(sectors, body.Date, body.Session)
+			prevPrediction := loadPrevCopywriting(body.Date, body.Session)
+			copywriteText, aiErr = copy.GenerateCopywritingAI(sectors, body.Date, body.Session, prevPrediction)
 			if aiErr != nil {
 				sse.Send("log", fmt.Sprintf("⚠️ AI 生成失败，降级模板: %v", aiErr))
 				copywriteText = copy.GenerateCopywriting(sectors, body.Date, body.Session)
@@ -2066,4 +2064,51 @@ func corsMiddleware() gin.HandlerFunc {
 
 		c.Next()
 	}
+}
+
+// loadPrevCopywriting 加载上一交易日的文案作为今日 AI 生成的上下文。
+func loadPrevCopywriting(todayStr, session string) string {
+	prevDate := calcPrevDate(todayStr)
+	if prevDate == "" {
+		return ""
+	}
+	db, err := storage.Get()
+	if err != nil {
+		return ""
+	}
+	bySession, err := db.LoadCopywritingBySession(prevDate, session)
+	if err == nil {
+		for _, typ := range []string{"ai", "ai_tick"} {
+			if c, ok := bySession[typ]; ok {
+				return c
+			}
+		}
+	}
+	list, err := db.LoadCopywriting(prevDate)
+	if err != nil || len(list) == 0 {
+		return ""
+	}
+	for _, cw := range list {
+		if cw.Type == "ai" || cw.Type == "ai_tick" {
+			return cw.Content
+		}
+	}
+	return list[0].Content
+}
+
+// calcPrevDate 计算上一个交易日（跳过周末）。
+func calcPrevDate(todayStr string) string {
+	t, err := time.Parse("2006-01-02", todayStr)
+	if err != nil {
+		return ""
+	}
+	for i := 1; i <= 3; i++ {
+		d := t.AddDate(0, 0, -i)
+		w := d.Weekday()
+		if w == time.Saturday || w == time.Sunday {
+			continue
+		}
+		return d.Format("2006-01-02")
+	}
+	return ""
 }

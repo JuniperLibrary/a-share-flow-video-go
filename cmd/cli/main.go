@@ -226,7 +226,8 @@ func generateSession(sectors []fetcher.Sector, dateStr, dateDir string, useAI bo
 	var copywriteText string
 	if useAI {
 		var err error
-		copywriteText, err = copy.GenerateCopywritingAI(sectors, dateStr, session)
+		prevPrediction := loadPrevPrediction(dateStr, session)
+		copywriteText, err = copy.GenerateCopywritingAI(sectors, dateStr, session, prevPrediction)
 		if err != nil {
 			l.Warn("AI文案生成失败，降级模板模式", zap.Error(err))
 			copywriteText = copy.GenerateCopywriting(sectors, dateStr, session)
@@ -301,7 +302,8 @@ func processTickDate(dateStr string, sessionOverride string, useAI bool, format 
 		// 在渲染前生成文案，用于 TTS 语音合成
 		var copywriteText string
 		if useAI {
-			text, aiErr := copy.GenerateCopywritingAI(sectors, dateStr, sess)
+			prevPrediction := loadPrevPrediction(dateStr, sess)
+			text, aiErr := copy.GenerateCopywritingAI(sectors, dateStr, sess, prevPrediction)
 			if aiErr != nil {
 				sl.Warn("AI文案生成失败，降级模板模式", zap.Error(aiErr))
 				copywriteText = copy.GenerateCopywriting(sectors, dateStr, sess)
@@ -463,4 +465,51 @@ func generateMultiDayVideo(endDate string, days int, useAI bool) {
 	l.Info("Bar Chart Race 视频生成完成",
 		zap.String("output", "output/"+dateLabel+"/"),
 	)
+}
+
+// loadPrevPrediction 加载上一交易日的文案作为今日 AI 生成的上下文。
+func loadPrevPrediction(todayStr, session string) string {
+	prevDate := calcPrevDate(todayStr)
+	if prevDate == "" {
+		return ""
+	}
+	db, err := storage.Get()
+	if err != nil {
+		return ""
+	}
+	bySession, err := db.LoadCopywritingBySession(prevDate, session)
+	if err == nil {
+		for _, typ := range []string{"ai", "ai_tick"} {
+			if c, ok := bySession[typ]; ok {
+				return c
+			}
+		}
+	}
+	list, err := db.LoadCopywriting(prevDate)
+	if err != nil || len(list) == 0 {
+		return ""
+	}
+	for _, cw := range list {
+		if cw.Type == "ai" || cw.Type == "ai_tick" {
+			return cw.Content
+		}
+	}
+	return list[0].Content
+}
+
+// calcPrevDate 计算上一个交易日（跳过周末）。
+func calcPrevDate(todayStr string) string {
+	t, err := time.Parse("2006-01-02", todayStr)
+	if err != nil {
+		return ""
+	}
+	for i := 1; i <= 3; i++ {
+		d := t.AddDate(0, 0, -i)
+		w := d.Weekday()
+		if w == time.Saturday || w == time.Sunday {
+			continue
+		}
+		return d.Format("2006-01-02")
+	}
+	return ""
 }

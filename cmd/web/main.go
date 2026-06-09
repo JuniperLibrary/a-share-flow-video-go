@@ -31,6 +31,8 @@ func main() {
 	defer tickSched.Shutdown()
 
 	newsSched := clsnews.NewNewsScheduler()
+	newsSched.Start()
+	defer newsSched.Stop()
 
 	r := web.SetupRouter(tickSched, newsSched)
 

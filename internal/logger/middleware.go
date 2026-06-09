@@ -47,7 +47,6 @@ var routeNames = map[string]string{
 	"GET /api/news/status":                "新闻轮询状态",
 	"POST /api/news/start":                "启动新闻轮询",
 	"POST /api/news/stop":                 "停止新闻轮询",
-	"POST /api/news/replay":               "新闻回放",
 	"GET /output/:date/:file":             "视频文件服务",
 	"GET /api/docs":                       "API文档",
 }

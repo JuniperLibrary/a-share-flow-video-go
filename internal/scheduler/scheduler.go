@@ -226,7 +226,8 @@ func (s *Scheduler) execute(session string) {
 	copywriteText := ""
 	aiCfg := config.GetAIConfig()
 	if aiCfg.APIKey != "" {
-		if aiText, err := copy.GenerateCopywritingAI(sectors, todayStr, session); err == nil {
+		prevPrediction := loadPrevCopywriting(todayStr, session)
+		if aiText, err := copy.GenerateCopywritingAI(sectors, todayStr, session, prevPrediction); err == nil {
 			copywriteText = aiText
 		}
 	}
@@ -266,6 +267,56 @@ func (s *Scheduler) execute(session string) {
 	s.lastStatus = "success"
 	s.mu.Unlock()
 	logger.Info("scheduler 完成", zap.String("date", todayStr))
+}
+
+// loadPrevCopywriting 加载上一交易日的文案作为今日 AI 生成的上下文。
+// 如果找不到则返回空字符串。
+func loadPrevCopywriting(todayStr, session string) string {
+	prevDate := calcPrevDate(todayStr)
+	if prevDate == "" {
+		return ""
+	}
+	db, err := storage.Get()
+	if err != nil {
+		return ""
+	}
+	// 优先查同一 session 的 AI 文案
+	bySession, err := db.LoadCopywritingBySession(prevDate, session)
+	if err == nil {
+		for _, typ := range []string{"ai", "ai_tick"} {
+			if c, ok := bySession[typ]; ok {
+				return c
+			}
+		}
+	}
+	// 回退：查该日期所有文案
+	list, err := db.LoadCopywriting(prevDate)
+	if err != nil || len(list) == 0 {
+		return ""
+	}
+	for _, cw := range list {
+		if cw.Type == "ai" || cw.Type == "ai_tick" {
+			return cw.Content
+		}
+	}
+	return list[0].Content
+}
+
+// calcPrevDate 计算上一个交易日（跳过周末）。
+func calcPrevDate(todayStr string) string {
+	t, err := time.Parse("2006-01-02", todayStr)
+	if err != nil {
+		return ""
+	}
+	for i := 1; i <= 3; i++ {
+		d := t.AddDate(0, 0, -i)
+		w := d.Weekday()
+		if w == time.Saturday || w == time.Sunday {
+			continue
+		}
+		return d.Format("2006-01-02")
+	}
+	return ""
 }
 
 func parseTime(s string) (int, int) {
