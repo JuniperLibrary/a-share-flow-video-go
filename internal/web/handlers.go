@@ -28,8 +28,10 @@ import (
 	"github.com/a-share-flow-video-go/internal/hotnews"
 	"github.com/a-share-flow-video-go/internal/logger"
 	"github.com/a-share-flow-video-go/internal/renderer"
+	"github.com/a-share-flow-video-go/internal/report"
 	"github.com/a-share-flow-video-go/internal/storage"
 	"github.com/a-share-flow-video-go/internal/tick"
+	"github.com/a-share-flow-video-go/internal/tts"
 	"go.uber.org/zap"
 )
 
@@ -56,6 +58,7 @@ type debateMeta struct {
 	TurnCount     int
 	Format        string
 }
+
 var debateTaskMeta = make(map[string]*debateMeta)
 var debateMetaMu sync.RWMutex
 
@@ -280,6 +283,13 @@ func SetupRouter(tickSched *tick.TickScheduler, newsSched *clsnews.NewsScheduler
 	r.GET("/api/config", handleGetConfig)
 	r.POST("/api/config", handleSaveConfig)
 	r.POST("/api/optimize-copy", handleOptimizeCopy)
+	r.POST("/api/tts/generate-script", handleTTSScriptGenerate)
+	r.POST("/api/tts/synthesize", handleTTSSynthesize)
+	r.GET("/api/tts/file/:file", handleTTSFile)
+	r.GET("/api/daily-report/dates", handleDailyReportDates)
+	r.GET("/api/daily-report/:date", handleDailyReport)
+	r.POST("/api/daily-report/generate", handleDailyReportGenerate)
+
 	r.GET("/api/files/:date", handleFiles)
 
 	r.GET("/api/tick/status", func(c *gin.Context) {
@@ -544,6 +554,98 @@ func handleExportFile(c *gin.Context) {
 	c.File(filepath.Join(dateDir, task.Date, filename))
 }
 
+func handleTTSSynthesize(c *gin.Context) {
+	var body struct {
+		Text string `json:"text"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		logger.BadRequest(c, "请求体需为 JSON")
+		return
+	}
+
+	body.Text = strings.TrimSpace(body.Text)
+	if body.Text == "" {
+		logger.BadRequest(c, "文本不能为空")
+		return
+	}
+	const maxTTSRunes = 2500
+	if len([]rune(body.Text)) > maxTTSRunes {
+		logger.BadRequest(c, fmt.Sprintf("文本过长，最多 %d 字", maxTTSRunes))
+		return
+	}
+
+	logger.Info("TTS 合成请求",
+		zap.Int("chars", len([]rune(body.Text))),
+	)
+
+	audioDir := filepath.Join(config.GetRendererDir(), "public", "tts")
+	if err := os.MkdirAll(audioDir, 0755); err != nil {
+		logger.InternalError(c, "创建音频目录失败", err)
+		return
+	}
+
+	fileName := newTTSFileName()
+	outputPath := filepath.Join(audioDir, fileName)
+	if err := tts.TextToSpeech(body.Text, outputPath); err != nil {
+		logger.InternalError(c, "TTS 合成失败", err)
+		return
+	}
+
+	duration, _ := tts.GetAudioDuration(outputPath)
+
+	logger.Info("TTS 合成完成",
+		zap.String("file", fileName),
+		zap.Float64("durationSec", duration),
+		zap.Int("chars", len([]rune(body.Text))),
+	)
+
+	c.JSON(200, gin.H{
+		"file":        fileName,
+		"durationSec": duration,
+		"chars":       len([]rune(body.Text)),
+	})
+}
+
+func handleTTSScriptGenerate(c *gin.Context) {
+	var body struct {
+		Topic string `json:"topic"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		logger.BadRequest(c, "请求体需为 JSON")
+		return
+	}
+	body.Topic = strings.TrimSpace(body.Topic)
+	if body.Topic == "" {
+		logger.BadRequest(c, "主题不能为空")
+		return
+	}
+
+	result, err := tts.GenerateScript(body.Topic)
+	if err != nil {
+		logger.InternalError(c, "口播稿生成失败", err)
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"script": result.Script,
+	})
+}
+
+func handleTTSFile(c *gin.Context) {
+	fileName := filepath.Base(c.Param("file"))
+	if fileName == "." || !strings.HasSuffix(fileName, ".mp3") {
+		logger.BadRequest(c, "文件名无效")
+		return
+	}
+	p := filepath.Join(config.GetRendererDir(), "public", "tts", fileName)
+	if _, err := os.Stat(p); err != nil {
+		logger.NotFound(c, "音频文件不存在")
+		return
+	}
+	c.Header("Content-Type", "audio/mpeg")
+	c.File(p)
+}
+
 func handleExportHotSectors(c *gin.Context) {
 	dateStr := c.Param("date")
 	if dateStr == "" {
@@ -552,9 +654,9 @@ func handleExportHotSectors(c *gin.Context) {
 
 	sectors, err := fetcher.FetchTop21HotSectors()
 	if err != nil {
-			logger.InternalError(c, "操作失败", err)
-			return
-		}
+		logger.InternalError(c, "操作失败", err)
+		return
+	}
 
 	c.JSON(200, gin.H{
 		"date":    dateStr,
@@ -573,8 +675,8 @@ type SaveAllTask struct {
 }
 
 var (
-	saveAllTasks      = make(map[string]*SaveAllTask)
-	saveAllTasksMu    sync.Mutex
+	saveAllTasks       = make(map[string]*SaveAllTask)
+	saveAllTasksMu     sync.Mutex
 	saveAllTaskCounter int
 )
 
@@ -737,20 +839,30 @@ func runSaveAllTask(task *SaveAllTask) {
 					bigRateFloat, _ := toFloat64(d["f75"])
 					volumeFloat, _ := toFloat64(d["f5"])
 					turnoverFloat, _ := toFloat64(d["f6"])
+					turnoverRateFloat, _ := toFloat64(d["f7"])
+					leadStockName, _ := d["f140"].(string)
+					leadChangeFloat, _ := toFloat64(d["f127"])
+					mcapFloat, _ := toFloat64(d["f20"])
+					cmcapFloat, _ := toFloat64(d["f21"])
 					allSectors = append(allSectors, storage.SectorAll{
-						Date:      task.Date,
-						Code:      code,
-						Name:      name,
-						Net:       roundTo2(f / 1e8),
-						Rate:      roundTo2(rateFloat),
-						ChangePct: roundTo2(changePctFloat),
-						SuperNet:  roundTo2(superNetFloat / 1e8),
-						SuperRate: roundTo2(superRateFloat),
-						BigNet:    roundTo2(bigNetFloat / 1e8),
-						BigRate:   roundTo2(bigRateFloat),
-						Volume:    roundTo2(volumeFloat),
-						Turnover:  roundTo2(turnoverFloat / 1e8),
-						Category:  item.category,
+						Date:                 task.Date,
+						Code:                 code,
+						Name:                 name,
+						Net:                  roundTo2(f / 1e8),
+						Rate:                 roundTo2(rateFloat),
+						ChangePct:            roundTo2(changePctFloat),
+						SuperNet:             roundTo2(superNetFloat / 1e8),
+						SuperRate:            roundTo2(superRateFloat),
+						BigNet:               roundTo2(bigNetFloat / 1e8),
+						BigRate:              roundTo2(bigRateFloat),
+						Volume:               roundTo2(volumeFloat),
+						Turnover:             roundTo2(turnoverFloat / 1e8),
+						TurnoverRate:         roundTo2(turnoverRateFloat),
+						LeadStockName:        leadStockName,
+						LeadStockChangePct:   roundTo2(leadChangeFloat),
+						TotalMarketCap:       roundTo2(mcapFloat / 1e8),
+						CirculatingMarketCap: roundTo2(cmcapFloat / 1e8),
+						Category:             item.category,
 					})
 				}
 			}
@@ -818,15 +930,15 @@ func handleGetAllSectors(c *gin.Context) {
 
 	db, err := storage.Get()
 	if err != nil {
-			logger.InternalError(c, "操作失败", err)
-			return
-		}
+		logger.InternalError(c, "操作失败", err)
+		return
+	}
 
 	sectors, err := db.LoadSectorsAll(dateStr)
 	if err != nil {
-			logger.InternalError(c, "操作失败", err)
-			return
-		}
+		logger.InternalError(c, "操作失败", err)
+		return
+	}
 
 	c.JSON(200, gin.H{
 		"date":    dateStr,
@@ -845,15 +957,15 @@ func handleGetSectorsAllRange(c *gin.Context) {
 
 	db, err := storage.Get()
 	if err != nil {
-			logger.InternalError(c, "操作失败", err)
-			return
-		}
+		logger.InternalError(c, "操作失败", err)
+		return
+	}
 
 	sectors, err := db.LoadSectorsAllRange(startDate, endDate)
 	if err != nil {
-			logger.InternalError(c, "操作失败", err)
-			return
-		}
+		logger.InternalError(c, "操作失败", err)
+		return
+	}
 
 	c.JSON(200, gin.H{
 		"sectors": sectors,
@@ -863,15 +975,15 @@ func handleGetSectorsAllRange(c *gin.Context) {
 func handleGetSectorsAllNames(c *gin.Context) {
 	db, err := storage.Get()
 	if err != nil {
-			logger.InternalError(c, "操作失败", err)
-			return
-		}
+		logger.InternalError(c, "操作失败", err)
+		return
+	}
 
 	names, err := db.ListSectorsAllNames()
 	if err != nil {
-			logger.InternalError(c, "操作失败", err)
-			return
-		}
+		logger.InternalError(c, "操作失败", err)
+		return
+	}
 
 	c.JSON(200, gin.H{
 		"names": names,
@@ -881,15 +993,15 @@ func handleGetSectorsAllNames(c *gin.Context) {
 func handleGetSectorsAllDates(c *gin.Context) {
 	db, err := storage.Get()
 	if err != nil {
-			logger.InternalError(c, "操作失败", err)
-			return
-		}
+		logger.InternalError(c, "操作失败", err)
+		return
+	}
 
 	dates, err := db.ListSectorsAllDates()
 	if err != nil {
-			logger.InternalError(c, "操作失败", err)
-			return
-		}
+		logger.InternalError(c, "操作失败", err)
+		return
+	}
 
 	c.JSON(200, gin.H{
 		"dates": dates,
@@ -1070,9 +1182,9 @@ func handleOptimizeCopy(c *gin.Context) {
 	prevPrediction := loadPrevCopywriting(body.Date, body.Session)
 	aiText, err := copy.GenerateCopywritingAI(sectors, body.Date, body.Session, prevPrediction)
 	if err != nil {
-			logger.InternalError(c, "操作失败", err)
-			return
-		}
+		logger.InternalError(c, "操作失败", err)
+		return
+	}
 
 	if db, err := storage.Get(); err == nil {
 		_ = db.SaveCopywriting(storage.Copywriting{
@@ -1423,12 +1535,12 @@ func handleDashboard(c *gin.Context) {
 	}
 
 	resp := gin.H{
-		"dates":               allDates,
-		"marketOverview":      gin.H{"totalSectors": 0, "inflowCount": 0, "outflowCount": 0, "totalNet": 0, "topSector": nil, "worstSector": nil},
-		"ranking":             []gin.H{},
-		"events":              []gin.H{},
-		"trend":               map[string][]gin.H{},
-		"trendDates":          []string{},
+		"dates":          allDates,
+		"marketOverview": gin.H{"totalSectors": 0, "inflowCount": 0, "outflowCount": 0, "totalNet": 0, "topSector": nil, "worstSector": nil},
+		"ranking":        []gin.H{},
+		"events":         []gin.H{},
+		"trend":          map[string][]gin.H{},
+		"trendDates":     []string{},
 	}
 
 	if len(allDates) == 0 {
@@ -1444,9 +1556,9 @@ func handleDashboard(c *gin.Context) {
 	if err != nil || len(sectors) == 0 {
 		if db, dbErr := storage.Get(); dbErr == nil {
 			if records, loadErr := db.LoadSectorsAll(latestDate); loadErr == nil && len(records) > 0 {
-	for _, r := range records {
-				sectors = append(sectors, fetcher.Sector{Name: r.Name, Net: r.Net, Rate: r.Rate, Category: r.Category})
-			}
+				for _, r := range records {
+					sectors = append(sectors, fetcher.Sector{Name: r.Name, Net: r.Net, Rate: r.Rate, Category: r.Category})
+				}
 			}
 		}
 	}
@@ -1549,15 +1661,15 @@ func handleNewsList(c *gin.Context) {
 
 	db, err := storage.Get()
 	if err != nil {
-			logger.InternalError(c, "操作失败", err)
-			return
-		}
+		logger.InternalError(c, "操作失败", err)
+		return
+	}
 
 	records, err := db.LoadLatestNews(limit, offset)
 	if err != nil {
-			logger.InternalError(c, "操作失败", err)
-			return
-		}
+		logger.InternalError(c, "操作失败", err)
+		return
+	}
 
 	total, err := db.GetCLSNewsCount()
 	if err != nil {
@@ -1593,15 +1705,15 @@ func handleNewsSearch(c *gin.Context) {
 
 	db, err := storage.Get()
 	if err != nil {
-			logger.InternalError(c, "操作失败", err)
-			return
-		}
+		logger.InternalError(c, "操作失败", err)
+		return
+	}
 
 	records, total, err := db.SearchCLSNews(keyword, limit, offset)
 	if err != nil {
-			logger.InternalError(c, "操作失败", err)
-			return
-		}
+		logger.InternalError(c, "操作失败", err)
+		return
+	}
 
 	if records == nil {
 		records = []storage.CLSNewsRecord{}
@@ -1632,15 +1744,15 @@ func handleNewsByDate(c *gin.Context) {
 
 	db, err := storage.Get()
 	if err != nil {
-			logger.InternalError(c, "操作失败", err)
-			return
-		}
+		logger.InternalError(c, "操作失败", err)
+		return
+	}
 
 	records, total, err := db.LoadNewsByDate(dateStr, limit, offset)
 	if err != nil {
-			logger.InternalError(c, "操作失败", err)
-			return
-		}
+		logger.InternalError(c, "操作失败", err)
+		return
+	}
 
 	if records == nil {
 		records = []storage.CLSNewsRecord{}
@@ -1658,15 +1770,15 @@ func handleNewsByDate(c *gin.Context) {
 func handleListNotes(c *gin.Context) {
 	db, err := storage.Get()
 	if err != nil {
-			logger.InternalError(c, "操作失败", err)
-			return
-		}
+		logger.InternalError(c, "操作失败", err)
+		return
+	}
 
 	notes, err := db.ListNotes()
 	if err != nil {
-			logger.InternalError(c, "操作失败", err)
-			return
-		}
+		logger.InternalError(c, "操作失败", err)
+		return
+	}
 	if notes == nil {
 		notes = []storage.Note{}
 	}
@@ -1693,15 +1805,15 @@ func handleCreateNote(c *gin.Context) {
 
 	db, err := storage.Get()
 	if err != nil {
-			logger.InternalError(c, "操作失败", err)
-			return
-		}
+		logger.InternalError(c, "操作失败", err)
+		return
+	}
 
 	id, err := db.SaveNote(storage.Note{Type: body.Type, Content: body.Content})
 	if err != nil {
-			logger.InternalError(c, "操作失败", err)
-			return
-		}
+		logger.InternalError(c, "操作失败", err)
+		return
+	}
 
 	c.JSON(200, gin.H{"ok": true, "id": id})
 }
@@ -1732,9 +1844,9 @@ func handleUpdateNote(c *gin.Context) {
 
 	db, err := storage.Get()
 	if err != nil {
-			logger.InternalError(c, "操作失败", err)
-			return
-		}
+		logger.InternalError(c, "操作失败", err)
+		return
+	}
 
 	if err := db.UpdateNote(id, body.Type, body.Content); err != nil {
 		logger.InternalError(c, "更新笔记失败", err)
@@ -1754,9 +1866,9 @@ func handleDeleteNote(c *gin.Context) {
 
 	db, err := storage.Get()
 	if err != nil {
-			logger.InternalError(c, "操作失败", err)
-			return
-		}
+		logger.InternalError(c, "操作失败", err)
+		return
+	}
 
 	if err := db.DeleteNote(id); err != nil {
 		logger.InternalError(c, "删除笔记失败", err)
@@ -1823,8 +1935,8 @@ func handleDebateGenerate(c *gin.Context) {
 
 func handleDebateAudio(c *gin.Context) {
 	var body struct {
-		TaskID string         `json:"taskId"`
-		Script debate.Script  `json:"script"`
+		TaskID string        `json:"taskId"`
+		Script debate.Script `json:"script"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		logger.BadRequest(c, "请求体需为 JSON 且含 taskId/script 字段")
@@ -1849,10 +1961,10 @@ func handleDebateAudio(c *gin.Context) {
 
 func handleDebateRender(c *gin.Context) {
 	var body struct {
-		TaskID     string              `json:"taskId"`
-		Script     debate.Script       `json:"script"`
-		AudioTurns []debate.AudioTurn  `json:"audioTurns"`
-		Format     string              `json:"format"`
+		TaskID     string             `json:"taskId"`
+		Script     debate.Script      `json:"script"`
+		AudioTurns []debate.AudioTurn `json:"audioTurns"`
+		Format     string             `json:"format"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		logger.BadRequest(c, "请求体需为 JSON 且含 taskId/script/audioTurns 字段")
@@ -2044,6 +2156,12 @@ func newDebateTaskID() string {
 	return "d_" + time.Now().Format("20060102_150405") + "_" + hex.EncodeToString(b)
 }
 
+func newTTSFileName() string {
+	b := make([]byte, 6)
+	_, _ = rand.Read(b)
+	return "tts_" + time.Now().Format("20060102_150405") + "_" + hex.EncodeToString(b) + ".mp3"
+}
+
 func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		origin := os.Getenv("CORS_ALLOWED_ORIGINS")
@@ -2094,6 +2212,107 @@ func loadPrevCopywriting(todayStr, session string) string {
 		}
 	}
 	return list[0].Content
+}
+
+// handleDailyReportDates 返回所有已有日报的日期列表。
+func handleDailyReportDates(c *gin.Context) {
+	db, err := storage.Get()
+	if err != nil {
+		logger.InternalError(c, "操作失败", err)
+		return
+	}
+
+	dates, err := db.ListDailyReportDates()
+	if err != nil {
+		logger.InternalError(c, "查询日报列表失败", err)
+		return
+	}
+	if dates == nil {
+		dates = []string{}
+	}
+
+	c.JSON(200, gin.H{"dates": dates})
+}
+
+// handleDailyReport 获取指定日期的日报详情。
+func handleDailyReport(c *gin.Context) {
+	dateStr := c.Param("date")
+	if dateStr == "" {
+		logger.BadRequest(c, "缺少日期参数")
+		return
+	}
+
+	db, err := storage.Get()
+	if err != nil {
+		logger.InternalError(c, "操作失败", err)
+		return
+	}
+
+	reportJSON, session, summary, outlook, err := db.LoadDailyReport(dateStr)
+	if err != nil {
+		logger.InternalError(c, "查询日报失败", err)
+		return
+	}
+	if reportJSON == "" {
+		c.JSON(404, gin.H{"error": "该日期暂无日报"})
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"date":    dateStr,
+		"session": session,
+		"summary": summary,
+		"outlook": outlook,
+		"report":  reportJSON,
+	})
+}
+
+// handleDailyReportGenerate 生成指定日期的日报。
+// POST body: {"date": "2026-06-09", "session": "full"}
+// 同步返回完整日报数据。
+func handleDailyReportGenerate(c *gin.Context) {
+	var req struct {
+		Date    string `json:"date"`
+		Session string `json:"session"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		logger.BadRequest(c, "请求体格式错误: "+err.Error())
+		return
+	}
+	if req.Date == "" {
+		req.Date = time.Now().Format("2006-01-02")
+	}
+	if req.Session == "" {
+		req.Session = "full"
+	}
+
+	db, err := storage.Get()
+	if err != nil {
+		logger.InternalError(c, "操作失败", err)
+		return
+	}
+
+	// 先检查是否已有
+	if rj, _, _, _, e := db.LoadDailyReport(req.Date); e == nil && rj != "" {
+		_ = rj
+		// 已有也不阻塞，允许重新生成
+	}
+
+	// 生成
+	r, err := report.Generate(req.Date, req.Session)
+	if err != nil {
+		logger.InternalError(c, "日报生成失败", err)
+		return
+	}
+
+	reportBytes, _ := json.Marshal(r)
+	c.JSON(200, gin.H{
+		"date":    req.Date,
+		"session": req.Session,
+		"summary": r.Summary,
+		"outlook": r.Outlook,
+		"report":  string(reportBytes),
+	})
 }
 
 // calcPrevDate 计算上一个交易日（跳过周末）。
