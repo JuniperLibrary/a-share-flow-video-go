@@ -23,18 +23,24 @@ import (
 
 // Sector 表示一个板块的资金流向数据。
 type Sector struct {
-	Name       string  `json:"name"`
-	Net        float64 `json:"net"`        // 主力净流入（亿）
-	Rate       float64 `json:"rate"`       // 主力净占比（%），如 3.93
-	ChangePct  float64 `json:"change_pct"` // 涨跌幅（%），如 1.23（f3 字段）
-	SuperNet   float64 `json:"super_net"`  // 超大单净流入（亿）（f66 字段）
-	SuperRate  float64 `json:"super_rate"` // 超大单净占比（%）（f69 字段）
-	BigNet     float64 `json:"big_net"`    // 大单净流入（亿）（f72 字段）
-	BigRate    float64 `json:"big_rate"`   // 大单净占比（%）（f75 字段）
-	Volume     float64 `json:"volume"`     // 成交量（手，f5 字段），tick 数据用
-	Turnover   float64 `json:"turnover"`   // 成交额（亿，f6 字段 ÷1e8），tick 数据用
-	Color      string  `json:"color"`      // 运行时由前端/渲染层分配，不持久化到 CSV
-	Category   string  `json:"category"`   // "industry" 行业 / "concept" 概念 / "" 未知
+	Name                 string  `json:"name"`
+	Net                  float64 `json:"net"`                    // 主力净流入（亿）
+	Rate                 float64 `json:"rate"`                   // 主力净占比（%），如 3.93
+	ChangePct            float64 `json:"change_pct"`             // 涨跌幅（%），如 1.23（f3 字段）
+	SuperNet             float64 `json:"super_net"`              // 超大单净流入（亿）（f66 字段）
+	SuperRate            float64 `json:"super_rate"`             // 超大单净占比（%）（f69 字段）
+	BigNet               float64 `json:"big_net"`                // 大单净流入（亿）（f72 字段）
+	BigRate              float64 `json:"big_rate"`               // 大单净占比（%）（f75 字段）
+	Volume               float64 `json:"volume"`                 // 成交量（手，f5 字段），tick 数据用
+	Turnover             float64 `json:"turnover"`               // 成交额（亿，f6 字段 ÷1e8），tick 数据用
+	BKCode               string  `json:"bk_code"`                // f12 - 板块代码 BKxxxx
+	TurnoverRate         float64 `json:"turnover_rate"`          // f7 - 换手率（%）
+	LeadStockName        string  `json:"lead_stock_name"`        // f140 - 领涨股名称
+	LeadStockChangePct   float64 `json:"lead_stock_change_pct"`  // f127 - 领涨股涨跌幅（%）
+	TotalMarketCap       float64 `json:"total_market_cap"`       // f20 - 总市值（亿）
+	CirculatingMarketCap float64 `json:"circulating_market_cap"` // f21 - 流通市值（亿）
+	Color                string  `json:"color"`                  // 运行时由前端/渲染层分配，不持久化到 CSV
+	Category             string  `json:"category"`               // "industry" 行业 / "concept" 概念 / "" 未知
 }
 
 // Top21HotSectors 当前市场最热门的 21 个板块。
@@ -83,7 +89,7 @@ func fetchEMRaw(fs string) ([]map[string]any, error) {
 		var err error
 
 		for attempt := 1; attempt <= 3; attempt++ {
-			url := fmt.Sprintf("https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData?fields=f12,f14,f3,f5,f6,f62,f66,f69,f72,f75,f184&pn=%d&pz=500&fid=f62&po=1&fs=%s&ut=b2884a393a59ad64002292a3e90d46a5", pn, fs)
+			url := fmt.Sprintf("https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData?fields=f12,f14,f3,f5,f6,f7,f20,f21,f62,f66,f69,f72,f75,f127,f140,f184&pn=%d&pz=500&fid=f62&po=1&fs=%s&ut=b2884a393a59ad64002292a3e90d46a5", pn, fs)
 
 			req, reqErr := newRequest("GET", url)
 			if reqErr != nil {
@@ -164,6 +170,7 @@ func fetchPrimaryData() ([]Sector, error) {
 		if !ok || netFloat == 0 {
 			continue
 		}
+		bkCode, _ := item["f12"].(string)
 		rateVal := item["f184"]
 		rateFloat, _ := toFloat64(rateVal)
 		changePctVal := item["f3"]
@@ -180,18 +187,33 @@ func fetchPrimaryData() ([]Sector, error) {
 		volumeFloat, _ := toFloat64(volumeVal)
 		turnoverVal := item["f6"]
 		turnoverFloat, _ := toFloat64(turnoverVal)
+		turnoverRateVal := item["f7"]
+		turnoverRateFloat, _ := toFloat64(turnoverRateVal)
+		leadStockName, _ := item["f140"].(string)
+		leadChangeVal := item["f127"]
+		leadChangeFloat, _ := toFloat64(leadChangeVal)
+		mcapVal := item["f20"]
+		mcapFloat, _ := toFloat64(mcapVal)
+		cmcapVal := item["f21"]
+		cmcapFloat, _ := toFloat64(cmcapVal)
 		sectors = append(sectors, Sector{
-			Name:      name,
-			Net:       roundTo2(netFloat / 1e8),
-			Rate:      roundTo2(rateFloat),
-			ChangePct: roundTo2(changePctFloat),
-			SuperNet:  roundTo2(superNetFloat / 1e8),
-			SuperRate: roundTo2(superRateFloat),
-			BigNet:    roundTo2(bigNetFloat / 1e8),
-			BigRate:   roundTo2(bigRateFloat),
-			Volume:    roundTo2(volumeFloat),
-			Turnover:  roundTo2(turnoverFloat / 1e8),
-			Category:  "industry",
+			Name:                 name,
+			Net:                  roundTo2(netFloat / 1e8),
+			Rate:                 roundTo2(rateFloat),
+			ChangePct:            roundTo2(changePctFloat),
+			SuperNet:             roundTo2(superNetFloat / 1e8),
+			SuperRate:            roundTo2(superRateFloat),
+			BigNet:               roundTo2(bigNetFloat / 1e8),
+			BigRate:              roundTo2(bigRateFloat),
+			Volume:               roundTo2(volumeFloat),
+			Turnover:             roundTo2(turnoverFloat / 1e8),
+			BKCode:               bkCode,
+			TurnoverRate:         roundTo2(turnoverRateFloat),
+			LeadStockName:        leadStockName,
+			LeadStockChangePct:   roundTo2(leadChangeFloat),
+			TotalMarketCap:       roundTo2(mcapFloat / 1e8),
+			CirculatingMarketCap: roundTo2(cmcapFloat / 1e8),
+			Category:             "industry",
 		})
 	}
 
@@ -435,7 +457,7 @@ func SaveDailyData(sectors []Sector, dateStr string) error {
 	w := csv.NewWriter(f)
 	defer w.Flush()
 
-	w.Write([]string{"name", "net", "rate", "change_pct", "super_net", "super_rate", "big_net", "big_rate", "volume", "turnover"})
+	w.Write([]string{"name", "net", "rate", "change_pct", "super_net", "super_rate", "big_net", "big_rate", "volume", "turnover", "bk_code", "turnover_rate", "lead_stock_name", "lead_stock_change_pct", "total_market_cap", "circulating_market_cap"})
 	for _, s := range sectors {
 		w.Write([]string{
 			s.Name,
@@ -448,6 +470,12 @@ func SaveDailyData(sectors []Sector, dateStr string) error {
 			strconv.FormatFloat(s.BigRate, 'f', 2, 64),
 			strconv.FormatFloat(s.Volume, 'f', 2, 64),
 			strconv.FormatFloat(s.Turnover, 'f', 2, 64),
+			s.BKCode,
+			strconv.FormatFloat(s.TurnoverRate, 'f', 2, 64),
+			s.LeadStockName,
+			strconv.FormatFloat(s.LeadStockChangePct, 'f', 2, 64),
+			strconv.FormatFloat(s.TotalMarketCap, 'f', 2, 64),
+			strconv.FormatFloat(s.CirculatingMarketCap, 'f', 2, 64),
 		})
 	}
 
@@ -456,20 +484,26 @@ func SaveDailyData(sectors []Sector, dateStr string) error {
 		inputDate := time.Now().Format("2006-01-02 15:04:05")
 		records := make([]storage.Sector, 0, len(sectors))
 		for _, s := range sectors {
-		records = append(records, storage.Sector{
-			Datetime:  storage.DateToDatetime(dateStr),
-			Name:      s.Name,
-			Net:       s.Net,
-			Rate:      s.Rate,
-			ChangePct: s.ChangePct,
-			SuperNet:  s.SuperNet,
-			SuperRate: s.SuperRate,
-			BigNet:    s.BigNet,
-			BigRate:   s.BigRate,
-			Volume:    s.Volume,
-			Turnover:  s.Turnover,
-			InputDate: inputDate,
-		})
+			records = append(records, storage.Sector{
+				Datetime:             storage.DateToDatetime(dateStr),
+				Name:                 s.Name,
+				Net:                  s.Net,
+				Rate:                 s.Rate,
+				ChangePct:            s.ChangePct,
+				SuperNet:             s.SuperNet,
+				SuperRate:            s.SuperRate,
+				BigNet:               s.BigNet,
+				BigRate:              s.BigRate,
+				Volume:               s.Volume,
+				Turnover:             s.Turnover,
+				BKCode:               s.BKCode,
+				TurnoverRate:         s.TurnoverRate,
+				LeadStockName:        s.LeadStockName,
+				LeadStockChangePct:   s.LeadStockChangePct,
+				TotalMarketCap:       s.TotalMarketCap,
+				CirculatingMarketCap: s.CirculatingMarketCap,
+				InputDate:            inputDate,
+			})
 		}
 		_ = db.SaveSectors(records)
 	}
@@ -490,19 +524,50 @@ func LoadSessionData(dateStr, session string) ([]Sector, error) {
 }
 
 func LoadMorningFromTick(dateStr string) ([]Sector, error) {
-	points, err := loadTickCSV(dateStr, "morning")
-	if err != nil || len(points) == 0 {
+	db, err := storage.Get()
+	if err != nil {
+		return nil, err
+	}
+	records, err := db.LoadTickSectors(dateStr)
+	if err != nil || len(records) == 0 {
 		return nil, fmt.Errorf("no morning tick data for %s", dateStr)
 	}
 
-	latest := make(map[string]float64)
-	for _, p := range points {
-		latest[p.Name] = p.Net
+	latest := make(map[string]storage.Sector)
+	for _, s := range records {
+		timeStr := storage.ExtractTime(s.Datetime)
+		if timeStr == "" || !isMorningTime(timeStr) {
+			continue
+		}
+		prev, ok := latest[s.Name]
+		if !ok || s.Datetime > prev.Datetime {
+			latest[s.Name] = s
+		}
+	}
+	if len(latest) == 0 {
+		return nil, fmt.Errorf("no morning tick data for %s", dateStr)
 	}
 
-	var sectors []Sector
-	for name, net := range latest {
-		sectors = append(sectors, Sector{Name: name, Net: net})
+	sectors := make([]Sector, 0, len(latest))
+	for _, s := range latest {
+		sectors = append(sectors, Sector{
+			Name:                 s.Name,
+			Net:                  s.Net,
+			Rate:                 s.Rate,
+			ChangePct:            s.ChangePct,
+			SuperNet:             s.SuperNet,
+			SuperRate:            s.SuperRate,
+			BigNet:               s.BigNet,
+			BigRate:              s.BigRate,
+			Volume:               s.Volume,
+			Turnover:             s.Turnover,
+			BKCode:               s.BKCode,
+			TurnoverRate:         s.TurnoverRate,
+			LeadStockName:        s.LeadStockName,
+			LeadStockChangePct:   s.LeadStockChangePct,
+			TotalMarketCap:       s.TotalMarketCap,
+			CirculatingMarketCap: s.CirculatingMarketCap,
+		})
 	}
 
 	sort.Slice(sectors, func(i, j int) bool {
@@ -533,11 +598,16 @@ func loadTickCSV(dateStr, session string) ([]TickPoint, error) {
 			continue
 		}
 		points = append(points, TickPoint{
-			Time:     timeStr,
-			Name:     s.Name,
-			Net:      s.Net,
-			Volume:   s.Volume,
-			Turnover: s.Turnover,
+			Time:      timeStr,
+			Name:      s.Name,
+			Net:       s.Net,
+			Volume:    s.Volume,
+			Turnover:  s.Turnover,
+			ChangePct: s.ChangePct,
+			SuperNet:  s.SuperNet,
+			SuperRate: s.SuperRate,
+			BigNet:    s.BigNet,
+			BigRate:   s.BigRate,
 		})
 	}
 	return points, nil
@@ -548,11 +618,16 @@ func isMorningTime(t string) bool {
 }
 
 type TickPoint struct {
-	Time     string
-	Name     string
-	Net      float64
-	Volume   float64
-	Turnover float64
+	Time      string
+	Name      string
+	Net       float64
+	Volume    float64
+	Turnover  float64
+	ChangePct float64
+	SuperNet  float64
+	SuperRate float64
+	BigNet    float64
+	BigRate   float64
 }
 
 func loadCSV(filename, dateStr string) ([]Sector, error) {
@@ -594,19 +669,29 @@ func loadCSV(filename, dateStr string) ([]Sector, error) {
 		bigRateVal, _ := strconv.ParseFloat(getField(record, colIdx, "big_rate"), 64)
 		volumeVal, _ := strconv.ParseFloat(getField(record, colIdx, "volume"), 64)
 		turnoverVal, _ := strconv.ParseFloat(getField(record, colIdx, "turnover"), 64)
+		turnoverRateVal, _ := strconv.ParseFloat(getField(record, colIdx, "turnover_rate"), 64)
+		leadChangeVal, _ := strconv.ParseFloat(getField(record, colIdx, "lead_stock_change_pct"), 64)
+		mcapVal, _ := strconv.ParseFloat(getField(record, colIdx, "total_market_cap"), 64)
+		cmcapVal, _ := strconv.ParseFloat(getField(record, colIdx, "circulating_market_cap"), 64)
 
 		sectors = append(sectors, Sector{
-			Name:      getField(record, colIdx, "name"),
-			Net:       netVal,
-			Rate:      rateVal,
-			ChangePct: changePctVal,
-			SuperNet:  superNetVal,
-			SuperRate: superRateVal,
-			BigNet:    bigNetVal,
-			BigRate:   bigRateVal,
-			Volume:    volumeVal,
-			Turnover:  turnoverVal,
-			Color:     getField(record, colIdx, "color"),
+			Name:                 getField(record, colIdx, "name"),
+			Net:                  netVal,
+			Rate:                 rateVal,
+			ChangePct:            changePctVal,
+			SuperNet:             superNetVal,
+			SuperRate:            superRateVal,
+			BigNet:               bigNetVal,
+			BigRate:              bigRateVal,
+			Volume:               volumeVal,
+			Turnover:             turnoverVal,
+			BKCode:               getField(record, colIdx, "bk_code"),
+			TurnoverRate:         turnoverRateVal,
+			LeadStockName:        getField(record, colIdx, "lead_stock_name"),
+			LeadStockChangePct:   leadChangeVal,
+			TotalMarketCap:       mcapVal,
+			CirculatingMarketCap: cmcapVal,
+			Color:                getField(record, colIdx, "color"),
 		})
 	}
 

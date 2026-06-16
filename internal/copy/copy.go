@@ -1,11 +1,7 @@
 package copy
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -135,143 +131,31 @@ func mapStructureType(superPct, bigPct float64, netTotal float64) string {
 }
 
 func GenerateCopywritingAI(sectors []fetcher.Sector, dateStr, session, prevPrediction string) (string, error) {
-	var inflows, outflows []struct {
-		Name     string
-		Net      float64
-		SuperNet float64
-		BigNet   float64
-		ChgPct   float64
-	}
-	for _, s := range sectors {
-		item := struct {
-			Name     string
-			Net      float64
-			SuperNet float64
-			BigNet   float64
-			ChgPct   float64
-		}{s.Name, s.Net, s.SuperNet, s.BigNet, s.ChangePct}
-		if s.Net > 0 {
-			inflows = append(inflows, item)
-		} else {
-			outflows = append(outflows, item)
-		}
-	}
-	sort.Slice(inflows, func(i, j int) bool { return inflows[i].Net > inflows[j].Net })
-	sort.Slice(outflows, func(i, j int) bool { return outflows[i].Net < outflows[j].Net })
-
-	netTotal := 0.0
-	var totalSuper, totalBig float64
-	for _, s := range sectors {
-		netTotal += s.Net
-		totalSuper += s.SuperNet
-		totalBig += s.BigNet
+	brief, err := BuildNarrativeBrief(sectors, dateStr, session, prevPrediction)
+	if err != nil {
+		return "", fmt.Errorf("build narrative brief: %w", err)
 	}
 
-	var inflowTop3, outflowTop3 string
-	for i, v := range inflows {
-		if i >= 3 {
-			break
-		}
-		if inflowTop3 != "" {
-			inflowTop3 += "\n"
-		}
-		inflowTop3 += fmt.Sprintf("- %s: +%.0f亿(超大单%+.0f / 大单%+.0f)，涨幅%.1f%%", v.Name, v.Net, v.SuperNet, v.BigNet, v.ChgPct)
-	}
-	for i, v := range outflows {
-		if i >= 3 {
-			break
-		}
-		if outflowTop3 != "" {
-			outflowTop3 += "\n"
-		}
-		outflowTop3 += fmt.Sprintf("- %s: %.0f亿(超大单%.0f / 大单%.0f)，跌幅%.1f%%", v.Name, v.Net, v.SuperNet, v.BigNet, v.ChgPct)
-	}
-	if inflowTop3 == "" {
-		inflowTop3 = "无"
-	}
-	if outflowTop3 == "" {
-		outflowTop3 = "无"
-	}
+	inflows, _, _, _, _ := splitSectorFlows(sectors)
 
-	var structureLine string
-	if netTotal != 0 {
-		superPct := totalSuper / netTotal * 100
-		bigPct := totalBig / netTotal * 100
-		if superPct > 0 {
-			structureLine = fmt.Sprintf("其中超大单净流入%.0f亿(占比%.0f%%)，大单净流入%.0f亿(占比%.0f%%)",
-				totalSuper, superPct, totalBig, bigPct)
-		} else {
-			structureLine = fmt.Sprintf("其中超大单净流出%.0f亿(占比%.0f%%)，大单净流出%.0f亿(占比%.0f%%)",
-				absF(totalSuper), absF(superPct), absF(totalBig), absF(bigPct))
-		}
-	}
-
-	var outlookHint string
-	if len(outflows) > 0 && len(inflows) > 0 {
-		topOut := outflows[0]
-		topIn := inflows[0]
-		outlookHint = fmt.Sprintf("今日流出最重的是%s(%+.1f亿，跌幅%.1f%%)，逆势流入的是%s(%+.1f亿)。", topOut.Name, topOut.Net, topOut.ChgPct, topIn.Name, topIn.Net)
-	} else if len(outflows) > 0 {
-		topOut := outflows[0]
-		outlookHint = fmt.Sprintf("今日流出最重的是%s(%+.1f亿，跌幅%.1f%%)，无明显资金逆势流入。", topOut.Name, topOut.Net, topOut.ChgPct)
-	} else if len(inflows) > 0 {
-		outlookHint = "今日全线资金净流入。"
-	}
-	outlookHint += " 基于今日资金结构，给出明日方向预判。"
-
-	prompt := fmt.Sprintf(PromptCopywriting,
-		netTotal, len(inflows), len(outflows),
-		structureLine,
-		outflowTop3,
-		inflowTop3,
-		outlookHint,
-		prevPrediction,
-	)
-
-	aiCfg := config.GetAIConfig()
-	if aiCfg.APIKey == "" {
-		return "", fmt.Errorf("AI模式需要设置 OPENAI_API_KEY 环境变量")
-	}
-
-	body := map[string]any{
-		"model":       aiCfg.Model,
-		"messages":    []map[string]string{{"role": "user", "content": prompt}},
-		"temperature": 0.8,
-		"max_tokens":  1200,
-	}
-	bodyBytes, _ := json.Marshal(body)
-
-	req, _ := http.NewRequest("POST", aiCfg.BaseURL+"/chat/completions", bytes.NewReader(bodyBytes))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+aiCfg.APIKey)
-
-	client := &http.Client{Timeout: 120 * time.Second}
-	resp, err := client.Do(req)
+	prompt := fmt.Sprintf(PromptFromBrief, brief.Format())
+	text, err := chatCompletion(prompt, 0.7, 900)
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("API 请求失败: HTTP %d %s", resp.StatusCode, string(b))
+	if issues := ValidateCopy(text, brief, inflows); len(issues) > 0 {
+		fixPrompt := fmt.Sprintf(PromptFixCopy,
+			strings.Join(issues, "\n"),
+			text,
+			brief.Format(),
+		)
+		if fixed, fixErr := chatCompletion(fixPrompt, 0.5, 900); fixErr == nil && fixed != "" {
+			text = fixed
+		}
 	}
 
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	b, _ := io.ReadAll(resp.Body)
-	if err := json.Unmarshal(b, &result); err != nil {
-		return "", err
-	}
-	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("empty choices from API")
-	}
-	return result.Choices[0].Message.Content, nil
+	return text, nil
 }
 
 func absF(x float64) float64 {

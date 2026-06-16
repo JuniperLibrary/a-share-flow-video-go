@@ -8,11 +8,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/a-share-flow-video-go/internal/analyzer"
 	"github.com/a-share-flow-video-go/internal/config"
-	"github.com/a-share-flow-video-go/internal/fetcher"
 	"github.com/a-share-flow-video-go/internal/hotnews"
 	"github.com/a-share-flow-video-go/internal/logger"
 	"github.com/a-share-flow-video-go/internal/storage"
@@ -26,53 +26,223 @@ const (
 )
 
 type SectorTick struct {
-	Name      string    `json:"name"`
-	Color     string    `json:"color"`
-	Data      []float64 `json:"data"`
-	Times     []string  `json:"times"`
-	Rate      float64   `json:"rate"`
-	ChangePct float64   `json:"changePct"`
-	SuperNet  float64   `json:"superNet"`
-	SuperRate float64   `json:"superRate"`
-	BigNet    float64   `json:"bigNet"`
-	BigRate   float64   `json:"bigRate"`
-	MainRate  float64   `json:"mainRate"`
-	Volume    float64   `json:"volume"`
-	Turnover  float64   `json:"turnover"`
+	Name                 string    `json:"name"`
+	Color                string    `json:"color"`
+	Data                 []float64 `json:"data"`
+	Times                []string  `json:"times"`
+	Rate                 float64   `json:"rate"`
+	ChangePct            float64   `json:"changePct"`
+	SuperNet             float64   `json:"superNet"`
+	SuperRate            float64   `json:"superRate"`
+	BigNet               float64   `json:"bigNet"`
+	BigRate              float64   `json:"bigRate"`
+	MainRate             float64   `json:"mainRate"`
+	Volume               float64   `json:"volume"`
+	Turnover             float64   `json:"turnover"`
+	TurnoverRate         float64   `json:"turnoverRate"`
+	LeadStockName        string    `json:"leadStockName"`
+	LeadStockChangePct   float64   `json:"leadStockChangePct"`
+	TotalMarketCap       float64   `json:"totalMarketCap"`
+	CirculatingMarketCap float64   `json:"circulatingMarketCap"`
 }
 
 type TickRenderProps struct {
-	DateStr        string                   `json:"dateStr"`
-	DisplayDate    string                   `json:"displayDate"`
-	TotalFrames    int                      `json:"totalFrames"`
-	SectorTicks    []SectorTick             `json:"sectorTicks"`
-	TimelineEvents []analyzer.TimelineEvent `json:"timelineEvents,omitempty"`
-	TickerItems    []analyzer.TickerItem    `json:"tickerItems,omitempty"`
-	Events         []analyzer.MarketEvent   `json:"events,omitempty"`
-	Format         string                   `json:"format"`
-	Width          int                      `json:"width"`
-	Height         int                      `json:"height"`
-	Session        string                   `json:"session"`
-	XLim           [2]int                   `json:"xLim"`
-	Scene1Text     string                   `json:"scene1Text,omitempty"`
-	Scene2Text     string                   `json:"scene2Text,omitempty"`
-	Scene3Text     string                   `json:"scene3Text,omitempty"`
-	Scene4Text     string                   `json:"scene4Text,omitempty"`
-	Scene5Text     string                   `json:"scene5Text,omitempty"`
-	Scene1Audio    string                   `json:"scene1Audio,omitempty"`
-	Scene2Audio    string                   `json:"scene2Audio,omitempty"`
-	Scene3Audio    string                   `json:"scene3Audio,omitempty"`
-	Scene4Audio    string                   `json:"scene4Audio,omitempty"`
-	Scene5Audio    string                   `json:"scene5Audio,omitempty"`
-	Scene1Frames   int                      `json:"scene1Frames,omitempty"`
-	Scene2Frames   int                      `json:"scene2Frames,omitempty"`
-	Scene3Frames   int                      `json:"scene3Frames,omitempty"`
-	Scene4Frames   int                      `json:"scene4Frames,omitempty"`
-	Scene5Frames   int                      `json:"scene5Frames,omitempty"`
-	NewsPages       []hotnews.NewsPage       `json:"newsPages,omitempty"`
-	NewsAudioFiles  []string                 `json:"newsAudioFiles,omitempty"`
-	NewsAudioFrames []int                    `json:"newsAudioFrames,omitempty"`
-	BaseAnimationFrames int                  `json:"baseAnimationFrames,omitempty"`
+	DateStr                string                   `json:"dateStr"`
+	DisplayDate            string                   `json:"displayDate"`
+	TotalFrames            int                      `json:"totalFrames"`
+	SectorTicks            []SectorTick             `json:"sectorTicks"`
+	TimelineEvents         []analyzer.TimelineEvent `json:"timelineEvents,omitempty"`
+	TickerItems            []analyzer.TickerItem    `json:"tickerItems,omitempty"`
+	Events                 []analyzer.MarketEvent   `json:"events,omitempty"`
+	Format                 string                   `json:"format"`
+	Width                  int                      `json:"width"`
+	Height                 int                      `json:"height"`
+	Session                string                   `json:"session"`
+	XLim                   [2]int                   `json:"xLim"`
+	Scene1Text             string                   `json:"scene1Text,omitempty"`
+	Scene2Text             string                   `json:"scene2Text,omitempty"`
+	Scene3Text             string                   `json:"scene3Text,omitempty"`
+	Scene4Text             string                   `json:"scene4Text,omitempty"`
+	Scene5Text             string                   `json:"scene5Text,omitempty"`
+	Scene1Audio            string                   `json:"scene1Audio,omitempty"`
+	Scene2Audio            string                   `json:"scene2Audio,omitempty"`
+	Scene3Audio            string                   `json:"scene3Audio,omitempty"`
+	Scene4Audio            string                   `json:"scene4Audio,omitempty"`
+	Scene5Audio            string                   `json:"scene5Audio,omitempty"`
+	Scene1Frames           int                      `json:"scene1Frames,omitempty"`
+	Scene2Frames           int                      `json:"scene2Frames,omitempty"`
+	Scene3Frames           int                      `json:"scene3Frames,omitempty"`
+	Scene4Frames           int                      `json:"scene4Frames,omitempty"`
+	Scene5Frames           int                      `json:"scene5Frames,omitempty"`
+	NewsPages              []hotnews.NewsPage       `json:"newsPages,omitempty"`
+	NewsAudioFiles         []string                 `json:"newsAudioFiles,omitempty"`
+	NewsAudioFrames        []int                    `json:"newsAudioFrames,omitempty"`
+	NewsNarrationTexts     []string                 `json:"newsNarrationTexts,omitempty"`
+	BaseAnimationFrames    int                      `json:"baseAnimationFrames,omitempty"`
+	ChartNarrationAudios   []string                 `json:"chartNarrationAudios,omitempty"`
+	ChartNarrationSegments []int                    `json:"chartNarrationSegments,omitempty"`
+	ChartNarrationTexts    []string                 `json:"chartNarrationTexts,omitempty"`
+}
+
+func generateChartNarrationSegments(sectorTicks []SectorTick, totalFrames int) (texts []string, startFrames []int) {
+	if len(sectorTicks) == 0 {
+		return nil, nil
+	}
+
+	numPoints := len(sectorTicks[0].Data)
+	if numPoints < 3 {
+		return nil, nil
+	}
+
+	type inflection struct {
+		name  string
+		time  string
+		idx   int
+		delta float64
+		cum   float64
+	}
+
+	topLimit := 3
+	if len(sectorTicks) < topLimit {
+		topLimit = len(sectorTicks)
+	}
+
+	var points []inflection
+	minGap := int(math.Max(2, math.Floor(float64(numPoints)*0.1)))
+	for si := 0; si < topLimit; si++ {
+		st := sectorTicks[si]
+		if len(st.Data) < 4 {
+			continue
+		}
+		bestIdx := -1
+		bestDelta := 0.0
+		cum := 0.0
+		bestCum := 0.0
+		for i, v := range st.Data {
+			cum += v
+			if i < minGap || i > len(st.Data)-minGap {
+				continue
+			}
+			if math.Abs(v) > math.Abs(bestDelta) {
+				bestDelta = v
+				bestIdx = i
+				bestCum = cum
+			}
+		}
+		if bestIdx < 0 || math.Abs(bestDelta) < 0.5 {
+			continue
+		}
+		tm := ""
+		if bestIdx < len(st.Times) {
+			tm = st.Times[bestIdx]
+		}
+		points = append(points, inflection{
+			name:  st.Name,
+			time:  tm,
+			idx:   bestIdx,
+			delta: bestDelta,
+			cum:   bestCum,
+		})
+	}
+
+	sort.Slice(points, func(i, j int) bool { return points[i].idx < points[j].idx })
+	if len(points) > 0 {
+		for _, p := range points {
+			action := "突然加速"
+			direction := "净流入"
+			if p.delta < 0 {
+				action = "明显转弱"
+				direction = "净流出"
+			}
+			timePrefix := ""
+			if p.time != "" {
+				timePrefix = p.time + "，"
+			}
+			texts = append(texts, fmt.Sprintf("注意看，%s%s%s，单笔%s%.1f亿，累计%.1f亿。", timePrefix, p.name, action, direction, math.Abs(p.delta), p.cum))
+			startFrame := int(math.Floor(float64(p.idx) / float64(numPoints) * float64(totalFrames)))
+			startFrame -= FPS
+			if startFrame < 0 {
+				startFrame = 0
+			}
+			startFrames = append(startFrames, startFrame)
+		}
+		return texts, startFrames
+	}
+
+	type segSum struct {
+		name string
+		net  float64
+	}
+
+	contentPoints := []float64{0.07, 0.40, 0.70}
+	playPoints := []float64{0, 0.40, 0.70}
+
+	for i := range contentPoints {
+		idx := int(math.Floor(contentPoints[i] * float64(numPoints)))
+		if idx >= numPoints {
+			idx = numPoints - 1
+		}
+
+		sums := make([]segSum, 0, len(sectorTicks))
+		var total float64
+		for _, st := range sectorTicks {
+			s := 0.0
+			for j := 0; j <= idx; j++ {
+				s += st.Data[j]
+			}
+			sums = append(sums, segSum{name: st.Name, net: s})
+			total += s
+		}
+
+		sort.Slice(sums, func(a, b int) bool {
+			return math.Abs(sums[a].net) > math.Abs(sums[b].net)
+		})
+
+		direction := "净流入"
+		if total < 0 {
+			direction = "净流出"
+		}
+		absTotal := math.Abs(total)
+
+		var top2 []string
+		for j := 0; j < 2 && j < len(sums); j++ {
+			if math.Abs(sums[j].net) < 0.5 {
+				continue
+			}
+			sign := "净流入"
+			if sums[j].net < 0 {
+				sign = "净流出"
+			}
+			top2 = append(top2, fmt.Sprintf("%s%s%.0f亿", sums[j].name, sign, math.Abs(sums[j].net)))
+		}
+
+		var text string
+		switch i {
+		case 0:
+			if len(top2) > 0 {
+				text = fmt.Sprintf("开盘后资金率先涌入%s，整体%s%.0f亿元。", strings.Join(top2, "、"), direction, absTotal)
+			} else {
+				text = fmt.Sprintf("开盘后各板块资金变动不大，整体%s%.0f亿元。", direction, absTotal)
+			}
+		case 1:
+			if len(top2) > 0 {
+				text = fmt.Sprintf("盘中%s持续领跑，累计%s%.0f亿元。", strings.Join(top2, "、"), direction, absTotal)
+			} else {
+				text = fmt.Sprintf("盘中资金格局平稳，累计%s%.0f亿元。", direction, absTotal)
+			}
+		case 2:
+			if len(top2) > 0 {
+				text = fmt.Sprintf("尾盘来看，%s领先，全天%s%.0f亿元。", strings.Join(top2, "、"), direction, absTotal)
+			} else {
+				text = fmt.Sprintf("收盘板块资金整体%s%.0f亿元，分布较为分散。", direction, absTotal)
+			}
+		}
+
+		texts = append(texts, text)
+		startFrames = append(startFrames, int(math.Floor(playPoints[i]*float64(totalFrames))))
+	}
+
+	return texts, startFrames
 }
 
 func RenderTickVideo(dateStr, outputPath, format, session string, events []analyzer.MarketEvent, timeline []analyzer.TimelineEvent, ticker []analyzer.TickerItem, copywriteText string, newsPages []hotnews.NewsPage) (string, error) {
@@ -170,11 +340,19 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 	}
 
 	baseFrames := config.GetBaseFrames(format)
+	chartNarrationTexts, chartNarrationSegments := generateChartNarrationSegments(sectorTicks, baseFrames)
+	if len(chartNarrationTexts) > 0 {
+		logger.Info("图表解说分段文案生成",
+			zap.Int("segments", len(chartNarrationTexts)),
+			zap.Strings("texts", chartNarrationTexts))
+	}
+
 	var newsTotalFrames int
 	var newsAudioFiles []string
 	var newsAudioFrames []int
+	var newsNarrationTexts []string
 
-	hasVoiceover := copywriteText != "" || len(newsPages) > 0
+	hasVoiceover := copywriteText != "" || len(newsPages) > 0 || len(chartNarrationTexts) > 0
 
 	if hasVoiceover {
 		voiceoverDir := filepath.Join(config.GetRendererDir(), "public", "voiceover")
@@ -192,7 +370,7 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 					continue
 				}
 				audioPath := filepath.Join(voiceoverDir, fmt.Sprintf("%s.mp3", sceneNames[i]))
-				if err := tts.TextToSpeech(scenes[i], audioPath, tts.Xiaoxiao); err != nil {
+				if err := tts.TextToSpeechCommentator(scenes[i], audioPath); err != nil {
 					logger.Warn("Tick 场景 TTS 合成失败", zap.Int("scene", i+1), zap.Error(err))
 					continue
 				}
@@ -238,9 +416,10 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 
 		if len(newsPages) > 0 {
 			ttsTexts := hotnews.GenerateTTSText(newsPages)
+			newsNarrationTexts = ttsTexts
 			for i, text := range ttsTexts {
 				newsPath := filepath.Join(voiceoverDir, fmt.Sprintf("news_%d.mp3", i))
-				if err := tts.TextToSpeech(text, newsPath, tts.Xiaoxiao); err != nil {
+				if err := tts.TextToSpeechCommentator(text, newsPath); err != nil {
 					logger.Warn("Tick 新闻 TTS 合成失败，跳过", zap.Int("page", i), zap.Error(err))
 					continue
 				}
@@ -260,61 +439,23 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 				zap.Int("pages", len(newsAudioFiles)),
 				zap.Int("newsTotalFrames", newsTotalFrames))
 		}
+
+		props.ChartNarrationSegments = chartNarrationSegments
+		props.ChartNarrationTexts = chartNarrationTexts
 	}
 
 	sceneTotalFrames := props.Scene1Frames + props.Scene2Frames + props.Scene3Frames + props.Scene4Frames + props.Scene5Frames
-	totalVideoFrames := sceneTotalFrames + baseFrames + newsTotalFrames
-
-	const mobileTotalCap = 1800
-	if format != "tv" && totalVideoFrames > mobileTotalCap {
-		over := totalVideoFrames - mobileTotalCap
-
-		if newsTotalFrames > over {
-			newsTotalFrames -= over
-		} else {
-			newsTotalFrames = 0
-		}
-
-		if len(newsAudioFrames) > 0 {
-			var trimmed []int
-			var trimmedFiles []string
-			var trimmedPages []hotnews.NewsPage
-			remaining := newsTotalFrames
-			for i, f := range newsAudioFrames {
-				if f <= remaining {
-					trimmed = append(trimmed, f)
-					trimmedFiles = append(trimmedFiles, newsAudioFiles[i])
-					if i < len(newsPages) {
-						trimmedPages = append(trimmedPages, newsPages[i])
-					}
-					remaining -= f
-				}
-			}
-			newsAudioFrames = trimmed
-			newsAudioFiles = trimmedFiles
-			newsPages = trimmedPages
-		}
-
-		totalVideoFrames = sceneTotalFrames + baseFrames + newsTotalFrames
-		logger.Warn("移动端总时长超 cap,已截断新闻段",
-			zap.Int("totalFrames", totalVideoFrames),
-			zap.Int("cap", mobileTotalCap))
+	conclusionFrames := 0
+	if len(sectorTicks) > 0 {
+		conclusionFrames = 90
 	}
-
-	if format != "tv" {
-		const sceneCap = 150
-		if props.Scene1Frames > sceneCap {
-			props.Scene1Frames = sceneCap
-		}
-		if props.Scene5Frames > sceneCap {
-			props.Scene5Frames = sceneCap
-		}
-	}
+	totalVideoFrames := sceneTotalFrames + baseFrames + newsTotalFrames + conclusionFrames
 
 	props.BaseAnimationFrames = baseFrames
 	props.NewsPages = newsPages
 	props.NewsAudioFiles = newsAudioFiles
 	props.NewsAudioFrames = newsAudioFrames
+	props.NewsNarrationTexts = newsNarrationTexts
 	props.TotalFrames = totalVideoFrames
 
 	if hasVoiceover {
@@ -407,18 +548,23 @@ func buildSectorTicks(points []TickPoint) []SectorTick {
 		}
 		latest := sectorLatest[name]
 		result = append(result, SectorTick{
-			Name:      name,
-			Data:      data,
-			Times:     timeOrder,
-			Rate:      latest.Rate,
-			ChangePct: latest.ChangePct,
-			SuperNet:  latest.SuperNet,
-			SuperRate: latest.SuperRate,
-			BigNet:    latest.BigNet,
-			BigRate:   latest.BigRate,
-			MainRate:  latest.MainRate,
-			Volume:    latest.Volume,
-			Turnover:  latest.Turnover,
+			Name:                 name,
+			Data:                 data,
+			Times:                timeOrder,
+			Rate:                 latest.Rate,
+			ChangePct:            latest.ChangePct,
+			SuperNet:             latest.SuperNet,
+			SuperRate:            latest.SuperRate,
+			BigNet:               latest.BigNet,
+			BigRate:              latest.BigRate,
+			MainRate:             latest.MainRate,
+			Volume:               latest.Volume,
+			Turnover:             latest.Turnover,
+			TurnoverRate:         latest.TurnoverRate,
+			LeadStockName:        latest.LeadStockName,
+			LeadStockChangePct:   latest.LeadStockChangePct,
+			TotalMarketCap:       latest.TotalMarketCap,
+			CirculatingMarketCap: latest.CirculatingMarketCap,
 		})
 	}
 
@@ -468,16 +614,4 @@ func sumAbs(data []float64) float64 {
 		}
 	}
 	return s
-}
-
-func snapshotToSectors(points []TickPoint) []fetcher.Sector {
-	latest := make(map[string]TickPoint)
-	for _, p := range points {
-		latest[p.Name] = p
-	}
-	var sectors []fetcher.Sector
-	for _, p := range latest {
-		sectors = append(sectors, fetcher.Sector{Name: p.Name, Net: p.Net, Rate: p.Rate, Volume: p.Volume, Turnover: p.Turnover})
-	}
-	return sectors
 }

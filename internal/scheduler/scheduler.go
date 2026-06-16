@@ -4,6 +4,7 @@
 package scheduler
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"github.com/a-share-flow-video-go/internal/fetcher"
 	"github.com/a-share-flow-video-go/internal/logger"
 	"github.com/a-share-flow-video-go/internal/renderer"
+	"github.com/a-share-flow-video-go/internal/report"
 	"github.com/a-share-flow-video-go/internal/storage"
 	"go.uber.org/zap"
 )
@@ -255,6 +257,20 @@ func (s *Scheduler) execute(session string) {
 			Type:    cwType,
 			Content: copywriteText,
 		})
+	}
+
+	// 全天完成时自动生成日报
+	if session == "full" {
+		r, err := report.Generate(todayStr, "full")
+		if err != nil {
+			logger.Warn("日报生成失败", zap.String("date", todayStr), zap.Error(err))
+		} else {
+			reportJSON, _ := json.Marshal(r)
+			if db, err := storage.Get(); err == nil {
+				_ = db.SaveDailyReport(todayStr, "full", r.Summary, r.Outlook, string(reportJSON))
+				logger.Info("日报已生成", zap.String("date", todayStr))
+			}
+		}
 	}
 
 	if config.DataMode() == "json" {

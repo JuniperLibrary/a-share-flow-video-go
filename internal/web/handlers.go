@@ -1180,6 +1180,7 @@ func handleOptimizeCopy(c *gin.Context) {
 	}
 
 	prevPrediction := loadPrevCopywriting(body.Date, body.Session)
+	brief, _ := copy.BuildNarrativeBrief(sectors, body.Date, body.Session, prevPrediction)
 	aiText, err := copy.GenerateCopywritingAI(sectors, body.Date, body.Session, prevPrediction)
 	if err != nil {
 		logger.InternalError(c, "操作失败", err)
@@ -1195,7 +1196,11 @@ func handleOptimizeCopy(c *gin.Context) {
 		})
 	}
 
-	c.JSON(200, gin.H{"text": aiText})
+	resp := gin.H{"text": aiText}
+	if brief != nil {
+		resp["brief"] = brief.Format()
+	}
+	c.JSON(200, resp)
 }
 
 func serveVideo(c *gin.Context) {
@@ -1339,7 +1344,7 @@ func handleGenerateTick(c *gin.Context) {
 		body.Session = "full"
 	}
 	if body.Format == "" {
-		body.Format = "all"
+		body.Format = "mobile"
 	}
 
 	logger.Info("tick 视频生成请求",
@@ -1375,7 +1380,7 @@ func handleGenerateTick(c *gin.Context) {
 	if pErr != nil || len(points) == 0 {
 		sse.Send("log", "⚠️ 无 tick 数据，跳过文案生成")
 	} else {
-		sectors := tickPointsToSectors(points)
+		sectors := tick.PointsToSectors(points)
 		sse.Send("progress", "生成文案中...")
 		if body.CopyMode == "ai" {
 			sse.Send("log", "🤖 AI 文案生成中...")
@@ -1468,18 +1473,6 @@ func handleGenerateTick(c *gin.Context) {
 	sse.Send("log", "✅ Tick 视频生成完成")
 	sse.Send("progress", "完成")
 	sse.Send("done", "生成完毕")
-}
-
-func tickPointsToSectors(points []tick.TickPoint) []fetcher.Sector {
-	latest := make(map[string]tick.TickPoint)
-	for _, p := range points {
-		latest[p.Name] = p
-	}
-	var sectors []fetcher.Sector
-	for _, p := range latest {
-		sectors = append(sectors, fetcher.Sector{Name: p.Name, Net: p.Net, Rate: p.Rate, Volume: p.Volume, Turnover: p.Turnover})
-	}
-	return sectors
 }
 
 func handleTickStream(c *gin.Context, tickSched *tick.TickScheduler) {

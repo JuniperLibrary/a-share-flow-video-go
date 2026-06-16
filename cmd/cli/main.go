@@ -37,7 +37,7 @@ func main() {
 	days := 0
 	useTick := false
 	collectOnly := false
-	format := "all"
+	format := "mobile"
 	var dates []string
 
 	for _, arg := range os.Args[1:] {
@@ -184,8 +184,8 @@ func processDate(dateStr string, useAI bool, sessionOverride string, collectOnly
 			if err != nil || len(sectors) == 0 {
 				sl.Error("历史数据获取失败", zap.String("date", dateStr), zap.Error(err))
 				sl.Warn("历史数据获取失败，请检查网络或手动保存数据",
-				zap.String("hint", "data/"+dateStr+"/sectors.csv"),
-			)
+					zap.String("hint", "data/"+dateStr+"/sectors.csv"),
+				)
 				continue
 			}
 			fetcher.SaveDailyData(sectors, dateStr)
@@ -297,7 +297,7 @@ func processTickDate(dateStr string, sessionOverride string, useAI bool, format 
 			sl.Warn("无 tick 数据，跳过")
 			continue
 		}
-		sectors := snapshotToSectors(points)
+		sectors := tick.PointsToSectors(points)
 
 		// 在渲染前生成文案，用于 TTS 语音合成
 		var copywriteText string
@@ -378,18 +378,6 @@ func processTickDate(dateStr string, sessionOverride string, useAI bool, format 
 		}
 	}
 	return success
-}
-
-func snapshotToSectors(points []tick.TickPoint) []fetcher.Sector {
-	latest := make(map[string]tick.TickPoint)
-	for _, p := range points {
-		latest[p.Name] = p
-	}
-	var sectors []fetcher.Sector
-	for _, p := range latest {
-		sectors = append(sectors, fetcher.Sector{Name: p.Name, Net: p.Net, Rate: p.Rate, Volume: p.Volume, Turnover: p.Turnover})
-	}
-	return sectors
 }
 
 func printSectorsTable(sectors []fetcher.Sector) {

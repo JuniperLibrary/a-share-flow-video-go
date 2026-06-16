@@ -11,6 +11,7 @@ import (
 
 type NewsItem struct {
 	Title      string `json:"title"`
+	Brief      string `json:"brief"`
 	Level      string `json:"level"`
 	Time       string `json:"time"`
 	ReadingNum int64  `json:"-"`
@@ -89,9 +90,18 @@ func LoadForVideo(dateStr, format string) ([]NewsPage, error) {
 		}
 		item := NewsItem{
 			Title:      title,
+			Brief:      r.Brief,
 			Level:      r.Level,
 			Time:       r.CTime,
 			ReadingNum: r.ReadingNum,
+		}
+		if item.Brief == "" {
+			runes := []rune(r.Content)
+			if len(runes) > 80 {
+				item.Brief = string(runes[:80]) + "..."
+			} else {
+				item.Brief = string(runes)
+			}
 		}
 		for _, s := range sectors {
 			if !hotSet[s] {
@@ -106,13 +116,13 @@ func LoadForVideo(dateStr, format string) ([]NewsPage, error) {
 		}
 	}
 
-	perSectorLimit := 3
+	perSectorLimit := 2
 	perPage := 2
 	totalPageCap := 1
 	if format == "tv" {
-		perSectorLimit = 5
+		perSectorLimit = 3
 		perPage = 3
-		totalPageCap = 2
+		totalPageCap = 1
 	}
 
 	var result []SectorNews
@@ -167,17 +177,27 @@ func GenerateTTSText(pages []NewsPage) []string {
 	for i, page := range pages {
 		var parts []string
 		if i == 0 {
-			parts = append(parts, "今日热点速览。")
+			parts = append(parts, "资金这样走，背后主要看这些催化。")
 		}
 		for si, sn := range page.Sectors {
 			var titles []string
-			for _, item := range sn.News {
-				titles = append(titles, item.Title)
+			for ni, item := range sn.News {
+				if ni >= 2 {
+					break
+				}
+				title := strings.TrimSpace(item.Title)
+				if title == "" {
+					continue
+				}
+				titles = append(titles, title)
+			}
+			if len(titles) == 0 {
+				continue
 			}
 			if si == 0 {
-				parts = append(parts, sn.Sector+"板块。"+strings.Join(titles, "，"))
+				parts = append(parts, sn.Sector+"的催化是，"+strings.Join(titles, "。"))
 			} else {
-				parts = append(parts, "再看"+sn.Sector+"，"+strings.Join(titles, "，"))
+				parts = append(parts, "再看"+sn.Sector+"，"+strings.Join(titles, "。"))
 			}
 		}
 		texts[i] = strings.Join(parts, "。") + "。"

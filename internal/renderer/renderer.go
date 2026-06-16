@@ -38,34 +38,34 @@ type SectorData struct {
 
 // RenderProps 传递给 Remotion 的 JSON 属性，必须与 TypeScript types.ts 保持一致。
 type RenderProps struct {
-	DateStr        string                   `json:"dateStr"`
-	DisplayDate    string                   `json:"displayDate"`
-	TotalFrames    int                      `json:"totalFrames"`
-	Sectors        []SectorData             `json:"sectors"`
-	TimelineEvents []analyzer.TimelineEvent `json:"timelineEvents,omitempty"`
-	TickerItems    []analyzer.TickerItem    `json:"tickerItems,omitempty"`
-	Events         []analyzer.MarketEvent   `json:"events,omitempty"`
-	Format         string                   `json:"format"`
-	Width          int                      `json:"width"`
-	Height         int                      `json:"height"`
-	Session        string                   `json:"session"`
-	XLim           [2]int                   `json:"xLim"`
-	Scene1Text     string `json:"scene1Text,omitempty"`
-	Scene2Text     string `json:"scene2Text,omitempty"`
-	Scene3Text     string `json:"scene3Text,omitempty"`
-	Scene4Text     string `json:"scene4Text,omitempty"`
-	Scene5Text     string `json:"scene5Text,omitempty"`
-	Scene1Audio    string `json:"scene1Audio,omitempty"`
-	Scene2Audio    string `json:"scene2Audio,omitempty"`
-	Scene3Audio    string `json:"scene3Audio,omitempty"`
-	Scene4Audio    string `json:"scene4Audio,omitempty"`
-	Scene5Audio    string `json:"scene5Audio,omitempty"`
-	Scene1Frames   int    `json:"scene1Frames,omitempty"`
-	Scene2Frames   int    `json:"scene2Frames,omitempty"`
-	Scene3Frames   int    `json:"scene3Frames,omitempty"`
-	Scene4Frames   int    `json:"scene4Frames,omitempty"`
-	Scene5Frames   int    `json:"scene5Frames,omitempty"`
-	BaseAnimationFrames int  `json:"baseAnimationFrames,omitempty"`
+	DateStr             string                   `json:"dateStr"`
+	DisplayDate         string                   `json:"displayDate"`
+	TotalFrames         int                      `json:"totalFrames"`
+	Sectors             []SectorData             `json:"sectors"`
+	TimelineEvents      []analyzer.TimelineEvent `json:"timelineEvents,omitempty"`
+	TickerItems         []analyzer.TickerItem    `json:"tickerItems,omitempty"`
+	Events              []analyzer.MarketEvent   `json:"events,omitempty"`
+	Format              string                   `json:"format"`
+	Width               int                      `json:"width"`
+	Height              int                      `json:"height"`
+	Session             string                   `json:"session"`
+	XLim                [2]int                   `json:"xLim"`
+	Scene1Text          string                   `json:"scene1Text,omitempty"`
+	Scene2Text          string                   `json:"scene2Text,omitempty"`
+	Scene3Text          string                   `json:"scene3Text,omitempty"`
+	Scene4Text          string                   `json:"scene4Text,omitempty"`
+	Scene5Text          string                   `json:"scene5Text,omitempty"`
+	Scene1Audio         string                   `json:"scene1Audio,omitempty"`
+	Scene2Audio         string                   `json:"scene2Audio,omitempty"`
+	Scene3Audio         string                   `json:"scene3Audio,omitempty"`
+	Scene4Audio         string                   `json:"scene4Audio,omitempty"`
+	Scene5Audio         string                   `json:"scene5Audio,omitempty"`
+	Scene1Frames        int                      `json:"scene1Frames,omitempty"`
+	Scene2Frames        int                      `json:"scene2Frames,omitempty"`
+	Scene3Frames        int                      `json:"scene3Frames,omitempty"`
+	Scene4Frames        int                      `json:"scene4Frames,omitempty"`
+	Scene5Frames        int                      `json:"scene5Frames,omitempty"`
+	BaseAnimationFrames int                      `json:"baseAnimationFrames,omitempty"`
 }
 
 // RenderVideo 调用 Remotion CLI 渲染视频。
@@ -146,7 +146,7 @@ func RenderVideo(sectors []fetcher.Sector, dateStr, outputPath string, events []
 				continue
 			}
 			audioPath := filepath.Join(voiceoverDir, fmt.Sprintf("%s.mp3", sceneNames[i]))
-			if err := tts.TextToSpeech(scenes[i], audioPath, tts.Xiaoxiao); err != nil {
+			if err := tts.TextToSpeechCommentator(scenes[i], audioPath); err != nil {
 				logger.Warn("场景 TTS 合成失败", zap.Int("scene", i+1), zap.Error(err))
 				continue
 			}

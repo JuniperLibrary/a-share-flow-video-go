@@ -12,10 +12,7 @@ import (
 )
 
 const (
-	debateVoiceBull   = tts.Yunyang  // 乐观派：男声，沉稳自信
-	debateVoiceBear   = tts.Xiaoxiao // 谨慎派：女声，知性冷静
-	debateSpeechRate  = "+20%"       // 高速攻防节奏，语速加快 20%
-	debatePadFrames   = 8            // 快速切换无需过多 padding
+	debatePadFrames = 8 // 快速切换无需过多 padding
 )
 
 // GenerateAudio 为每轮发言生成 TTS 音频文件，存到 Remotion public/ 目录。
@@ -50,11 +47,6 @@ func GenerateAudio(taskID string, script Script) ([]AudioTurn, error) {
 	)
 
 	for i, turn := range script.Turns {
-		voice := debateVoiceBear
-		if turn.Speaker == Bull {
-			voice = debateVoiceBull
-		}
-
 		relPath := fmt.Sprintf("debate/%s/turn_%d.mp3", taskID, i)
 		absPath := filepath.Join(rendererDir, "public", relPath)
 
@@ -63,10 +55,9 @@ func GenerateAudio(taskID string, script Script) ([]AudioTurn, error) {
 			zap.Int("index", i),
 			zap.String("speaker", string(turn.Speaker)),
 			zap.Int("textLen", len(turn.Text)),
-			zap.String("voice", string(voice)),
 		)
 
-		if err := tts.TextToSpeechRate(turn.Text, absPath, voice, debateSpeechRate); err != nil {
+		if err := tts.TextToSpeech(turn.Text, absPath); err != nil {
 			logger.Error("辩论 TTS 合成失败", zap.String("taskId", taskID), zap.Int("turn", i), zap.Error(err))
 			rollback()
 			return nil, fmt.Errorf("第 %d 轮 TTS 失败: %w", i, err)

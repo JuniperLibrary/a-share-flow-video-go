@@ -19,7 +19,7 @@ const (
 	// TotalFrames Default main-animation duration (TV / 90s @30fps).
 	TotalFrames = 2700
 	// MobileTotalFrames 抖音规格:30s @30fps,主图动画压缩到 1/3 速度以适配完播率。
-	MobileTotalFrames = 900
+	MobileTotalFrames = 600
 
 	// MobileWidth Mobile dimensions (9:16)
 	MobileWidth  = 1080
@@ -65,12 +65,12 @@ var SessionConfigs = map[string]SessionConfig{
 		BgColor:        "#00ff88",
 	},
 	"full": {
-		XLim:           [2]int{0, 330},
-		XTicks:         []int{0, 60, 120, 180, 240, 300},
-		XTickLabels:    []string{"9:30", "10:30", "11:30", "13:00", "14:00", "15:00"},
+		XLim:           [2]int{0, 240},
+		XTicks:         []int{0, 60, 120, 180, 240},
+		XTickLabels:    []string{"9:30", "10:30", "11:30/13:00", "14:00", "15:00"},
 		TitleSuffix:    "全天",
 		FilenameSuffix: "全天",
-		TotalSpan:      330,
+		TotalSpan:      240,
 		BgColor:        "",
 	},
 }

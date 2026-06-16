@@ -70,7 +70,7 @@ func main() {
 		testPath := filepath.Join(voiceoverDir, "test_news_0.mp3")
 
 		logger.Info("测试 TTS 合成 (第1页)", zap.String("output", testPath))
-		if err := tts.TextToSpeech(ttsTexts[0], testPath, tts.Xiaoxiao); err != nil {
+		if err := tts.TextToSpeech(ttsTexts[0], testPath); err != nil {
 			logger.Warn("TTS 合成失败 (非致命)", zap.Error(err))
 		} else if fi, err := os.Stat(testPath); err == nil {
 			logger.Info("TTS 合成成功",

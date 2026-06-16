@@ -32,18 +32,24 @@ type TickSnapshot struct {
 }
 
 type TickPoint struct {
-	Time      string
-	Name      string
-	Net       float64
-	Rate      float64
-	ChangePct float64
-	SuperNet  float64
-	SuperRate float64
-	BigNet    float64
-	BigRate   float64
-	MainRate  float64
-	Volume    float64
-	Turnover  float64
+	Time                 string
+	Name                 string
+	Net                  float64
+	Rate                 float64
+	ChangePct            float64
+	SuperNet             float64
+	SuperRate            float64
+	BigNet               float64
+	BigRate              float64
+	MainRate             float64
+	Volume               float64
+	Turnover             float64
+	BKCode               string
+	TurnoverRate         float64
+	LeadStockName        string
+	LeadStockChangePct   float64
+	TotalMarketCap       float64
+	CirculatingMarketCap float64
 }
 
 type TickFetcher struct {
@@ -329,18 +335,24 @@ func saveTickToDB(dateStr, timeStr string, sectors []fetcher.Sector) error {
 	records := make([]storage.Sector, 0, len(sectors))
 	for _, s := range sectors {
 		records = append(records, storage.Sector{
-			Datetime:  storage.DateToDatetimeTick(dateStr, timeStr),
-			Name:      s.Name,
-			Net:       s.Net,
-			Rate:      s.Rate,
-			ChangePct: s.ChangePct,
-			SuperNet:  s.SuperNet,
-			SuperRate: s.SuperRate,
-			BigNet:    s.BigNet,
-			BigRate:   s.BigRate,
-			Volume:    s.Volume,
-			Turnover:  s.Turnover,
-			InputDate: inputDate,
+			Datetime:             storage.DateToDatetimeTick(dateStr, timeStr),
+			Name:                 s.Name,
+			Net:                  s.Net,
+			Rate:                 s.Rate,
+			ChangePct:            s.ChangePct,
+			SuperNet:             s.SuperNet,
+			SuperRate:            s.SuperRate,
+			BigNet:               s.BigNet,
+			BigRate:              s.BigRate,
+			Volume:               s.Volume,
+			Turnover:             s.Turnover,
+			BKCode:               s.BKCode,
+			TurnoverRate:         s.TurnoverRate,
+			LeadStockName:        s.LeadStockName,
+			LeadStockChangePct:   s.LeadStockChangePct,
+			TotalMarketCap:       s.TotalMarketCap,
+			CirculatingMarketCap: s.CirculatingMarketCap,
+			InputDate:            inputDate,
 		})
 	}
 	return db.SaveSectors(records)
@@ -416,18 +428,24 @@ func LoadTickCSV(dateStr, session string) ([]TickPoint, error) {
 			continue
 		}
 		points = append(points, TickPoint{
-			Time:      timeStr,
-			Name:      s.Name,
-			Net:       s.Net,
-			Rate:      s.Rate,
-			ChangePct: s.ChangePct,
-			SuperNet:  s.SuperNet,
-			SuperRate: s.SuperRate,
-			BigNet:    s.BigNet,
-			BigRate:   s.BigRate,
-			MainRate:  s.SuperRate + s.BigRate,
-			Volume:    s.Volume,
-			Turnover:  s.Turnover,
+			Time:                 timeStr,
+			Name:                 s.Name,
+			Net:                  s.Net,
+			Rate:                 s.Rate,
+			ChangePct:            s.ChangePct,
+			SuperNet:             s.SuperNet,
+			SuperRate:            s.SuperRate,
+			BigNet:               s.BigNet,
+			BigRate:              s.BigRate,
+			MainRate:             s.SuperRate + s.BigRate,
+			Volume:               s.Volume,
+			Turnover:             s.Turnover,
+			BKCode:               s.BKCode,
+			TurnoverRate:         s.TurnoverRate,
+			LeadStockName:        s.LeadStockName,
+			LeadStockChangePct:   s.LeadStockChangePct,
+			TotalMarketCap:       s.TotalMarketCap,
+			CirculatingMarketCap: s.CirculatingMarketCap,
 		})
 	}
 	return points, nil
@@ -435,4 +453,37 @@ func LoadTickCSV(dateStr, session string) ([]TickPoint, error) {
 
 func isMorningTime(t string) bool {
 	return t >= "09:30" && t <= "11:30"
+}
+
+// PointsToSectors 将 tick 时序数据转为各板块最新快照，供文案生成使用。
+func PointsToSectors(points []TickPoint) []fetcher.Sector {
+	latest := make(map[string]TickPoint, len(points))
+	for _, p := range points {
+		prev, ok := latest[p.Name]
+		if !ok || p.Time > prev.Time {
+			latest[p.Name] = p
+		}
+	}
+	sectors := make([]fetcher.Sector, 0, len(latest))
+	for _, p := range latest {
+		sectors = append(sectors, fetcher.Sector{
+			Name:                 p.Name,
+			Net:                  p.Net,
+			Rate:                 p.Rate,
+			ChangePct:            p.ChangePct,
+			SuperNet:             p.SuperNet,
+			SuperRate:            p.SuperRate,
+			BigNet:               p.BigNet,
+			BigRate:              p.BigRate,
+			Volume:               p.Volume,
+			Turnover:             p.Turnover,
+			BKCode:               p.BKCode,
+			TurnoverRate:         p.TurnoverRate,
+			LeadStockName:        p.LeadStockName,
+			LeadStockChangePct:   p.LeadStockChangePct,
+			TotalMarketCap:       p.TotalMarketCap,
+			CirculatingMarketCap: p.CirculatingMarketCap,
+		})
+	}
+	return sectors
 }
