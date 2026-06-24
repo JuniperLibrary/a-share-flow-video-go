@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -267,6 +268,7 @@ func SetupRouter(tickSched *tick.TickScheduler, newsSched *clsnews.NewsScheduler
 	r.DELETE("/api/notes/:id", handleDeleteNote)
 
 	r.POST("/api/debate/generate", handleDebateGenerate)
+	r.POST("/api/debate/council/start", handleDebateCouncilStart)
 	r.POST("/api/debate/audio", handleDebateAudio)
 	r.POST("/api/debate/render", handleDebateRender)
 	r.GET("/api/debate/render-status/:task_id", handleDebateRenderStatus)
@@ -1926,6 +1928,160 @@ func handleDebateGenerate(c *gin.Context) {
 	})
 }
 
+func handleDebateCouncilStart(c *gin.Context) {
+	var body struct {
+		Report           string         `json:"report"`
+		StructuredReport map[string]any `json:"structuredReport,omitempty"`
+		StockCode        string         `json:"stockCode,omitempty"`
+		StockName        string         `json:"stockName,omitempty"`
+		ReportPeriod     string         `json:"reportPeriod,omitempty"`
+		UseMemory        bool           `json:"useMemory"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		logger.BadRequest(c, "请求体需为 JSON 且含 report 字段")
+		return
+	}
+	if strings.TrimSpace(body.Report) == "" {
+		logger.BadRequest(c, "report 字段不能为空")
+		return
+	}
+
+	aiCfg := config.GetAIConfig()
+	if aiCfg.APIKey == "" {
+		logger.BadRequest(c, "未配置 AI API Key，请先在 AI 配置页填写")
+		return
+	}
+
+	// 构建 DebateState
+	reportText := body.Report
+	if len(reportText) > 15000 {
+		reportText = reportText[:15000]
+	}
+
+	state := debate.DebateState{
+		ReportText:   reportText,
+		StockCode:    body.StockCode,
+		StockName:    body.StockName,
+		ReportPeriod: body.ReportPeriod,
+	}
+
+	// 从 structuredReport 生成 structuredMetrics
+	if body.StructuredReport != nil {
+		state.StructuredMetrics = structuredPromptForOrchestrator(body.StructuredReport)
+		if rp, ok := body.StructuredReport["reportDate"].(string); ok && state.ReportPeriod == "" {
+			state.ReportPeriod = rp
+		}
+	}
+
+	// 创建 Orchestrator
+	orchestrator := debate.NewOrchestrator(aiCfg)
+	if body.UseMemory {
+		mem, err := debate.NewDebateMemorySQLite(config.GetDBPath())
+		if err == nil {
+			orchestrator = debate.NewOrchestratorWithOptions(aiCfg, debate.WithMemory(mem))
+		}
+	}
+
+	script, err := orchestrator.Run(context.Background(), state)
+	if err != nil {
+		logger.InternalError(c, "辩论编排失败", err)
+		return
+	}
+
+	taskID := newDebateTaskID()
+
+	summary := body.Report
+	if len([]rune(summary)) > 200 {
+		summary = string([]rune(summary)[:200])
+	}
+
+	debateMetaMu.Lock()
+	debateTaskMeta[taskID] = &debateMeta{
+		StockCode:     body.StockCode,
+		StockName:     body.StockName,
+		ReportSummary: summary,
+		TurnCount:     len(script.Turns),
+	}
+	debateMetaMu.Unlock()
+
+	// 获取当前阶段
+	currentPhase := ""
+	if len(script.Turns) > 0 {
+		currentPhase = string(script.Turns[len(script.Turns)-1].Phase)
+	}
+
+	c.JSON(200, gin.H{
+		"taskId":    taskID,
+		"script":    script,
+		"phase":     currentPhase,
+		"turnCount": len(script.Turns),
+	})
+}
+
+// structuredPromptForOrchestrator 从结构化数据生成 metrics 字符串
+func structuredPromptForOrchestrator(data map[string]any) string {
+	getF := func(key string) float64 {
+		v, ok := data[key]
+		if !ok || v == nil {
+			return 0
+		}
+		switch n := v.(type) {
+		case float64:
+			return n
+		case string:
+			f, _ := strconv.ParseFloat(n, 64)
+			return f
+		}
+		return 0
+	}
+	getS := func(key string) string {
+		v, ok := data[key]
+		if !ok || v == nil {
+			return ""
+		}
+		if s, ok := v.(string); ok {
+			return s
+		}
+		return fmt.Sprintf("%v", v)
+	}
+
+	var b strings.Builder
+	if name := getS("name"); name != "" {
+		b.WriteString(fmt.Sprintf("股票: %s(%s)\n", name, getS("code")))
+	}
+	b.WriteString(fmt.Sprintf("报告期: %s\n", getS("reportDate")))
+	b.WriteString(fmt.Sprintf("报告类型: %s\n", getS("reportType")))
+
+	rev := getF("revenue") / 1e8
+	revYoY := getF("revenueYoY")
+	np := getF("netProfit") / 1e8
+	npYoY := getF("netProfitYoY")
+	dr := getF("deductedProfit") / 1e8
+	op := getF("operatingProfit") / 1e8
+
+	b.WriteString(fmt.Sprintf("\n核心指标|数值|同比\n"))
+	b.WriteString(fmt.Sprintf("营业收入|%.2f亿|%+.1f%%\n", rev, revYoY))
+	b.WriteString(fmt.Sprintf("归母净利润|%.2f亿|%+.1f%%\n", np, npYoY))
+	b.WriteString(fmt.Sprintf("扣非净利润|%.2f亿\n", dr))
+	b.WriteString(fmt.Sprintf("营业利润|%.2f亿\n", op))
+	b.WriteString(fmt.Sprintf("毛利率|%.1f%%\n", getF("grossMargin")))
+	b.WriteString(fmt.Sprintf("净利率|%.1f%%\n", getF("netMargin")))
+	if roe := getF("roe"); roe > 0 {
+		b.WriteString(fmt.Sprintf("ROE|%.1f%%\n", roe))
+	}
+	if eps := getF("eps"); eps > 0 {
+		b.WriteString(fmt.Sprintf("EPS|%.2f元\n", eps))
+	}
+	b.WriteString(fmt.Sprintf("资产负债率|%.1f%%\n", getF("debtAssetRatio")))
+	if cr := getF("currentRatio"); cr > 0 {
+		b.WriteString(fmt.Sprintf("流动比率|%.1f\n", cr))
+	}
+	b.WriteString(fmt.Sprintf("合同负债|%.2f亿\n", getF("contractLiability")/1e8))
+	b.WriteString(fmt.Sprintf("经营现金流|%.2f亿\n", getF("operatingCashFlow")/1e8))
+
+	return b.String()
+}
+
 func handleDebateAudio(c *gin.Context) {
 	var body struct {
 		TaskID string        `json:"taskId"`
@@ -2228,6 +2384,7 @@ func handleDailyReportDates(c *gin.Context) {
 }
 
 // handleDailyReport 获取指定日期的日报详情。
+// 如果日报不存在但当日有板块数据，则自动生成并返回。
 func handleDailyReport(c *gin.Context) {
 	dateStr := c.Param("date")
 	if dateStr == "" {
@@ -2246,17 +2403,74 @@ func handleDailyReport(c *gin.Context) {
 		logger.InternalError(c, "查询日报失败", err)
 		return
 	}
-	if reportJSON == "" {
-		c.JSON(404, gin.H{"error": "该日期暂无日报"})
+
+	if reportJSON != "" {
+		var parsed struct {
+			NetTotal     float64 `json:"netTotal"`
+			InflowCount  int     `json:"inflowCount"`
+			OutflowCount int     `json:"outflowCount"`
+			SuperNetTotal float64 `json:"superNetTotal"`
+			BigNetTotal   float64 `json:"bigNetTotal"`
+			StructureDesc string  `json:"structureDesc"`
+		}
+		json.Unmarshal([]byte(reportJSON), &parsed)
+		c.JSON(200, gin.H{
+			"date":         dateStr,
+			"session":      session,
+			"summary":      summary,
+			"outlook":      outlook,
+			"report":       reportJSON,
+			"netTotal":     parsed.NetTotal,
+			"inflowCount":  parsed.InflowCount,
+			"outflowCount": parsed.OutflowCount,
+			"superNetTotal": parsed.SuperNetTotal,
+			"bigNetTotal":   parsed.BigNetTotal,
+			"structureDesc": parsed.StructureDesc,
+		})
 		return
 	}
 
+	logger.Info("日报不存在，尝试自动生成", zap.String("date", dateStr))
+	hasData := false
+
+	sectorsAll, err := db.LoadSectorsAll(dateStr)
+	if err == nil && len(sectorsAll) > 0 {
+		hasData = true
+	}
+	if !hasData {
+		sectors, err := db.LoadFullSectors(dateStr)
+		if err == nil && len(sectors) > 0 {
+			hasData = true
+		}
+	}
+
+	if !hasData {
+		c.JSON(404, gin.H{"error": "该日期暂无日报且无板块数据"})
+		return
+	}
+
+	r, err := report.Generate(dateStr, "full")
+	if err != nil {
+		logger.InternalError(c, "自动生成日报失败", err)
+		return
+	}
+
+	reportBytes, _ := json.Marshal(r)
+	reportJSON = string(reportBytes)
+
 	c.JSON(200, gin.H{
-		"date":    dateStr,
-		"session": session,
-		"summary": summary,
-		"outlook": outlook,
-		"report":  reportJSON,
+		"date":          dateStr,
+		"session":       r.Session,
+		"summary":       r.Summary,
+		"outlook":       r.Outlook,
+		"report":        reportJSON,
+		"netTotal":      r.NetTotal,
+		"inflowCount":   r.InflowCount,
+		"outflowCount":  r.OutflowCount,
+		"superNetTotal": r.SuperNetTotal,
+		"bigNetTotal":   r.BigNetTotal,
+		"structureDesc": r.StructureDesc,
+		"generated":     true,
 	})
 }
 
@@ -2300,11 +2514,17 @@ func handleDailyReportGenerate(c *gin.Context) {
 
 	reportBytes, _ := json.Marshal(r)
 	c.JSON(200, gin.H{
-		"date":    req.Date,
-		"session": req.Session,
-		"summary": r.Summary,
-		"outlook": r.Outlook,
-		"report":  string(reportBytes),
+		"date":          req.Date,
+		"session":       req.Session,
+		"summary":       r.Summary,
+		"outlook":       r.Outlook,
+		"report":        string(reportBytes),
+		"netTotal":      r.NetTotal,
+		"inflowCount":   r.InflowCount,
+		"outflowCount":  r.OutflowCount,
+		"superNetTotal": r.SuperNetTotal,
+		"bigNetTotal":   r.BigNetTotal,
+		"structureDesc": r.StructureDesc,
 	})
 }
 
