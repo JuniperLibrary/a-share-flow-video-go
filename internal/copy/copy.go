@@ -143,6 +143,7 @@ func GenerateCopywritingAI(sectors []fetcher.Sector, dateStr, session, prevPredi
 	if err != nil {
 		return "", err
 	}
+	text = normalizeHallucinatedSectorNames(text, sectors, inflows)
 
 	if issues := ValidateCopy(text, brief, inflows); len(issues) > 0 {
 		fixPrompt := fmt.Sprintf(PromptFixCopy,
@@ -156,6 +157,27 @@ func GenerateCopywritingAI(sectors []fetcher.Sector, dateStr, session, prevPredi
 	}
 
 	return text, nil
+}
+
+func normalizeHallucinatedSectorNames(text string, sectors []fetcher.Sector, inflows []sectorFlow) string {
+	names := make(map[string]bool)
+	for _, s := range sectors {
+		if s.Name != "" {
+			names[s.Name] = true
+		}
+	}
+	if strings.Contains(text, "新能源") && !names["新能源"] {
+		repl := ""
+		if names["电池"] {
+			repl = "电池"
+		} else if len(inflows) > 0 && inflows[0].Name != "" {
+			repl = inflows[0].Name
+		}
+		if repl != "" {
+			text = strings.ReplaceAll(text, "新能源", repl)
+		}
+	}
+	return text
 }
 
 func absF(x float64) float64 {

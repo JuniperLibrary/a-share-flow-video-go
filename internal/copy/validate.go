@@ -21,6 +21,11 @@ func ValidateCopy(text string, brief *NarrativeBrief, inflows []sectorFlow) []st
 		}
 	}
 
+	allowed := extractAllowedSectorNames(brief, inflows)
+	if strings.Contains(text, "新能源") && !allowed["新能源"] {
+		issues = append(issues, "出现素材包不存在的板块名「新能源」")
+	}
+
 	if len(inflows) > 0 {
 		leader := inflows[0].Name
 		if !strings.Contains(text, leader) {
@@ -40,6 +45,44 @@ func ValidateCopy(text string, brief *NarrativeBrief, inflows []sectorFlow) []st
 	}
 
 	return issues
+}
+
+func extractAllowedSectorNames(brief *NarrativeBrief, inflows []sectorFlow) map[string]bool {
+	out := make(map[string]bool)
+	for _, s := range inflows {
+		if s.Name != "" {
+			out[s.Name] = true
+		}
+	}
+	if brief == nil {
+		return out
+	}
+	addBlock := func(block string) {
+		for _, line := range strings.Split(block, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			if strings.HasPrefix(line, "- ") {
+				rest := strings.TrimSpace(strings.TrimPrefix(line, "- "))
+				if i := strings.Index(rest, ":"); i > 0 {
+					name := strings.TrimSpace(rest[:i])
+					if name != "" {
+						out[name] = true
+					}
+				}
+			} else if i := strings.Index(line, "："); i > 0 {
+				name := strings.TrimSpace(line[:i])
+				if name != "" {
+					out[name] = true
+				}
+			}
+		}
+	}
+	addBlock(brief.InflowLeaders)
+	addBlock(brief.OutflowLeaders)
+	addBlock(brief.Continuity)
+	return out
 }
 
 func hasSceneTags(text string) bool {
