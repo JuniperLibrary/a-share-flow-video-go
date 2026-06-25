@@ -301,7 +301,7 @@ func (db *DB) LoadFullSectors(date string) ([]Sector, error) {
 
 	prefix := date + "%"
 	rows, err := db.db.Query(`
-		SELECT s.datetime, s.name, s.net, s.rate, s.change_pct, s.super_net, s.super_rate, s.big_net, s.big_rate, s.volume, s.turnover, s.input_date
+		SELECT s.datetime, s.name, s.net, s.rate, s.change_pct, s.super_net, s.super_rate, s.big_net, s.big_rate, s.volume, s.turnover, s.bk_code, s.turnover_rate, s.lead_stock_name, s.lead_stock_change_pct, s.total_market_cap, s.circulating_market_cap, s.input_date
 		FROM sectors s
 		INNER JOIN (
 			SELECT name, MAX(datetime) AS max_dt
