@@ -405,7 +405,7 @@ func analyzeLeaderFundLoss(r *DailyReport) LeaderFundLossAnalysis {
 	if sector.LeadStockName != "" {
 		analysis.FundLossReason = fmt.Sprintf("领涨股%s下跌%s，带动行业资金流出", sector.LeadStockName, formatSignedPct(sector.LeadStockChangePct))
 	} else {
-		analysis.FundLossReason = fmt.Sprintf("行业基本面转弱，主力资金规避风险", sector.Name)
+		analysis.FundLossReason = "行业基本面转弱，主力资金规避风险"
 	}
 	
 	// 2. 资金流失持续性

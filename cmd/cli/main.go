@@ -33,6 +33,7 @@ func main() {
 	}
 
 	useAI := false
+	reportImage := false
 	session := ""
 	days := 0
 	useTick := false
@@ -40,10 +41,20 @@ func main() {
 	format := "mobile"
 	var dates []string
 
-	for _, arg := range os.Args[1:] {
+	for i := 1; i < len(os.Args); i++ {
+		arg := os.Args[i]
 		switch {
 		case arg == "--ai":
 			useAI = true
+		case arg == "--report-image":
+			reportImage = true
+		case strings.HasPrefix(arg, "--report-image="):
+			dateStr := strings.TrimPrefix(arg, "--report-image=")
+			if err := runReportImage(dateStr); err != nil {
+				fmt.Fprintf(os.Stderr, "生成日报图片失败: %v\n", err)
+				os.Exit(1)
+			}
+			return
 		case strings.HasPrefix(arg, "--session="):
 			session = strings.TrimPrefix(arg, "--session=")
 		case strings.HasPrefix(arg, "--days="):
@@ -57,6 +68,21 @@ func main() {
 		default:
 			dates = append(dates, arg)
 		}
+	}
+
+	// --report-image 处理（支持 --report-image 2026-06-15 和 --report-image=2026-06-15）
+	if reportImage {
+		dateStr := ""
+		if len(dates) > 0 {
+			dateStr = dates[0]
+		} else {
+			dateStr = time.Now().Format("2006-01-02")
+		}
+		if err := runReportImage(dateStr); err != nil {
+			fmt.Fprintf(os.Stderr, "生成日报图片失败: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	if days > 1 {

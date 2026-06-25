@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -290,35 +289,6 @@ func findSamePeriodLastYear(incomeData []map[string]any) map[string]any {
 		}
 	}
 	return nil
-}
-
-func getFloat64(data map[string]any, key string) float64 {
-	val, ok := data[key]
-	if !ok || val == nil {
-		return 0
-	}
-	switch v := val.(type) {
-	case float64:
-		return v
-	case string:
-		f, _ := strconv.ParseFloat(v, 64)
-		return f
-	case json.Number:
-		f, _ := v.Float64()
-		return f
-	}
-	return 0
-}
-
-func getString(data map[string]any, key string) string {
-	val, ok := data[key]
-	if !ok || val == nil {
-		return ""
-	}
-	if s, ok := val.(string); ok {
-		return s
-	}
-	return fmt.Sprintf("%v", val)
 }
 
 func FormatFinanceReport(report *FinanceReport) string {

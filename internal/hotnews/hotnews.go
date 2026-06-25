@@ -118,11 +118,9 @@ func LoadForVideo(dateStr, format string) ([]NewsPage, error) {
 
 	perSectorLimit := 2
 	perPage := 2
-	totalPageCap := 1
 	if format == "tv" {
 		perSectorLimit = 3
 		perPage = 3
-		totalPageCap = 1
 	}
 
 	var result []SectorNews
@@ -165,10 +163,6 @@ func LoadForVideo(dateStr, format string) ([]NewsPage, error) {
 		}
 		pages = append(pages, page)
 	}
-	if len(pages) > totalPageCap {
-		pages = pages[:totalPageCap]
-	}
-
 	return pages, nil
 }
 
