@@ -190,43 +190,78 @@ func (c *AINewsClassifier) classifyBatch(items []classifyItem) ([][]string, erro
 	}
 	bodyBytes, _ := json.Marshal(body)
 
-	req, err := http.NewRequest("POST", c.cfg.BaseURL+"/chat/completions", bytes.NewReader(bodyBytes))
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(attempt+1) * 500 * time.Millisecond
+			logger.Debug("AI 新闻分类重试",
+				zap.Int("attempt", attempt+1),
+				zap.Duration("backoff", backoff),
+				zap.Error(lastErr),
+			)
+			time.Sleep(backoff)
+		}
 
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("API request: %w", err)
-	}
-	defer resp.Body.Close()
+		req, err := http.NewRequest("POST", c.cfg.BaseURL+"/chat/completions", bytes.NewReader(bodyBytes))
+		if err != nil {
+			lastErr = fmt.Errorf("create request: %w", err)
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 
-	b, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
+		resp, err := c.client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("API request: %w", err)
+			if strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "deadline exceeded") {
+				continue
+			}
+			return nil, lastErr
+		}
+
+		b, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			lastErr = fmt.Errorf("read response: %w", readErr)
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("API HTTP %d: %s", resp.StatusCode, string(b))
+			if resp.StatusCode >= 500 {
+				continue
+			}
+			return nil, lastErr
+		}
+
+		var result struct {
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal(b, &result); err != nil {
+			lastErr = fmt.Errorf("parse API response: %w", err)
+			continue
+		}
+		if len(result.Choices) == 0 {
+			lastErr = fmt.Errorf("empty choices from API")
+			continue
+		}
+
+		// success — return parsed results directly
+		content := result.Choices[0].Message.Content
+		return parseClassifyResult(content, items)
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API HTTP %d: %s", resp.StatusCode, string(b))
+	if lastErr != nil {
+		return nil, lastErr
 	}
+	return nil, fmt.Errorf("classifyBatch: unexpected exit")
+}
 
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(b, &result); err != nil {
-		return nil, fmt.Errorf("parse API response: %w", err)
-	}
-	if len(result.Choices) == 0 {
-		return nil, fmt.Errorf("empty choices from API")
-	}
-
-	content := result.Choices[0].Message.Content
+func parseClassifyResult(content string, items []classifyItem) ([][]string, error) {
 	content = strings.TrimSpace(content)
 	content = strings.TrimPrefix(content, "```json")
 	content = strings.TrimPrefix(content, "```")
