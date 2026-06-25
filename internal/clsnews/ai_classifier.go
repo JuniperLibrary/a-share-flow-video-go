@@ -235,10 +235,7 @@ func (c *AINewsClassifier) classifyBatch(items []classifyItem) ([][]string, erro
 		resp, err := c.client.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("API request: %w", err)
-			if strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "deadline exceeded") {
-				continue
-			}
-			return nil, lastErr
+			continue
 		}
 
 		b, readErr := io.ReadAll(resp.Body)
