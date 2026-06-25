@@ -236,15 +236,27 @@ func (s *NewsScheduler) classifyWorker() {
 		s.classifier = NewAINewsClassifier(config.GetAIConfig())
 	})
 	if !s.classifier.IsAvailable() {
-		logger.Debug("AI 新闻分类未启用，worker 退出")
+		logger.Warn("AI 新闻分类未启用（未配置 API Key），worker 退出，新闻将无标签入库")
 		return
 	}
+
+	processed := 0
+	progressTicker := time.NewTicker(30 * time.Second)
+	defer progressTicker.Stop()
 
 	for {
 		select {
 		case <-s.stopCh:
-			logger.Debug("AI 分类 worker 退出")
+			logger.Info("AI 分类 worker 退出", zap.Int("processed", processed))
 			return
+
+		case <-progressTicker.C:
+			queueLen := len(s.classifyQueue)
+			logger.Info("AI 分类进度",
+				zap.Int("processed", processed),
+				zap.Int("queueRemaining", queueLen),
+			)
+
 		case news := <-s.classifyQueue:
 			tags, err := s.classifier.ClassifyOne(news)
 			if err != nil {
@@ -256,6 +268,11 @@ func (s *NewsScheduler) classifyWorker() {
 			}
 			news.Sectors = tags
 			s.updateSectors(news)
+			processed++
+
+			if processed%10 == 0 {
+				logger.Info("AI 分类进度", zap.Int("processed", processed))
+			}
 		}
 	}
 }
@@ -285,5 +302,5 @@ func (s *NewsScheduler) updateSectors(news CLSNews) {
 		DumpNews([]CLSNews{news})
 	}
 
-	logger.Debug("新闻分类完成", zap.Int64("id", news.ID), zap.Strings("tags", news.Sectors))
+	logger.Info("新闻分类完成", zap.Int64("id", news.ID), zap.Strings("tags", news.Sectors))
 }
