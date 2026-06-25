@@ -197,6 +197,10 @@ func LoadEnv() error {
 		}
 		key := strings.TrimSpace(parts[0])
 		val := strings.TrimSpace(parts[1])
+		// 剥掉值尾部的 inline 注释（如 "qwen-turbo  # 注释" → "qwen-turbo"）
+		if idx := strings.Index(val, "#"); idx >= 0 {
+			val = strings.TrimSpace(val[:idx])
+		}
 		os.Setenv(key, val)
 	}
 	return scanner.Err()
