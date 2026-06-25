@@ -56,7 +56,7 @@ type ScriptResult struct {
 
 // GenerateScript 根据主题调用大模型生成解说风格口播稿。
 func GenerateScript(topic string) (ScriptResult, error) {
-	aiCfg := config.GetAIConfig()
+	aiCfg := config.GetAIConfigFor("tts")
 	if aiCfg.APIKey == "" {
 		return ScriptResult{}, fmt.Errorf("AI 模式需要设置 OPENAI_API_KEY 环境变量")
 	}

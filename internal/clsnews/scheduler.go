@@ -237,7 +237,7 @@ func (s *NewsScheduler) poll() {
 func (s *NewsScheduler) classifyWorker() {
 	// 分类器只初始化一次，所有 worker 共享同一实例（含 HTTP 连接池）
 	s.classifierOnce.Do(func() {
-		s.classifier = NewAINewsClassifier(config.GetAIConfig())
+		s.classifier = NewAINewsClassifier(config.GetAIConfigFor("clsnews"))
 	})
 	if !s.classifier.IsAvailable() {
 		logger.Warn("AI 新闻分类未启用（未配置 API Key），worker 退出，新闻将无标签入库")

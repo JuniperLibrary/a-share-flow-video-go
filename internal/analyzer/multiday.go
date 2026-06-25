@@ -67,7 +67,7 @@ func MultiDayAnalyze(dayData map[string][]fetcher.Sector, dates []string, copyMo
 		return DataDrivenMultiDay(dayData, dates)
 	}
 
-	aiCfg := config.GetAIConfig()
+	aiCfg := config.GetAIConfigFor("analyzer_multiday")
 	if aiCfg.APIKey == "" {
 		logger.Warn("多日分析：用户选择 AI 文案但未配置 AI_API_KEY，降级使用模板")
 		return DataDrivenMultiDay(dayData, dates)

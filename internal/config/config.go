@@ -80,6 +80,30 @@ type AIConfig struct {
 	APIKey  string
 	BaseURL string
 	Model   string
+	Models  map[string]string // per-module model 覆盖，key 为模块名
+}
+
+// moduleModelKeys 环境变量名 → 模块名的映射。
+var moduleModelKeys = map[string]string{
+	"AI_MODEL_CLSNEWS":         "clsnews",
+	"AI_MODEL_ANALYZER":        "analyzer",
+	"AI_MODEL_ANALYZER_MULTIDAY": "analyzer_multiday",
+	"AI_MODEL_TICK":            "tick",
+	"AI_MODEL_COPY":            "copy",
+	"AI_MODEL_REPORT":          "report",
+	"AI_MODEL_TTS":             "tts",
+	"AI_MODEL_DEBATE":          "debate",
+}
+
+// GetAIConfigFor 返回指定模块的 AI 配置，per-module model 覆盖默认 Model。
+func GetAIConfigFor(module string) AIConfig {
+	cfg := GetAIConfig()
+	if cfg.Models != nil {
+		if m, ok := cfg.Models[module]; ok && m != "" {
+			cfg.Model = m
+		}
+	}
+	return cfg
 }
 
 var (
@@ -184,6 +208,7 @@ func GetAIConfig() AIConfig {
 		APIKey:  os.Getenv("OPENAI_API_KEY"),
 		BaseURL: os.Getenv("OPENAI_BASE_URL"),
 		Model:   os.Getenv("AI_MODEL"),
+		Models:  make(map[string]string),
 	}
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = "https://api.openai.com/v1"
@@ -192,6 +217,11 @@ func GetAIConfig() AIConfig {
 	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
 	if cfg.Model == "" {
 		cfg.Model = "gpt-4o-mini"
+	}
+	for envKey, module := range moduleModelKeys {
+		if m := os.Getenv(envKey); m != "" {
+			cfg.Models[module] = m
+		}
 	}
 	return cfg
 }

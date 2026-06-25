@@ -1884,7 +1884,7 @@ func handleDebateGenerate(c *gin.Context) {
 		logger.BadRequest(c, "请求体需为 JSON 且含 report 字段")
 		return
 	}
-	aiCfg := config.GetAIConfig()
+	aiCfg := config.GetAIConfigFor("debate")
 	if aiCfg.APIKey == "" {
 		logger.BadRequest(c, "未配置 AI API Key，请先在 AI 配置页填写")
 		return
@@ -1946,7 +1946,7 @@ func handleDebateCouncilStart(c *gin.Context) {
 		return
 	}
 
-	aiCfg := config.GetAIConfig()
+	aiCfg := config.GetAIConfigFor("debate")
 	if aiCfg.APIKey == "" {
 		logger.BadRequest(c, "未配置 AI API Key，请先在 AI 配置页填写")
 		return

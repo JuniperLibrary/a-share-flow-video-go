@@ -13,7 +13,7 @@ import (
 
 // llmChatCompletion 调用 OpenAI 兼容 API，返回文本。
 func llmChatCompletion(prompt string, temperature float64, maxTokens int) (string, error) {
-	aiCfg := config.GetAIConfig()
+	aiCfg := config.GetAIConfigFor("tick")
 	if aiCfg.APIKey == "" {
 		return "", fmt.Errorf("LLM 需要设置 OPENAI_API_KEY")
 	}

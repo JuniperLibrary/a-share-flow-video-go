@@ -469,7 +469,7 @@ func AIGenerate(sectors []fetcher.Sector, dateStr string, aiCfg config.AIConfig)
 // AnalyzeAllContent 统一入口：优先尝试 AI 生成，失败时自动降级到数据驱动生成。
 // 返回 (events, timeline, ticker) 三元组，保证调用方始终有可用数据。
 func AnalyzeAllContent(sectors []fetcher.Sector, dateStr string, session string) ([]MarketEvent, []TimelineEvent, []TickerItem) {
-	aiCfg := config.GetAIConfig()
+	aiCfg := config.GetAIConfigFor("analyzer")
 	if aiCfg.APIKey == "" {
 		logger.Info("未设置 AI_API_KEY，使用数据驱动生成")
 		return DataDrivenGenerate(sectors, session)

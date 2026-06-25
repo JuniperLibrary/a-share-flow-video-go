@@ -98,7 +98,7 @@ func Generate(dateStr string) (*DailyReport, error) {
 	sentiment := AnalyzeSentiment(report)
 
 	// 7. AI 生成总结和展望（失败不阻塞）
-	aiCfg := config.GetAIConfig()
+	aiCfg := config.GetAIConfigFor("report")
 	if aiCfg.APIKey != "" {
 		summary, outlook, cards, thematicCards, aiErr := AIGenerateThematic(dateStr, report, sectors, sectorRotation, sentiment, aiCfg)
 		if aiErr == nil {

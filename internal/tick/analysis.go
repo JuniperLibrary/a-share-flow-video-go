@@ -549,7 +549,7 @@ func AITickGenerate(points []TickPoint, dateStr string, session string, aiCfg co
 
 // AnalyzeTickContent Tick 事件分析统一入口：优先尝试 AI 游资复盘生成，失败时自动降级到数据驱动生成。
 func AnalyzeTickContent(points []TickPoint, dateStr string, session string) ([]analyzer.MarketEvent, []analyzer.TimelineEvent, []analyzer.TickerItem) {
-	aiCfg := config.GetAIConfig()
+	aiCfg := config.GetAIConfigFor("tick")
 	if aiCfg.APIKey == "" {
 		logger.Info("未设置 AI_API_KEY，使用数据驱动生成")
 		return TickDataDrivenGenerate(points, session)

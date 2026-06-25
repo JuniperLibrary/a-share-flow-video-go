@@ -13,7 +13,7 @@ import (
 )
 
 func chatCompletion(prompt string, temperature float64, maxTokens int) (string, error) {
-	aiCfg := config.GetAIConfig()
+	aiCfg := config.GetAIConfigFor("copy")
 	if aiCfg.APIKey == "" {
 		return "", fmt.Errorf("AI模式需要设置 OPENAI_API_KEY 环境变量")
 	}
