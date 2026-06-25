@@ -3,6 +3,7 @@ package clsnews
 import (
 	"encoding/json"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/a-share-flow-video-go/internal/config"
@@ -12,6 +13,9 @@ import (
 )
 
 const classifyQueueSize = 200
+
+// AI 分类并发 worker 数。多个 worker 同时消费队列，避免单条阻塞拖慢整体。
+const numClassifyWorkers = 3
 
 // NewsScheduler 财联社新闻调度器，支持自动轮询和手动回放两种模式。
 // 自动轮询间隔由 GetPollInterval 决定（交易时段 30s、非交易时段 5min），手动回放由前端按钮触发。
@@ -26,10 +30,11 @@ type NewsScheduler struct {
 	lastPoll    time.Time // 上次轮询时间
 	lastCount   int       // 上次轮询入队条数
 
-	classifier    *AINewsClassifier
-	classifierOnce sync.Once
-	classifyQueue chan CLSNews // 待分类新闻队列（异步）
-	workerWg      sync.WaitGroup
+	classifier       *AINewsClassifier
+	classifierOnce   sync.Once
+	classifyQueue    chan CLSNews
+	classifyWorkerWg sync.WaitGroup
+	workerProcessed  atomic.Int64
 }
 
 func NewNewsScheduler() *NewsScheduler {
@@ -68,8 +73,8 @@ func (s *NewsScheduler) Stop() {
 	s.mu.Unlock()
 
 	close(s.stopCh)
-	s.workerWg.Wait()
-	logger.Info("财联社新闻轮询已停止，分类 worker 已退出")
+	s.classifyWorkerWg.Wait()
+	logger.Info("财联社新闻轮询已停止，分类 worker 已退出", zap.Int64("processed", s.workerProcessed.Load()))
 }
 
 // IsRunning 返回自动轮询是否运行中。
@@ -227,11 +232,10 @@ func (s *NewsScheduler) poll() {
 	}
 }
 
-// classifyWorker 后台 AI 分类 worker：逐条消费队列，调用 ClassifyOne 并保存结果。
+// classifyWorker 启动 numClassifyWorkers 个并发 worker 从队列消费新闻，
+// 逐条调用 AI 分类并保存结果。同时开启进度日志（每 30s），确保队列背压可见。
 func (s *NewsScheduler) classifyWorker() {
-	s.workerWg.Add(1)
-	defer s.workerWg.Done()
-
+	// 分类器只初始化一次，所有 worker 共享同一实例（含 HTTP 连接池）
 	s.classifierOnce.Do(func() {
 		s.classifier = NewAINewsClassifier(config.GetAIConfig())
 	})
@@ -240,27 +244,30 @@ func (s *NewsScheduler) classifyWorker() {
 		return
 	}
 
-	processed := 0
-	progressTicker := time.NewTicker(30 * time.Second)
-	defer progressTicker.Stop()
+	for i := range numClassifyWorkers {
+		s.classifyWorkerWg.Add(1)
+		go s.classifyOneWorker(i)
+	}
 
+	<-s.stopCh
+	logger.Info("AI 分类 worker 池退出", zap.Int64("processed", s.workerProcessed.Load()))
+}
+
+func (s *NewsScheduler) classifyOneWorker(id int) {
+	defer s.classifyWorkerWg.Done()
+
+	logger.Debug("AI 分类 worker 启动", zap.Int("workerID", id))
 	for {
 		select {
 		case <-s.stopCh:
-			logger.Info("AI 分类 worker 退出", zap.Int("processed", processed))
 			return
-
-		case <-progressTicker.C:
-			queueLen := len(s.classifyQueue)
-			logger.Info("AI 分类进度",
-				zap.Int("processed", processed),
-				zap.Int("queueRemaining", queueLen),
-			)
-
 		case news := <-s.classifyQueue:
 			tags, err := s.classifier.ClassifyOne(news)
 			if err != nil {
-				logger.Warn("AI 新闻分类失败", zap.Int64("id", news.ID), zap.Error(err))
+				logger.Warn("AI 新闻分类失败",
+					zap.Int64("id", news.ID),
+					zap.Error(err),
+				)
 				continue
 			}
 			if len(tags) == 0 {
@@ -268,10 +275,14 @@ func (s *NewsScheduler) classifyWorker() {
 			}
 			news.Sectors = tags
 			s.updateSectors(news)
-			processed++
+			processed := s.workerProcessed.Add(1)
 
 			if processed%10 == 0 {
-				logger.Info("AI 分类进度", zap.Int("processed", processed))
+				queueLen := len(s.classifyQueue)
+				logger.Info("AI 分类进度",
+					zap.Int64("processed", processed),
+					zap.Int("queueRemaining", queueLen),
+				)
 			}
 		}
 	}
