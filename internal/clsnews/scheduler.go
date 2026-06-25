@@ -123,7 +123,59 @@ func (s *NewsScheduler) pollOnce() {
 	s.poll()
 }
 
-// poll 拉取最新新闻并推入 AI 分类队列，不阻塞。
+// saveAllRaw 将新闻全量写入数据库（无标签时为 "[]"）。
+// INSERT OR IGNORE 按 id 去重，已存在的新闻不会覆盖。
+func (s *NewsScheduler) saveAllRaw(news []CLSNews) int {
+	db, err := storage.Get()
+	if err != nil {
+		logger.Warn("数据库连接失败", zap.Error(err))
+		return 0
+	}
+
+	records := make([]storage.CLSNewsRecord, 0, len(news))
+	for _, n := range news {
+		sectorsJSON := "[]"
+		if len(n.Sectors) > 0 {
+			if b, e := json.Marshal(n.Sectors); e == nil {
+				sectorsJSON = string(b)
+			}
+		}
+		records = append(records, storage.CLSNewsRecord{
+			ID:         n.ID,
+			Title:      n.Title,
+			Content:    n.Content,
+			Brief:      n.Brief,
+			Level:      n.Level,
+			ReadingNum: n.ReadingNum,
+			CTime:      n.CTime.Format("2006-01-02 15:04:05"),
+			ShareURL:   n.ShareURL,
+			Sectors:    sectorsJSON,
+		})
+	}
+
+	saved, err := db.SaveCLSNews(records)
+	if err != nil {
+		logger.Warn("保存新闻失败", zap.Error(err))
+		return 0
+	}
+	return saved
+}
+
+// enqueueNews 将新闻推入 AI 分类队列（非阻塞），返回入队数和丢弃数。
+func (s *NewsScheduler) enqueueNews(news []CLSNews) (queued, dropped int) {
+	for _, n := range news {
+		select {
+		case s.classifyQueue <- n:
+			queued++
+		default:
+			dropped++
+		}
+	}
+	return
+}
+
+// poll 拉取最新新闻 → 全量落库 → 入队异步分类。
+// 先保存到数据库确保不丢数据，再入队让 worker 逐条打标签。
 func (s *NewsScheduler) poll() {
 	news, err := FetchTelegraphList(s.lastTime)
 	if err != nil {
@@ -144,41 +196,34 @@ func (s *NewsScheduler) poll() {
 		zap.Int64("lastTime", s.lastTime),
 	)
 
-	// 更新最新时间戳（基于原始列表，避免重复拉取）
+	// 1. 全量写入数据库（sectors="[]"），不丢数据
+	saved := s.saveAllRaw(news)
+
+	// 2. 更新最新时间戳（基于已落库的完整列表）
 	maxTime := ExtractMaxCTime(news)
 	if maxTime > s.lastTime {
 		s.lastTime = maxTime
 		logger.Debug("财联社最新时间戳", zap.Int64("lastTime", maxTime))
 	}
 
-	// 推入 AI 分类队列（非阻塞，队列满时丢弃）
-	queued := 0
-	dropped := 0
-	for _, n := range news {
-		select {
-		case s.classifyQueue <- n:
-			queued++
-		default:
-			dropped++
-		}
-	}
+	// 3. 入队异步分类（非阻塞，队列满丢弃不影响已落库数据）
+	queued, dropped := s.enqueueNews(news)
 
 	s.mu.Lock()
 	s.lastPoll = time.Now()
-	s.lastCount = queued
+	s.lastCount = saved
 	s.mu.Unlock()
 
 	if dropped > 0 {
-		logger.Warn("AI 分类队列已满",
+		logger.Warn("AI 分类队列已满，部分新闻暂未打标签",
 			zap.Int("total", len(news)),
+			zap.Int("saved", saved),
 			zap.Int("queued", queued),
 			zap.Int("dropped", dropped),
 			zap.Int("queueCapacity", classifyQueueSize),
 		)
 	} else {
-		logger.Info("AI 分类入队",
-			zap.Int("queued", queued),
-		)
+		logger.Info("AI 分类入队", zap.Int("queued", queued))
 	}
 }
 
@@ -210,13 +255,13 @@ func (s *NewsScheduler) classifyWorker() {
 				continue
 			}
 			news.Sectors = tags
-			s.saveClassified(news)
+			s.updateSectors(news)
 		}
 	}
 }
 
-// saveClassified 保存单条已分类新闻到数据库。
-func (s *NewsScheduler) saveClassified(news CLSNews) {
+// updateSectors 更新单条新闻的板块标签（数据库已由 poll() 写入，仅更新 sectors 列）。
+func (s *NewsScheduler) updateSectors(news CLSNews) {
 	db, err := storage.Get()
 	if err != nil {
 		logger.Warn("数据库连接失败", zap.Error(err))
@@ -224,33 +269,21 @@ func (s *NewsScheduler) saveClassified(news CLSNews) {
 	}
 
 	sectorsJSON, _ := json.Marshal(news.Sectors)
-	record := storage.CLSNewsRecord{
-		ID:         news.ID,
-		Title:      news.Title,
-		Content:    news.Content,
-		Brief:      news.Brief,
-		Level:      news.Level,
-		ReadingNum: news.ReadingNum,
-		CTime:      news.CTime.Format("2006-01-02 15:04:05"),
-		ShareURL:   news.ShareURL,
-		Sectors:    string(sectorsJSON),
-	}
-
-	saved, err := db.SaveCLSNews([]storage.CLSNewsRecord{record})
-	if err != nil {
-		logger.Warn("保存新闻失败", zap.Int64("id", news.ID), zap.Error(err))
+	if err := db.UpdateCLSNewsSectors(news.ID, string(sectorsJSON)); err != nil {
+		logger.Warn("更新新闻标签失败", zap.Int64("id", news.ID), zap.Error(err))
 		return
 	}
 
 	s.mu.Lock()
-	s.totalNews += saved
+	s.totalNews++
 	s.mu.Unlock()
 
-	if saved > 0 && config.DataMode() == "json" {
+	if config.DataMode() == "json" {
 		if db, err := storage.Get(); err == nil {
 			db.ExportJSON()
 		}
 		DumpNews([]CLSNews{news})
-		logger.Info("新闻分类保存", zap.Int64("id", news.ID), zap.Strings("tags", news.Sectors))
 	}
+
+	logger.Debug("新闻分类完成", zap.Int64("id", news.ID), zap.Strings("tags", news.Sectors))
 }
