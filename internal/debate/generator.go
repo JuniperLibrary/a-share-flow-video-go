@@ -232,43 +232,52 @@ func callLLM(aiCfg config.AIConfig, prompt string, temperature float64, maxToken
 	}
 	bodyBytes, _ := json.Marshal(body)
 
-	req, _ := http.NewRequest("POST", aiCfg.BaseURL+"/chat/completions", bytes.NewReader(bodyBytes))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+aiCfg.APIKey)
+	client := &http.Client{Timeout: 180 * time.Second}
 
-	client := &http.Client{Timeout: 90 * time.Second}
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		req, _ := http.NewRequest("POST", aiCfg.BaseURL+"/chat/completions", bytes.NewReader(bodyBytes))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+aiCfg.APIKey)
 
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("LLM 请求失败: %w", err)
-	}
-	defer resp.Body.Close()
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			if attempt < 2 && strings.Contains(err.Error(), "context deadline exceeded") {
+				time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+				continue
+			}
+			return "", fmt.Errorf("LLM 请求失败: %w", err)
+		}
 
-	respBody, readErr := io.ReadAll(resp.Body)
-	if readErr != nil {
-		return "", fmt.Errorf("LLM 响应读取失败: %w", readErr)
-	}
+		respBody, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			return "", fmt.Errorf("LLM 响应读取失败: %w", readErr)
+		}
 
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("LLM HTTP %d: %s", resp.StatusCode, string(respBody))
-	}
+		if resp.StatusCode != http.StatusOK {
+			return "", fmt.Errorf("LLM HTTP %d: %s", resp.StatusCode, string(respBody))
+		}
 
-	var chatResp struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(respBody, &chatResp); err != nil {
-		return "", fmt.Errorf("LLM 响应解析失败: %w", err)
-	}
-	if len(chatResp.Choices) == 0 {
-		return "", fmt.Errorf("LLM 返回空 choices")
-	}
+		var chatResp struct {
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal(respBody, &chatResp); err != nil {
+			return "", fmt.Errorf("LLM 响应解析失败: %w", err)
+		}
+		if len(chatResp.Choices) == 0 {
+			return "", fmt.Errorf("LLM 返回空 choices")
+		}
 
-	raw := strings.TrimSpace(chatResp.Choices[0].Message.Content)
-	return stripCodeFence(raw), nil
+		raw := strings.TrimSpace(chatResp.Choices[0].Message.Content)
+		return stripCodeFence(raw), nil
+	}
+	return "", fmt.Errorf("LLM 请求失败: %w", lastErr)
 }
 
 func parseScript(raw string) (Script, error) {
