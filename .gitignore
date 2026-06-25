@@ -21,11 +21,17 @@ web/frontend/tsconfig.tsbuildinfo
 # Environment
 .env
 
+# Sisyphus orchestration
+.sisyphus/
+
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
+
+# Python cache
+__pycache__/
 
 # OS
 .DS_Store
