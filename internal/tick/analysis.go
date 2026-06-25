@@ -568,15 +568,25 @@ func AnalyzeTickContent(points []TickPoint, dateStr string, session string) ([]a
 }
 
 func extractJSON(content string) string {
-	start := strings.Index(content, "{")
+	s := strings.TrimSpace(content)
+	// 去除 markdown 代码块包装 ```json ... ```
+	if strings.HasPrefix(s, "```") {
+		s = strings.TrimPrefix(s, "```json")
+		s = strings.TrimPrefix(s, "```")
+		if idx := strings.LastIndex(s, "```"); idx >= 0 {
+			s = s[:idx]
+		}
+		s = strings.TrimSpace(s)
+	}
+	start := strings.Index(s, "{")
 	if start == -1 {
 		return ""
 	}
-	end := strings.LastIndex(content, "}")
+	end := strings.LastIndex(s, "}")
 	if end == -1 || end < start {
 		return ""
 	}
-	return content[start : end+1]
+	return s[start : end+1]
 }
 
 func parseDateDisplay(dateStr string) string {

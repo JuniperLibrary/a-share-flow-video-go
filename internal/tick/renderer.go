@@ -82,6 +82,10 @@ type TickRenderProps struct {
 	ChartNarrationAudios   []string                 `json:"chartNarrationAudios,omitempty"`
 	ChartNarrationSegments []int                    `json:"chartNarrationSegments,omitempty"`
 	ChartNarrationTexts    []string                 `json:"chartNarrationTexts,omitempty"`
+
+	// LLM 增强字段（可选，为空时前端 fallback 到模板逻辑）
+	CatalysisResult    *CatalysisResult    `json:"catalysisResult,omitempty"`
+	MainStructureResult *MainStructureResult `json:"mainStructureResult,omitempty"`
 }
 
 func generateChartNarrationSegments(sectorTicks []SectorTick, totalFrames int) (texts []string, startFrames []int) {
@@ -148,17 +152,17 @@ func generateChartNarrationSegments(sectorTicks []SectorTick, totalFrames int) (
 	sort.Slice(points, func(i, j int) bool { return points[i].idx < points[j].idx })
 	if len(points) > 0 {
 		for _, p := range points {
-			action := "突然加速"
-			direction := "净流入"
+			action := ChartNarrationActionAccelerate
+			direction := ChartNarrationDirectionInflow
 			if p.delta < 0 {
-				action = "明显转弱"
-				direction = "净流出"
+				action = ChartNarrationActionWeaken
+				direction = ChartNarrationDirectionNetOutflow
 			}
 			timePrefix := ""
 			if p.time != "" {
 				timePrefix = p.time + "，"
 			}
-			texts = append(texts, fmt.Sprintf("注意看，%s%s%s，单笔%s%.1f亿，累计%.1f亿。", timePrefix, p.name, action, direction, math.Abs(p.delta), p.cum))
+			texts = append(texts, fmt.Sprintf(ChartNarrationTmplInflection, timePrefix, p.name, action, direction, math.Abs(p.delta), p.cum))
 			startFrame := int(math.Floor(float64(p.idx) / float64(numPoints) * float64(totalFrames)))
 			startFrame -= FPS
 			if startFrame < 0 {
@@ -198,9 +202,9 @@ func generateChartNarrationSegments(sectorTicks []SectorTick, totalFrames int) (
 			return math.Abs(sums[a].net) > math.Abs(sums[b].net)
 		})
 
-		direction := "净流入"
+		direction := ChartNarrationDirectionInflow
 		if total < 0 {
-			direction = "净流出"
+			direction = ChartNarrationDirectionNetOutflow
 		}
 		absTotal := math.Abs(total)
 
@@ -209,32 +213,32 @@ func generateChartNarrationSegments(sectorTicks []SectorTick, totalFrames int) (
 			if math.Abs(sums[j].net) < 0.5 {
 				continue
 			}
-			sign := "净流入"
+			sign := ChartNarrationDirectionInflow
 			if sums[j].net < 0 {
-				sign = "净流出"
+				sign = ChartNarrationDirectionNetOutflow
 			}
-			top2 = append(top2, fmt.Sprintf("%s%s%.0f亿", sums[j].name, sign, math.Abs(sums[j].net)))
+			top2 = append(top2, fmt.Sprintf(ChartNarrationSectorFmt, sums[j].name, sign, math.Abs(sums[j].net)))
 		}
 
 		var text string
 		switch i {
 		case 0:
 			if len(top2) > 0 {
-				text = fmt.Sprintf("开盘后资金率先涌入%s，整体%s%.0f亿元。", strings.Join(top2, "、"), direction, absTotal)
+				text = fmt.Sprintf(ChartNarrationTmplOpen, strings.Join(top2, "、"), direction, absTotal)
 			} else {
-				text = fmt.Sprintf("开盘后各板块资金变动不大，整体%s%.0f亿元。", direction, absTotal)
+				text = fmt.Sprintf(ChartNarrationTmplOpenFallback, direction, absTotal)
 			}
 		case 1:
 			if len(top2) > 0 {
-				text = fmt.Sprintf("盘中%s持续领跑，累计%s%.0f亿元。", strings.Join(top2, "、"), direction, absTotal)
+				text = fmt.Sprintf(ChartNarrationTmplMid, strings.Join(top2, "、"), direction, absTotal)
 			} else {
-				text = fmt.Sprintf("盘中资金格局平稳，累计%s%.0f亿元。", direction, absTotal)
+				text = fmt.Sprintf(ChartNarrationTmplMidFallback, direction, absTotal)
 			}
 		case 2:
 			if len(top2) > 0 {
-				text = fmt.Sprintf("尾盘来看，%s领先，全天%s%.0f亿元。", strings.Join(top2, "、"), direction, absTotal)
+				text = fmt.Sprintf(ChartNarrationTmplClose, strings.Join(top2, "、"), direction, absTotal)
 			} else {
-				text = fmt.Sprintf("收盘板块资金整体%s%.0f亿元，分布较为分散。", direction, absTotal)
+				text = fmt.Sprintf(ChartNarrationTmplCloseFallback, direction, absTotal)
 			}
 		}
 
@@ -324,19 +328,37 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 		zap.String("date", dateStr),
 		zap.String("session", session))
 
+	// LLM 资金催化分析
+	catalysisResult := GenerateCatalysis(sectorTicks, newsPages)
+	if catalysisResult != nil {
+		logger.Info("资金催化 LLM 分析完成",
+			zap.Int("sectors", len(catalysisResult.Sectors)))
+	}
+
+	// LLM 主线结构收尾分析
+	mainStructureResult := GenerateMainStructure(sectorTicks)
+	if mainStructureResult != nil {
+		logger.Info("主线结构收尾 LLM 分析完成",
+			zap.String("conclusion", mainStructureResult.Conclusion))
+	}
+
+	newsPages = reorderNewsPagesByFlow(newsPages, sectorTicks, format)
+
 	props := TickRenderProps{
-		DateStr:        dateStr,
-		DisplayDate:    displayDate,
-		TotalFrames:    TotalFrames,
-		SectorTicks:    sectorTicks,
-		TimelineEvents: timeline,
-		TickerItems:    ticker,
-		Events:         events,
-		Format:         format,
-		Width:          w,
-		Height:         h,
-		Session:        session,
-		XLim:           sessCfg.XLim,
+		DateStr:             dateStr,
+		DisplayDate:         displayDate,
+		TotalFrames:         TotalFrames,
+		SectorTicks:         sectorTicks,
+		TimelineEvents:      timeline,
+		TickerItems:         ticker,
+		Events:              events,
+		Format:              format,
+		Width:               w,
+		Height:              h,
+		Session:             session,
+		XLim:                sessCfg.XLim,
+		CatalysisResult:     catalysisResult,
+		MainStructureResult: mainStructureResult,
 	}
 
 	baseFrames := config.GetBaseFrames(format)
@@ -614,4 +636,63 @@ func sumAbs(data []float64) float64 {
 		}
 	}
 	return s
+}
+
+func reorderNewsPagesByFlow(pages []hotnews.NewsPage, sectorTicks []SectorTick, format string) []hotnews.NewsPage {
+	if len(pages) == 0 || len(sectorTicks) == 0 {
+		return pages
+	}
+
+	flowMap := make(map[string]float64, len(sectorTicks))
+	for _, st := range sectorTicks {
+		cum := 0.0
+		for _, v := range st.Data {
+			cum += v
+		}
+		flowMap[st.Name] = cum
+	}
+
+	var allSectors []hotnews.SectorNews
+	for _, page := range pages {
+		allSectors = append(allSectors, page.Sectors...)
+	}
+
+	sort.Slice(allSectors, func(i, j int) bool {
+		fi := math.Abs(flowMap[allSectors[i].Sector])
+		fj := math.Abs(flowMap[allSectors[j].Sector])
+		return fi > fj
+	})
+
+	perPage := 2
+	if format == "tv" {
+		perPage = 3
+	}
+
+	var result []hotnews.NewsPage
+	for i := 0; i < len(allSectors); i += perPage {
+		end := i + perPage
+		if end > len(allSectors) {
+			end = len(allSectors)
+		}
+		page := hotnews.NewsPage{Sectors: allSectors[i:end]}
+		pageTitles := make(map[string]bool)
+		for si := range page.Sectors {
+			var deduped []hotnews.NewsItem
+			for _, item := range page.Sectors[si].News {
+				if pageTitles[item.Title] {
+					continue
+				}
+				pageTitles[item.Title] = true
+				deduped = append(deduped, item)
+			}
+			page.Sectors[si].News = deduped
+		}
+		result = append(result, page)
+	}
+	const totalPageCap = 1
+	if len(result) > totalPageCap {
+		result = result[:totalPageCap]
+	}
+
+	return result
 }
