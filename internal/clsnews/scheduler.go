@@ -139,6 +139,11 @@ func (s *NewsScheduler) poll() {
 		return
 	}
 
+	logger.Info("财联社电报拉取",
+		zap.Int("total", len(news)),
+		zap.Int64("lastTime", s.lastTime),
+	)
+
 	// 更新最新时间戳（基于原始列表，避免重复拉取）
 	maxTime := ExtractMaxCTime(news)
 	if maxTime > s.lastTime {
@@ -148,12 +153,13 @@ func (s *NewsScheduler) poll() {
 
 	// 推入 AI 分类队列（非阻塞，队列满时丢弃）
 	queued := 0
+	dropped := 0
 	for _, n := range news {
 		select {
 		case s.classifyQueue <- n:
 			queued++
 		default:
-			logger.Warn("AI 分类队列已满，丢弃新闻", zap.Int64("id", n.ID))
+			dropped++
 		}
 	}
 
@@ -162,7 +168,18 @@ func (s *NewsScheduler) poll() {
 	s.lastCount = queued
 	s.mu.Unlock()
 
-	logger.Debug("财联社新闻入队", zap.Int("total", len(news)), zap.Int("queued", queued))
+	if dropped > 0 {
+		logger.Warn("AI 分类队列已满",
+			zap.Int("total", len(news)),
+			zap.Int("queued", queued),
+			zap.Int("dropped", dropped),
+			zap.Int("queueCapacity", classifyQueueSize),
+		)
+	} else {
+		logger.Info("AI 分类入队",
+			zap.Int("queued", queued),
+		)
+	}
 }
 
 // classifyWorker 后台 AI 分类 worker：逐条消费队列，调用 ClassifyOne 并保存结果。
