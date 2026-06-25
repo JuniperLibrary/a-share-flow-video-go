@@ -385,7 +385,7 @@ TickFetcher.collectTick() → 去重检查 → SQLite
     ↓
 NewsScheduler (30s / 5min 轮询) → FetchTelegraphList()
     ↓
-MatchSectorsToNews() → 关键词匹配板块
+MatchSectorsToNews() → AI 标签分类
     ↓
 SaveCLSNews() → INSERT OR IGNORE → SQLite: cls_news
 ```
@@ -433,7 +433,7 @@ a-share-flow-video-go/
 │   ├── clsnews/                 # 财联社新闻系统：API 抓取、板块匹配、轮询调度
 │   │   ├── types.go             # CLSNews 类型定义
 │   │   ├── fetcher.go           # 电报列表 API 客户端 + 交易时段判断
-│   │   ├── sector_matcher.go    # 新闻→板块关键词匹配器
+│   │   ├── ai_classifier.go     # AI 新闻板块标签分类
 │   │   └── scheduler.go         # 后台轮询调度器（30s/5min）
 │   └── web/handlers.go          # HTTP handlers：SSE 流、全量导出、新闻路由、CORS
 └── data/                        # 数据目录：CSV + SQLite + JSON (Git 友好)

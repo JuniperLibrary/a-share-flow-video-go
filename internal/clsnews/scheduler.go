@@ -15,13 +15,15 @@ import (
 // NewsScheduler 财联社新闻调度器，支持自动轮询和手动回放两种模式。
 // 自动轮询间隔由 GetPollInterval 决定（交易时段 30s、非交易时段 5min），手动回放由前端按钮触发。
 type NewsScheduler struct {
-	mu        sync.Mutex
-	running   bool
-	stopCh    chan struct{}
-	lastTime  int64     // 上次拉取到的最新时间戳
-	totalNews int       // 累计拉取的新闻数
-	lastPoll  time.Time // 上次轮询时间
-	lastCount int       // 上次轮询新增条数
+	mu          sync.Mutex
+	running     bool
+	stopCh      chan struct{}
+	lastTime    int64     // 上次拉取到的最新时间戳
+	totalNews   int       // 累计拉取的新闻数
+	lastPoll    time.Time // 上次轮询时间
+	lastCount   int       // 上次轮询新增条数
+	classifier  *AINewsClassifier
+	classifierOnce sync.Once
 }
 
 func NewNewsScheduler() *NewsScheduler {
@@ -122,8 +124,18 @@ func (s *NewsScheduler) poll() {
 		return
 	}
 
-	// 匹配板块标签
-	MatchSectorsToNews(news)
+	// AI 标签分类
+	s.classifierOnce.Do(func() {
+		s.classifier = NewAINewsClassifier(config.GetAIConfig())
+	})
+	if s.classifier.IsAvailable() {
+		aiTags := s.classifier.ClassifyBatch(news)
+		for i, tags := range aiTags {
+			if tags != nil {
+				news[i].Sectors = tags
+			}
+		}
+	}
 
 	// 更新最新时间戳（基于原始列表，避免重复拉取）
 	maxTime := ExtractMaxCTime(news)
