@@ -2,7 +2,6 @@ package clsnews
 
 import (
 	"encoding/json"
-	"fmt"
 	"sync"
 	"time"
 
@@ -12,25 +11,34 @@ import (
 	"go.uber.org/zap"
 )
 
+const classifyQueueSize = 200
+
 // NewsScheduler 财联社新闻调度器，支持自动轮询和手动回放两种模式。
 // 自动轮询间隔由 GetPollInterval 决定（交易时段 30s、非交易时段 5min），手动回放由前端按钮触发。
+// AI 标签分类通过队列+worker 异步处理：poll() 仅负责拉取和入队，
+// worker goroutine 逐条调用 AI 并保存结果。
 type NewsScheduler struct {
 	mu          sync.Mutex
 	running     bool
 	stopCh      chan struct{}
 	lastTime    int64     // 上次拉取到的最新时间戳
-	totalNews   int       // 累计拉取的新闻数
+	totalNews   int       // 累计保存的新闻数（worker 更新）
 	lastPoll    time.Time // 上次轮询时间
-	lastCount   int       // 上次轮询新增条数
-	classifier  *AINewsClassifier
+	lastCount   int       // 上次轮询入队条数
+
+	classifier    *AINewsClassifier
 	classifierOnce sync.Once
+	classifyQueue chan CLSNews // 待分类新闻队列（异步）
+	workerWg      sync.WaitGroup
 }
 
 func NewNewsScheduler() *NewsScheduler {
 	return &NewsScheduler{}
 }
 
-// Start 启动后台自动轮询，间隔由 GetPollInterval 决定。
+// Start 启动后台自动轮询和 AI 分类 worker。
+// 自动轮询间隔由 GetPollInterval 决定（交易时段 30s、非交易时段 5min）。
+// AI 分类 worker 从队列中逐条消费，单条调用大模型。
 func (s *NewsScheduler) Start() {
 	s.mu.Lock()
 	if s.running {
@@ -39,23 +47,29 @@ func (s *NewsScheduler) Start() {
 	}
 	s.running = true
 	s.stopCh = make(chan struct{})
+	s.classifyQueue = make(chan CLSNews, classifyQueueSize)
 	s.mu.Unlock()
 
-	go s.pollOnce()
+	go s.classifyWorker()
 	go s.loop()
-	logger.Info("财联社新闻自动轮询已启动（交易时段30s/非交易时段5min）")
+	go s.pollOnce()
+	logger.Info("财联社新闻自动轮询已启动（交易时段30s/非交易时段5min），AI 分类队列", zap.Int("queueSize", classifyQueueSize))
 }
 
-// Stop 停止后台自动轮询。
+// Stop 停止后台自动轮询和 AI 分类 worker。
+// 等待当前正在分类的新闻完成（队列中未处理的丢弃）。
 func (s *NewsScheduler) Stop() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if !s.running {
+		s.mu.Unlock()
 		return
 	}
-	close(s.stopCh)
 	s.running = false
-	logger.Info("财联社新闻轮询已停止")
+	s.mu.Unlock()
+
+	close(s.stopCh)
+	s.workerWg.Wait()
+	logger.Info("财联社新闻轮询已停止，分类 worker 已退出")
 }
 
 // IsRunning 返回自动轮询是否运行中。
@@ -109,6 +123,7 @@ func (s *NewsScheduler) pollOnce() {
 	s.poll()
 }
 
+// poll 拉取最新新闻并推入 AI 分类队列，不阻塞。
 func (s *NewsScheduler) poll() {
 	news, err := FetchTelegraphList(s.lastTime)
 	if err != nil {
@@ -124,19 +139,6 @@ func (s *NewsScheduler) poll() {
 		return
 	}
 
-	// AI 标签分类
-	s.classifierOnce.Do(func() {
-		s.classifier = NewAINewsClassifier(config.GetAIConfig())
-	})
-	if s.classifier.IsAvailable() {
-		aiTags := s.classifier.ClassifyBatch(news)
-		for i, tags := range aiTags {
-			if tags != nil {
-				news[i].Sectors = tags
-			}
-		}
-	}
-
 	// 更新最新时间戳（基于原始列表，避免重复拉取）
 	maxTime := ExtractMaxCTime(news)
 	if maxTime > s.lastTime {
@@ -144,69 +146,94 @@ func (s *NewsScheduler) poll() {
 		logger.Debug("财联社最新时间戳", zap.Int64("lastTime", maxTime))
 	}
 
-	// 只保留有匹配板块的新闻
-	matched := news[:0]
+	// 推入 AI 分类队列（非阻塞，队列满时丢弃）
+	queued := 0
 	for _, n := range news {
-		if len(n.Sectors) > 0 {
-			matched = append(matched, n)
+		select {
+		case s.classifyQueue <- n:
+			queued++
+		default:
+			logger.Warn("AI 分类队列已满，丢弃新闻", zap.Int64("id", n.ID))
 		}
 	}
-	if len(matched) == 0 {
-		s.mu.Lock()
-		s.lastPoll = time.Now()
-		s.lastCount = 0
-		s.mu.Unlock()
+
+	s.mu.Lock()
+	s.lastPoll = time.Now()
+	s.lastCount = queued
+	s.mu.Unlock()
+
+	logger.Debug("财联社新闻入队", zap.Int("total", len(news)), zap.Int("queued", queued))
+}
+
+// classifyWorker 后台 AI 分类 worker：逐条消费队列，调用 ClassifyOne 并保存结果。
+func (s *NewsScheduler) classifyWorker() {
+	s.workerWg.Add(1)
+	defer s.workerWg.Done()
+
+	s.classifierOnce.Do(func() {
+		s.classifier = NewAINewsClassifier(config.GetAIConfig())
+	})
+	if !s.classifier.IsAvailable() {
+		logger.Debug("AI 新闻分类未启用，worker 退出")
 		return
 	}
 
-	// 转 storage 记录并保存
+	for {
+		select {
+		case <-s.stopCh:
+			logger.Debug("AI 分类 worker 退出")
+			return
+		case news := <-s.classifyQueue:
+			tags, err := s.classifier.ClassifyOne(news)
+			if err != nil {
+				logger.Warn("AI 新闻分类失败", zap.Int64("id", news.ID), zap.Error(err))
+				continue
+			}
+			if len(tags) == 0 {
+				continue
+			}
+			news.Sectors = tags
+			s.saveClassified(news)
+		}
+	}
+}
+
+// saveClassified 保存单条已分类新闻到数据库。
+func (s *NewsScheduler) saveClassified(news CLSNews) {
 	db, err := storage.Get()
 	if err != nil {
 		logger.Warn("数据库连接失败", zap.Error(err))
 		return
 	}
 
-	records := make([]storage.CLSNewsRecord, 0, len(matched))
-	for _, n := range matched {
-		sectorsJSON, _ := json.Marshal(n.Sectors)
-		records = append(records, storage.CLSNewsRecord{
-			ID:         n.ID,
-			Title:      n.Title,
-			Content:    n.Content,
-			Brief:      n.Brief,
-			Level:      n.Level,
-			ReadingNum: n.ReadingNum,
-			CTime:      n.CTime.Format("2006-01-02 15:04:05"),
-			ShareURL:   n.ShareURL,
-			Sectors:    string(sectorsJSON),
-		})
+	sectorsJSON, _ := json.Marshal(news.Sectors)
+	record := storage.CLSNewsRecord{
+		ID:         news.ID,
+		Title:      news.Title,
+		Content:    news.Content,
+		Brief:      news.Brief,
+		Level:      news.Level,
+		ReadingNum: news.ReadingNum,
+		CTime:      news.CTime.Format("2006-01-02 15:04:05"),
+		ShareURL:   news.ShareURL,
+		Sectors:    string(sectorsJSON),
 	}
 
-	saved, err := db.SaveCLSNews(records)
+	saved, err := db.SaveCLSNews([]storage.CLSNewsRecord{record})
 	if err != nil {
-		logger.Warn("保存新闻失败", zap.Error(err))
+		logger.Warn("保存新闻失败", zap.Int64("id", news.ID), zap.Error(err))
 		return
 	}
 
 	s.mu.Lock()
 	s.totalNews += saved
-	s.lastPoll = time.Now()
-	s.lastCount = saved
 	s.mu.Unlock()
 
 	if saved > 0 && config.DataMode() == "json" {
 		if db, err := storage.Get(); err == nil {
 			db.ExportJSON()
 		}
-		DumpNews(news[:min(saved, len(news))])
-		msg := fmt.Sprintf("财联社新增 %d 条匹配新闻", saved)
-		logger.Info(msg, zap.Int64("lastTime", s.lastTime))
+		DumpNews([]CLSNews{news})
+		logger.Info("新闻分类保存", zap.Int64("id", news.ID), zap.Strings("tags", news.Sectors))
 	}
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

@@ -99,6 +99,28 @@ func (c *AINewsClassifier) IsAvailable() bool {
 	return c.cfg.APIKey != ""
 }
 
+// ClassifyOne 对单条新闻进行 AI 板块标签分类。
+// 返回最多 3 个板块标签，AI 无法判断时返回 nil。
+func (c *AINewsClassifier) ClassifyOne(news CLSNews) ([]string, error) {
+	if !c.IsAvailable() {
+		return nil, fmt.Errorf("AI 新闻分类未启用")
+	}
+	title := strings.TrimSpace(news.Title)
+	content := strings.TrimSpace(news.Content)
+	if utf8.RuneCountInString(title) < 5 && utf8.RuneCountInString(content) < 10 {
+		return nil, nil
+	}
+	item := classifyItem{origIdx: 0, title: title, content: content}
+	allTags, err := c.classifyBatch([]classifyItem{item})
+	if err != nil {
+		return nil, err
+	}
+	if len(allTags) == 0 {
+		return nil, nil
+	}
+	return allTags[0], nil
+}
+
 // ClassifyBatch 对一批新闻进行 AI 标签分类。
 // 返回与输入等长的切片，每个元素是该新闻的板块标签（最多3个）。
 // nil 表示该新闻因太短或 AI 无法判断而未分类。

@@ -16,6 +16,8 @@ type MainStructureResult struct {
 	Risk          string `json:"risk"`
 	Structure     string `json:"structure"`
 	Outlook       string `json:"outlook"`
+	Signal        string `json:"signal,omitempty"`
+	Action        string `json:"action,omitempty"`
 }
 
 type sectorStat struct {
@@ -63,6 +65,32 @@ func buildMainStructureSummary(sectorTicks []SectorTick) string {
 		}
 		sb.WriteString(fmt.Sprintf("%d. %s: %+.0f亿 (超大单%+.0f, 大单%+.0f, 涨幅%.1f%%)\n",
 			i+1, s.Name, s.Net, s.Super, s.Big, s.Rate))
+	}
+
+	var inflows []sectorStat
+	var outflows []sectorStat
+	for _, s := range stats {
+		if s.Net > 0 {
+			inflows = append(inflows, s)
+		}
+		if s.Net < 0 {
+			outflows = append(outflows, s)
+		}
+	}
+	if len(inflows) > 0 && totalInflow > 0 {
+		top1Share := inflows[0].Net / totalInflow * 100
+		top2Share := top1Share
+		if len(inflows) > 1 {
+			top2Share = (inflows[0].Net + inflows[1].Net) / totalInflow * 100
+		}
+		sb.WriteString(fmt.Sprintf("\n集中度：Top1 %s 占流入 %.0f%%，Top2 合计占流入 %.0f%%\n",
+			inflows[0].Name, top1Share, top2Share))
+	}
+	if len(outflows) > 0 && totalOutflow < 0 {
+		sb.WriteString(fmt.Sprintf("主要压力：%s 净流出 %.0f亿，占流出侧 %.0f%%\n",
+			outflows[len(outflows)-1].Name,
+			outflows[len(outflows)-1].Net*-1,
+			outflows[len(outflows)-1].Net/totalOutflow*100))
 	}
 
 	return sb.String()

@@ -648,6 +648,14 @@ type CLSNewsRecord struct {
 	CreatedAt  string `json:"created_at"`
 }
 
+// UpdateCLSNewsSectors 更新单条新闻的板块标签。
+func (db *DB) UpdateCLSNewsSectors(id int64, sectors string) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	_, err := db.db.Exec(`UPDATE cls_news SET sectors = ? WHERE id = ?`, sectors, id)
+	return err
+}
+
 // SaveCLSNews 批量保存财联社新闻（INSERT OR IGNORE 按 id 去重）。
 func (db *DB) SaveCLSNews(records []CLSNewsRecord) (int, error) {
 	if len(records) == 0 {
