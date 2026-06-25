@@ -2383,12 +2383,62 @@ func handleDailyReportDates(c *gin.Context) {
 	c.JSON(200, gin.H{"dates": dates})
 }
 
-// handleDailyReport 获取指定日期的日报详情。
-// 如果日报不存在但当日有板块数据，则自动生成并返回。
+// reportMetrics 从日报 JSON 字符串中提取的扁平化指标。
+type reportMetrics struct {
+	NetTotal      float64 `json:"netTotal"`
+	InflowCount   int     `json:"inflowCount"`
+	OutflowCount  int     `json:"outflowCount"`
+	SuperNetTotal float64 `json:"superNetTotal"`
+	BigNetTotal   float64 `json:"bigNetTotal"`
+	StructureDesc string  `json:"structureDesc"`
+}
+
+// extractReportMetrics 从日报 JSON 中提取扁平化指标，解析失败返回零值。
+func extractReportMetrics(reportJSON string) reportMetrics {
+	if reportJSON == "" {
+		return reportMetrics{}
+	}
+	var m reportMetrics
+	json.Unmarshal([]byte(reportJSON), &m)
+	return m
+}
+
+// dailyReportResponse 构建日报 API 统一响应体。
+func dailyReportResponse(dateStr, session, summary, outlook, reportJSON string, generated bool) gin.H {
+	m := extractReportMetrics(reportJSON)
+	resp := gin.H{
+		"date":          dateStr,
+		"session":       session,
+		"summary":       summary,
+		"outlook":       outlook,
+		"report":        reportJSON,
+		"netTotal":      m.NetTotal,
+		"inflowCount":   m.InflowCount,
+		"outflowCount":  m.OutflowCount,
+		"superNetTotal": m.SuperNetTotal,
+		"bigNetTotal":   m.BigNetTotal,
+		"structureDesc": m.StructureDesc,
+	}
+	if generated {
+		resp["generated"] = true
+	}
+	return resp
+}
+
+// validDateFormat 验证日期格式是否为 YYYY-MM-DD。
+func validDateFormat(s string) bool {
+	t, err := time.Parse("2006-01-02", s)
+	return err == nil && t.Format("2006-01-02") == s
+}
+
 func handleDailyReport(c *gin.Context) {
 	dateStr := c.Param("date")
 	if dateStr == "" {
 		logger.BadRequest(c, "缺少日期参数")
+		return
+	}
+	if !validDateFormat(dateStr) {
+		logger.BadRequest(c, "日期格式错误，应为 YYYY-MM-DD")
 		return
 	}
 
@@ -2404,83 +2454,17 @@ func handleDailyReport(c *gin.Context) {
 		return
 	}
 
-	if reportJSON != "" {
-		var parsed struct {
-			NetTotal     float64 `json:"netTotal"`
-			InflowCount  int     `json:"inflowCount"`
-			OutflowCount int     `json:"outflowCount"`
-			SuperNetTotal float64 `json:"superNetTotal"`
-			BigNetTotal   float64 `json:"bigNetTotal"`
-			StructureDesc string  `json:"structureDesc"`
-		}
-		json.Unmarshal([]byte(reportJSON), &parsed)
-		c.JSON(200, gin.H{
-			"date":         dateStr,
-			"session":      session,
-			"summary":      summary,
-			"outlook":      outlook,
-			"report":       reportJSON,
-			"netTotal":     parsed.NetTotal,
-			"inflowCount":  parsed.InflowCount,
-			"outflowCount": parsed.OutflowCount,
-			"superNetTotal": parsed.SuperNetTotal,
-			"bigNetTotal":   parsed.BigNetTotal,
-			"structureDesc": parsed.StructureDesc,
-		})
+	if reportJSON == "" {
+		c.JSON(404, gin.H{"error": "该日期暂无日报，请先生成"})
 		return
 	}
 
-	logger.Info("日报不存在，尝试自动生成", zap.String("date", dateStr))
-	hasData := false
-
-	sectorsAll, err := db.LoadSectorsAll(dateStr)
-	if err == nil && len(sectorsAll) > 0 {
-		hasData = true
-	}
-	if !hasData {
-		sectors, err := db.LoadFullSectors(dateStr)
-		if err == nil && len(sectors) > 0 {
-			hasData = true
-		}
-	}
-
-	if !hasData {
-		c.JSON(404, gin.H{"error": "该日期暂无日报且无板块数据"})
-		return
-	}
-
-	r, err := report.Generate(dateStr, "full")
-	if err != nil {
-		logger.InternalError(c, "自动生成日报失败", err)
-		return
-	}
-
-	reportBytes, _ := json.Marshal(r)
-	reportJSON = string(reportBytes)
-
-	c.JSON(200, gin.H{
-		"date":          dateStr,
-		"session":       r.Session,
-		"summary":       r.Summary,
-		"outlook":       r.Outlook,
-		"report":        reportJSON,
-		"netTotal":      r.NetTotal,
-		"inflowCount":   r.InflowCount,
-		"outflowCount":  r.OutflowCount,
-		"superNetTotal": r.SuperNetTotal,
-		"bigNetTotal":   r.BigNetTotal,
-		"structureDesc": r.StructureDesc,
-		"generated":     true,
-	})
+	c.JSON(200, dailyReportResponse(dateStr, session, summary, outlook, reportJSON, false))
 }
 
-// handleDailyReportGenerate 生成指定日期的日报。
-// POST body: {"date": "2026-06-09", "session": "full"}
-// 同步返回完整日报数据。
 func handleDailyReportGenerate(c *gin.Context) {
 	var req struct {
-		Date    string `json:"date"`
-		Session string `json:"session"`
+		Date string `json:"date"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		logger.BadRequest(c, "请求体格式错误: "+err.Error())
@@ -2489,43 +2473,20 @@ func handleDailyReportGenerate(c *gin.Context) {
 	if req.Date == "" {
 		req.Date = time.Now().Format("2006-01-02")
 	}
-	if req.Session == "" {
-		req.Session = "full"
-	}
-
-	db, err := storage.Get()
-	if err != nil {
-		logger.InternalError(c, "操作失败", err)
+	if !validDateFormat(req.Date) {
+		logger.BadRequest(c, "日期格式错误，应为 YYYY-MM-DD")
 		return
 	}
 
-	// 先检查是否已有
-	if rj, _, _, _, e := db.LoadDailyReport(req.Date); e == nil && rj != "" {
-		_ = rj
-		// 已有也不阻塞，允许重新生成
-	}
-
-	// 生成
-	r, err := report.Generate(req.Date, req.Session)
+	session := "full"
+	r, err := report.Generate(req.Date)
 	if err != nil {
 		logger.InternalError(c, "日报生成失败", err)
 		return
 	}
 
 	reportBytes, _ := json.Marshal(r)
-	c.JSON(200, gin.H{
-		"date":          req.Date,
-		"session":       req.Session,
-		"summary":       r.Summary,
-		"outlook":       r.Outlook,
-		"report":        string(reportBytes),
-		"netTotal":      r.NetTotal,
-		"inflowCount":   r.InflowCount,
-		"outflowCount":  r.OutflowCount,
-		"superNetTotal": r.SuperNetTotal,
-		"bigNetTotal":   r.BigNetTotal,
-		"structureDesc": r.StructureDesc,
-	})
+	c.JSON(200, dailyReportResponse(req.Date, session, r.Summary, r.Outlook, string(reportBytes), true))
 }
 
 // calcPrevDate 计算上一个交易日（跳过周末）。

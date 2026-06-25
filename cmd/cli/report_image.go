@@ -12,7 +12,7 @@ import (
 // runReportImage 生成日报图片。
 // 在 main.go 中通过 --report-image 2026-06-15 调用。
 func runReportImage(dateStr string) error {
-	r, err := report.Generate(dateStr, "full")
+	r, err := report.Generate(dateStr)
 	if err != nil {
 		return fmt.Errorf("generate report: %w", err)
 	}

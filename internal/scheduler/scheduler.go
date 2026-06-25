@@ -261,7 +261,7 @@ func (s *Scheduler) execute(session string) {
 
 	// 全天完成时自动生成日报
 	if session == "full" {
-		r, err := report.Generate(todayStr, "full")
+		r, err := report.Generate(todayStr)
 		if err != nil {
 			logger.Warn("日报生成失败", zap.String("date", todayStr), zap.Error(err))
 		} else {
