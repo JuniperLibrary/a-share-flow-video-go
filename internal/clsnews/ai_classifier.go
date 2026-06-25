@@ -31,9 +31,9 @@ type aiClassifyResponse struct {
 }
 
 type classifyItem struct {
-	origIdx int
-	title   string
-	content string
+	OrigIdx int    `json:"idx"`
+	Title    string `json:"title"`
+	Content  string `json:"content"`
 }
 
 // sectorTagDescriptions 21 个监控板块的描述，用于 AI prompt。
@@ -110,7 +110,7 @@ func (c *AINewsClassifier) ClassifyOne(news CLSNews) ([]string, error) {
 	if utf8.RuneCountInString(title) < 5 && utf8.RuneCountInString(content) < 10 {
 		return nil, nil
 	}
-	item := classifyItem{origIdx: 0, title: title, content: content}
+	item := classifyItem{OrigIdx: 0, Title: title, Content: content}
 	allTags, err := c.classifyBatch([]classifyItem{item})
 	if err != nil {
 		return nil, err
@@ -135,7 +135,7 @@ func (c *AINewsClassifier) ClassifyBatch(news []CLSNews) [][]string {
 		title := strings.TrimSpace(n.Title)
 		content := strings.TrimSpace(n.Content)
 		if utf8.RuneCountInString(title) >= 5 || utf8.RuneCountInString(content) >= 10 {
-			items = append(items, classifyItem{origIdx: i, title: title, content: content})
+			items = append(items, classifyItem{OrigIdx: i, Title: title, Content: content})
 		}
 	}
 
@@ -168,13 +168,13 @@ func (c *AINewsClassifier) ClassifyBatch(news []CLSNews) [][]string {
 				zap.Error(err),
 			)
 			for _, item := range batch {
-				processed[item.origIdx] = false
+				processed[item.OrigIdx] = false
 			}
 			continue
 		}
 
 		for j, tagList := range tags {
-			origIdx := batch[j].origIdx
+			origIdx := batch[j].OrigIdx
 			results[origIdx] = tagList
 			processed[origIdx] = true
 			if len(tagList) > 0 {

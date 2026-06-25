@@ -255,6 +255,14 @@ func (s *NewsScheduler) classifyWorker() {
 
 func (s *NewsScheduler) classifyOneWorker(id int) {
 	defer s.classifyWorkerWg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("AI 分类 worker panic",
+				zap.Int("workerID", id),
+				zap.Any("recover", r),
+			)
+		}
+	}()
 
 	logger.Debug("AI 分类 worker 启动", zap.Int("workerID", id))
 	for {
