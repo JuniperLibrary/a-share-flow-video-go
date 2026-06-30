@@ -256,7 +256,7 @@ func (c *AINewsClassifier) classifyBatch(items []classifyItem) ([][]string, erro
 			{"role": "user", "content": userContent},
 		},
 		"temperature": 0.1,
-		"max_tokens":  2048,
+		"max_tokens":  4096,
 	}
 	bodyBytes, _ := json.Marshal(body)
 
@@ -401,11 +401,25 @@ func parseClassifyResult(content string, items []classifyItem) ([][]string, erro
 
 	var respData aiClassifyResponse
 	if err := json.Unmarshal([]byte(content), &respData); err != nil {
-		logger.Warn("AI 返回 JSON 解析失败",
-			zap.String("content", content),
-			zap.Error(err),
-		)
-		return nil, fmt.Errorf("parse AI JSON output: %w", err)
+		fixed := fixTruncatedJSON(content)
+		if fixed != content {
+			if err2 := json.Unmarshal([]byte(fixed), &respData); err2 == nil {
+				logger.Debug("AI 返回 JSON 被截断，已自动修复")
+				content = fixed
+			} else {
+				logger.Warn("AI 返回 JSON 解析失败",
+					zap.String("content", content),
+					zap.Error(err),
+				)
+				return nil, fmt.Errorf("parse AI JSON output: %w", err)
+			}
+		} else {
+			logger.Warn("AI 返回 JSON 解析失败",
+				zap.String("content", content),
+				zap.Error(err),
+			)
+			return nil, fmt.Errorf("parse AI JSON output: %w", err)
+		}
 	}
 
 	if len(respData.Results) != len(items) {
@@ -444,4 +458,53 @@ func parseClassifyResult(content string, items []classifyItem) ([][]string, erro
 	}
 
 	return results, nil
+}
+
+func fixTruncatedJSON(s string) string {
+	if s == "" {
+		return s
+	}
+
+	unclosedBraces := 0
+	unclosedBrackets := 0
+	inString := false
+	escaped := false
+
+	for _, ch := range s {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if ch == '\\' {
+			escaped = true
+			continue
+		}
+		if ch == '"' {
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		switch ch {
+		case '{':
+			unclosedBraces++
+		case '}':
+			unclosedBraces--
+		case '[':
+			unclosedBrackets++
+		case ']':
+			unclosedBrackets--
+		}
+	}
+
+	fixed := s
+	for i := 0; i < unclosedBrackets; i++ {
+		fixed += "]"
+	}
+	for i := 0; i < unclosedBraces; i++ {
+		fixed += "}"
+	}
+
+	return fixed
 }
