@@ -26,6 +26,14 @@ func main() {
 		logger.Fatal("SQLite 初始化失败", zap.Error(err))
 	}
 
+	db, err := storage.Get()
+	if err != nil {
+		logger.Fatal("获取数据库实例失败", zap.Error(err))
+	}
+	if err := db.MigrateAIConfigFromEnv(); err != nil {
+		logger.Warn("AI 配置迁移失败", zap.Error(err))
+	}
+
 	tickSched := tick.NewScheduler()
 	tickSched.Start()
 	defer tickSched.Shutdown()

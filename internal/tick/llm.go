@@ -33,32 +33,48 @@ func llmChatCompletion(prompt string, temperature float64, maxTokens int) (strin
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+aiCfg.APIKey)
 
-	client := &http.Client{Timeout: 120 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
+	client := &http.Client{Timeout: 180 * time.Second}
 
-	b, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("LLM API 请求失败: HTTP %d %s", resp.StatusCode, string(b))
-	}
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			if attempt == 0 {
+				time.Sleep(time.Second)
+				continue
+			}
+			return "", lastErr
+		}
 
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("LLM API 请求失败: HTTP %d %s", resp.StatusCode, string(b))
+			if attempt == 0 {
+				time.Sleep(time.Second)
+				continue
+			}
+			return "", lastErr
+		}
+
+		var result struct {
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal(b, &result); err != nil {
+			return "", err
+		}
+		if len(result.Choices) == 0 {
+			return "", fmt.Errorf("LLM API 返回空 choices")
+		}
+		return result.Choices[0].Message.Content, nil
 	}
-	if err := json.Unmarshal(b, &result); err != nil {
-		return "", err
-	}
-	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("LLM API 返回空 choices")
-	}
-	return result.Choices[0].Message.Content, nil
+	return "", lastErr
 }
 
 // llmChatCompletionJSON 调用 LLM 并解析 JSON 输出到目标结构体。

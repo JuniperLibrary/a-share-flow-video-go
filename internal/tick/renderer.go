@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/a-share-flow-video-go/internal/analyzer"
@@ -25,11 +26,18 @@ const (
 	TotalFrames = config.TotalFrames
 )
 
+func absI(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
 type SectorTick struct {
 	Name                 string    `json:"name"`
 	Color                string    `json:"color"`
 	Data                 []float64 `json:"data"`
-	Times                []string  `json:"times"`
+	Times                []string  `json:"times,omitempty"`
 	Rate                 float64   `json:"rate"`
 	ChangePct            float64   `json:"changePct"`
 	SuperNet             float64   `json:"superNet"`
@@ -50,6 +58,7 @@ type TickRenderProps struct {
 	DateStr                string                   `json:"dateStr"`
 	DisplayDate            string                   `json:"displayDate"`
 	TotalFrames            int                      `json:"totalFrames"`
+	Times                  []string                 `json:"times,omitempty"`
 	SectorTicks            []SectorTick             `json:"sectorTicks"`
 	TimelineEvents         []analyzer.TimelineEvent `json:"timelineEvents,omitempty"`
 	TickerItems            []analyzer.TickerItem    `json:"tickerItems,omitempty"`
@@ -80,11 +89,14 @@ type TickRenderProps struct {
 	NewsNarrationTexts     []string                 `json:"newsNarrationTexts,omitempty"`
 	BaseAnimationFrames    int                      `json:"baseAnimationFrames,omitempty"`
 	ChartNarrationAudios   []string                 `json:"chartNarrationAudios,omitempty"`
+	ChartNarrationFrames   []int                    `json:"chartNarrationFrames,omitempty"`
 	ChartNarrationSegments []int                    `json:"chartNarrationSegments,omitempty"`
 	ChartNarrationTexts    []string                 `json:"chartNarrationTexts,omitempty"`
+	MainStructureAudio     string                   `json:"mainStructureAudio,omitempty"`
+	MainStructureFrames    int                      `json:"mainStructureFrames,omitempty"`
 
 	// LLM 增强字段（可选，为空时前端 fallback 到模板逻辑）
-	CatalysisResult    *CatalysisResult    `json:"catalysisResult,omitempty"`
+	CatalysisResult     *CatalysisResult     `json:"catalysisResult,omitempty"`
 	MainStructureResult *MainStructureResult `json:"mainStructureResult,omitempty"`
 }
 
@@ -150,27 +162,9 @@ func generateChartNarrationSegments(sectorTicks []SectorTick, totalFrames int) (
 	}
 
 	sort.Slice(points, func(i, j int) bool { return points[i].idx < points[j].idx })
-	if len(points) > 0 {
-		for _, p := range points {
-			action := ChartNarrationActionAccelerate
-			direction := ChartNarrationDirectionInflow
-			if p.delta < 0 {
-				action = ChartNarrationActionWeaken
-				direction = ChartNarrationDirectionNetOutflow
-			}
-			timePrefix := ""
-			if p.time != "" {
-				timePrefix = p.time + "，"
-			}
-			texts = append(texts, fmt.Sprintf(ChartNarrationTmplInflection, timePrefix, p.name, action, direction, math.Abs(p.delta), p.cum))
-			startFrame := int(math.Floor(float64(p.idx) / float64(numPoints) * float64(totalFrames)))
-			startFrame -= FPS
-			if startFrame < 0 {
-				startFrame = 0
-			}
-			startFrames = append(startFrames, startFrame)
-		}
-		return texts, startFrames
+	type segPair struct {
+		frame int
+		text  string
 	}
 
 	type segSum struct {
@@ -181,6 +175,8 @@ func generateChartNarrationSegments(sectorTicks []SectorTick, totalFrames int) (
 	contentPoints := []float64{0.07, 0.40, 0.70}
 	playPoints := []float64{0, 0.40, 0.70}
 
+	var baseTexts []string
+	var baseFrames []int
 	for i := range contentPoints {
 		idx := int(math.Floor(contentPoints[i] * float64(numPoints)))
 		if idx >= numPoints {
@@ -242,10 +238,64 @@ func generateChartNarrationSegments(sectorTicks []SectorTick, totalFrames int) (
 			}
 		}
 
-		texts = append(texts, text)
-		startFrames = append(startFrames, int(math.Floor(playPoints[i]*float64(totalFrames))))
+		baseTexts = append(baseTexts, text)
+		baseFrames = append(baseFrames, int(math.Floor(playPoints[i]*float64(totalFrames))))
 	}
 
+	pairs := make([]segPair, 0, len(baseTexts)+2)
+	for i := range baseTexts {
+		if strings.TrimSpace(baseTexts[i]) == "" {
+			continue
+		}
+		pairs = append(pairs, segPair{frame: baseFrames[i], text: baseTexts[i]})
+	}
+
+	if len(points) > 0 {
+		best := make([]inflection, len(points))
+		copy(best, points)
+		sort.Slice(best, func(i, j int) bool { return math.Abs(best[i].delta) > math.Abs(best[j].delta) })
+		if len(best) > 2 {
+			best = best[:2]
+		}
+		for _, p := range best {
+			action := ChartNarrationActionAccelerate
+			direction := ChartNarrationDirectionInflow
+			if p.delta < 0 {
+				action = ChartNarrationActionWeaken
+				direction = ChartNarrationDirectionNetOutflow
+			}
+			timePrefix := ""
+			if p.time != "" {
+				timePrefix = p.time + "，"
+			}
+			startFrame := int(math.Floor(float64(p.idx) / float64(numPoints) * float64(totalFrames)))
+			startFrame -= FPS
+			if startFrame < 0 {
+				startFrame = 0
+			}
+
+			tooClose := false
+			for _, bf := range baseFrames {
+				if absI(startFrame-bf) < 20 {
+					tooClose = true
+					break
+				}
+			}
+			if tooClose {
+				continue
+			}
+			pairs = append(pairs, segPair{
+				frame: startFrame,
+				text:  fmt.Sprintf(ChartNarrationTmplInflection, timePrefix, p.name, action, direction, math.Abs(p.delta), p.cum),
+			})
+		}
+	}
+
+	sort.Slice(pairs, func(i, j int) bool { return pairs[i].frame < pairs[j].frame })
+	for _, p := range pairs {
+		texts = append(texts, p.text)
+		startFrames = append(startFrames, p.frame)
+	}
 	return texts, startFrames
 }
 
@@ -277,7 +327,7 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 		zap.String("date", dateStr),
 		zap.String("session", session))
 
-	sectorTicks := buildSectorTicks(points)
+	sectorTicks, tickTimes := buildSectorTicks(points)
 	if len(sectorTicks) > 0 {
 		topNames := make([]string, 0, 3)
 		for i, st := range sectorTicks {
@@ -288,9 +338,9 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 		}
 		logger.Info("tick 时序构建",
 			zap.Int("sectors", len(sectorTicks)),
-			zap.Int("timePoints", len(sectorTicks[0].Times)),
+			zap.Int("timePoints", len(tickTimes)),
 			zap.Strings("top3", topNames),
-			zap.Int("totalDataPoints", len(sectorTicks)*len(sectorTicks[0].Times)))
+			zap.Int("totalDataPoints", len(sectorTicks)*len(tickTimes)))
 	} else {
 		logger.Warn("tick 时序构建为空", zap.String("date", dateStr))
 	}
@@ -348,6 +398,7 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 		DateStr:             dateStr,
 		DisplayDate:         displayDate,
 		TotalFrames:         TotalFrames,
+		Times:               tickTimes,
 		SectorTicks:         sectorTicks,
 		TimelineEvents:      timeline,
 		TickerItems:         ticker,
@@ -377,99 +428,288 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 	hasVoiceover := copywriteText != "" || len(newsPages) > 0 || len(chartNarrationTexts) > 0
 
 	if hasVoiceover {
-		voiceoverDir := filepath.Join(config.GetRendererDir(), "public", "voiceover")
-		if err := os.MkdirAll(voiceoverDir, 0755); err != nil {
-			return "", fmt.Errorf("create voiceover dir: %w", err)
+		type sceneRes struct {
+			ok     bool
+			text   string
+			audio  string
+			frames int
+		}
+		sceneResults := make([]sceneRes, 5)
+
+		type segRes struct {
+			ok     bool
+			text   string
+			audio  string
+			frames int
+		}
+		chartResults := make([]segRes, len(chartNarrationTexts))
+
+		ttsTexts := hotnews.GenerateTTSText(newsPages)
+		newsNarrationTexts = ttsTexts
+		newsAudioFiles = make([]string, len(ttsTexts))
+		newsAudioFrames = make([]int, len(ttsTexts))
+
+		var outroAudio string
+		var outroFrames int
+
+		limit := tts.TTSConcurrency()
+		sem := make(chan struct{}, limit)
+		var wg sync.WaitGroup
+		run := func(fn func()) {
+			wg.Add(1)
+			go func() {
+				sem <- struct{}{}
+				defer func() {
+					<-sem
+					wg.Done()
+				}()
+				fn()
+			}()
 		}
 
 		if copywriteText != "" {
 			scenes := tts.ParseCopywriting(copywriteText)
-			sceneNames := []string{"hook1", "suspense", "twist", "answer", "hook2"}
-			sceneTexts := []string{props.Scene1Text, props.Scene2Text, props.Scene3Text, props.Scene4Text, props.Scene5Text}
-
 			for i := 0; i < 5; i++ {
-				if scenes[i] == "" {
+				idx := i
+				text := strings.TrimSpace(scenes[i])
+				if text == "" {
 					continue
 				}
-				audioPath := filepath.Join(voiceoverDir, fmt.Sprintf("%s.mp3", sceneNames[i]))
-				if err := tts.TextToSpeechCommentator(scenes[i], audioPath); err != nil {
-					logger.Warn("Tick 场景 TTS 合成失败", zap.Int("scene", i+1), zap.Error(err))
-					continue
-				}
-				dur := 0.0
-				if _, err := os.Stat(audioPath); err == nil {
-					if d, err := tts.GetAudioDuration(audioPath); err == nil {
+				run(func() {
+					audioRel, audioAbs, err := tts.TextToSpeechCommentatorCached(text)
+					if err != nil {
+						logger.Warn("Tick 场景 TTS 合成失败", zap.Int("scene", idx+1), zap.Error(err))
+						return
+					}
+					dur := 0.0
+					if d, err := tts.GetAudioDuration(audioAbs); err == nil {
 						dur = d
 					}
-				}
-				frames := int(math.Ceil(dur * FPS))
-				const audioPadding = 10
-				if frames > 0 {
-					frames += audioPadding
-				}
-				sceneTexts[i] = scenes[i]
-				switch i {
-				case 0:
-					props.Scene1Text = scenes[i]
-					props.Scene1Audio = fmt.Sprintf("voiceover/%s.mp3", sceneNames[i])
-					props.Scene1Frames = frames
-				case 1:
-					props.Scene2Text = scenes[i]
-					props.Scene2Audio = fmt.Sprintf("voiceover/%s.mp3", sceneNames[i])
-					props.Scene2Frames = frames
-				case 2:
-					props.Scene3Text = scenes[i]
-					props.Scene3Audio = fmt.Sprintf("voiceover/%s.mp3", sceneNames[i])
-					props.Scene3Frames = frames
-				case 3:
-					props.Scene4Text = scenes[i]
-					props.Scene4Audio = fmt.Sprintf("voiceover/%s.mp3", sceneNames[i])
-					props.Scene4Frames = frames
-				case 4:
-					props.Scene5Text = scenes[i]
-					props.Scene5Audio = fmt.Sprintf("voiceover/%s.mp3", sceneNames[i])
-					props.Scene5Frames = frames
-				}
+					frames := int(math.Ceil(dur * FPS))
+					const audioPadding = 6
+					if frames > 0 {
+						frames += audioPadding
+					}
+					sceneResults[idx] = sceneRes{ok: true, text: text, audio: audioRel, frames: frames}
+				})
 			}
 
 			logger.Info("Tick 文案语音合成完成",
 				zap.Int("scenes", 5))
 		}
 
-		if len(newsPages) > 0 {
-			ttsTexts := hotnews.GenerateTTSText(newsPages)
-			newsNarrationTexts = ttsTexts
-			for i, text := range ttsTexts {
-				newsPath := filepath.Join(voiceoverDir, fmt.Sprintf("news_%d.mp3", i))
-				if err := tts.TextToSpeechCommentator(text, newsPath); err != nil {
-					logger.Warn("Tick 新闻 TTS 合成失败，跳过", zap.Int("page", i), zap.Error(err))
+		if len(chartNarrationTexts) > 0 {
+			for i, text := range chartNarrationTexts {
+				idx := i
+				trimmed := strings.TrimSpace(text)
+				if trimmed == "" {
 					continue
 				}
-				dur := 0.0
-				if d, err := tts.GetAudioDuration(newsPath); err == nil {
-					dur = d
+				run(func() {
+					audioRel, audioAbs, err := tts.TextToSpeechCommentatorCached(trimmed)
+					if err != nil {
+						logger.Warn("Tick 图表解说 TTS 合成失败，跳过", zap.Int("segment", idx), zap.Error(err))
+						return
+					}
+					dur := 0.0
+					if d, err := tts.GetAudioDuration(audioAbs); err == nil {
+						dur = d
+					}
+					frames := int(math.Ceil(dur * FPS))
+					const audioPadding = 6
+					if frames > 0 {
+						frames += audioPadding
+					}
+					chartResults[idx] = segRes{ok: true, text: trimmed, audio: audioRel, frames: frames}
+				})
+			}
+		}
+
+		if len(newsPages) > 0 {
+			for i, text := range ttsTexts {
+				idx := i
+				trimmed := strings.TrimSpace(text)
+				if trimmed == "" {
+					continue
 				}
-				frames := int(math.Ceil(dur * FPS))
-				if frames > 0 {
-					frames += 10
+				run(func() {
+					audioRel, audioAbs, err := tts.TextToSpeechCommentatorCached(trimmed)
+					if err != nil {
+						logger.Warn("Tick 新闻 TTS 合成失败，跳过", zap.Int("page", idx), zap.Error(err))
+						return
+					}
+					dur := 0.0
+					if d, err := tts.GetAudioDuration(audioAbs); err == nil {
+						dur = d
+					}
+					frames := int(math.Ceil(dur * FPS))
+					const audioPadding = 4
+					if frames > 0 {
+						frames += audioPadding
+					}
+					newsAudioFiles[idx] = audioRel
+					newsAudioFrames[idx] = frames
+				})
+			}
+		}
+
+		if len(props.ChartNarrationSegments) == 0 && len(chartNarrationSegments) > 0 {
+			props.ChartNarrationSegments = chartNarrationSegments
+			props.ChartNarrationTexts = chartNarrationTexts
+		}
+
+		if len(sectorTicks) > 0 {
+			outroText := ""
+			if mainStructureResult != nil && strings.TrimSpace(mainStructureResult.Conclusion) != "" {
+				outroText = strings.TrimSpace(mainStructureResult.Conclusion)
+			} else {
+				cumulative := make(map[string][]float64)
+				for _, st := range sectorTicks {
+					if len(st.Data) == 0 {
+						continue
+					}
+					cum := make([]float64, len(st.Data))
+					sum := 0.0
+					for i, v := range st.Data {
+						sum += v
+						cum[i] = sum
+					}
+					cumulative[st.Name] = cum
 				}
-				newsAudioFiles = append(newsAudioFiles, fmt.Sprintf("voiceover/news_%d.mp3", i))
-				newsAudioFrames = append(newsAudioFrames, frames)
-				newsTotalFrames += frames
+				outroText = buildConclusionFromCumulative(cumulative)
+			}
+
+			outroText = strings.TrimSpace(outroText)
+			if outroText != "" {
+				run(func() {
+					audioRel, audioAbs, err := tts.TextToSpeechCommentatorCached(outroText)
+					if err != nil {
+						logger.Warn("Tick 主线收尾 TTS 合成失败，跳过", zap.Error(err))
+						return
+					}
+					dur := 0.0
+					if d, err := tts.GetAudioDuration(audioAbs); err == nil {
+						dur = d
+					}
+					frames := int(math.Ceil(dur * FPS))
+					const audioPadding = 6
+					if frames > 0 {
+						frames += audioPadding
+					}
+					outroAudio = audioRel
+					outroFrames = frames
+				})
+			}
+		}
+
+		wg.Wait()
+
+		if sceneResults[0].ok {
+			props.Scene1Text = sceneResults[0].text
+			props.Scene1Audio = sceneResults[0].audio
+			props.Scene1Frames = sceneResults[0].frames
+		}
+		if sceneResults[1].ok {
+			props.Scene2Text = sceneResults[1].text
+			props.Scene2Audio = sceneResults[1].audio
+			props.Scene2Frames = sceneResults[1].frames
+		}
+		if sceneResults[2].ok {
+			props.Scene3Text = sceneResults[2].text
+			props.Scene3Audio = sceneResults[2].audio
+			props.Scene3Frames = sceneResults[2].frames
+		}
+		if sceneResults[3].ok {
+			props.Scene4Text = sceneResults[3].text
+			props.Scene4Audio = sceneResults[3].audio
+			props.Scene4Frames = sceneResults[3].frames
+		}
+		if sceneResults[4].ok {
+			props.Scene5Text = sceneResults[4].text
+			props.Scene5Audio = sceneResults[4].audio
+			props.Scene5Frames = sceneResults[4].frames
+		}
+
+		if len(chartResults) > 0 {
+			var okAudios []string
+			var okFrames []int
+			var okSegs []int
+			var okTexts []string
+			var okIdxs []int
+			for i, r := range chartResults {
+				if !r.ok || r.frames <= 0 || r.audio == "" {
+					continue
+				}
+				okAudios = append(okAudios, r.audio)
+				okFrames = append(okFrames, r.frames)
+				okIdxs = append(okIdxs, i)
+				if i < len(chartNarrationSegments) {
+					okSegs = append(okSegs, chartNarrationSegments[i])
+				} else {
+					okSegs = append(okSegs, 0)
+				}
+				okTexts = append(okTexts, r.text)
+			}
+			props.ChartNarrationAudios = okAudios
+			props.ChartNarrationFrames = okFrames
+			props.ChartNarrationTexts = okTexts
+
+			narrationTotalFrames := 0
+			for _, f := range okFrames {
+				narrationTotalFrames += f
+			}
+			if narrationTotalFrames > baseFrames {
+				oldBaseFrames := baseFrames
+				baseFrames = narrationTotalFrames + 12
+				_, updatedSegments := generateChartNarrationSegments(sectorTicks, baseFrames)
+				okSegs = okSegs[:0]
+				for _, idx := range okIdxs {
+					if idx < len(updatedSegments) {
+						okSegs = append(okSegs, updatedSegments[idx])
+					} else {
+						okSegs = append(okSegs, 0)
+					}
+				}
+				logger.Info("Tick 图表解说延长 baseFrames 以容纳口播",
+					zap.Int("oldBaseFrames", oldBaseFrames),
+					zap.Int("newBaseFrames", baseFrames),
+					zap.Int("narrationFrames", narrationTotalFrames),
+				)
+			}
+			props.ChartNarrationSegments = okSegs
+			logger.Info("Tick 图表解说语音合成完成",
+				zap.Int("segments", len(props.ChartNarrationAudios)))
+		}
+
+		if len(newsAudioFrames) > 0 {
+			for _, f := range newsAudioFrames {
+				newsTotalFrames += f
+			}
+			pagesOK := 0
+			for i := range newsAudioFrames {
+				if newsAudioFrames[i] > 0 && newsAudioFiles[i] != "" {
+					pagesOK++
+				}
 			}
 			logger.Info("Tick 新闻语音合成完成",
-				zap.Int("pages", len(newsAudioFiles)),
+				zap.Int("pages", pagesOK),
 				zap.Int("newsTotalFrames", newsTotalFrames))
 		}
 
-		props.ChartNarrationSegments = chartNarrationSegments
-		props.ChartNarrationTexts = chartNarrationTexts
+		if outroFrames > 0 && outroAudio != "" {
+			props.MainStructureAudio = outroAudio
+			props.MainStructureFrames = outroFrames
+		}
 	}
 
 	sceneTotalFrames := props.Scene1Frames + props.Scene2Frames + props.Scene3Frames + props.Scene4Frames + props.Scene5Frames
 	conclusionFrames := 0
 	if len(sectorTicks) > 0 {
-		conclusionFrames = 90
+		if props.MainStructureFrames > 0 {
+			conclusionFrames = props.MainStructureFrames
+		} else {
+			conclusionFrames = 90
+		}
 	}
 	totalVideoFrames := sceneTotalFrames + baseFrames + newsTotalFrames + conclusionFrames
 
@@ -546,7 +786,17 @@ func RenderTickVideo(dateStr, outputPath, format, session string, events []analy
 	return outputPath, nil
 }
 
-func buildSectorTicks(points []TickPoint) []SectorTick {
+func newTickVoiceoverWorkspace(rendererDir string) (string, string, error) {
+	jobID := fmt.Sprintf("tick-%d", time.Now().UnixNano())
+	publicPrefix := filepath.Join("voiceover", jobID)
+	workspaceDir := filepath.Join(rendererDir, "public", publicPrefix)
+	if err := os.MkdirAll(workspaceDir, 0755); err != nil {
+		return "", "", err
+	}
+	return workspaceDir, publicPrefix, nil
+}
+
+func buildSectorTicks(points []TickPoint) ([]SectorTick, []string) {
 	timeOrder := uniqueTimes(points)
 
 	sectorData := make(map[string][]float64)
@@ -572,7 +822,6 @@ func buildSectorTicks(points []TickPoint) []SectorTick {
 		result = append(result, SectorTick{
 			Name:                 name,
 			Data:                 data,
-			Times:                timeOrder,
 			Rate:                 latest.Rate,
 			ChangePct:            latest.ChangePct,
 			SuperNet:             latest.SuperNet,
@@ -596,7 +845,7 @@ func buildSectorTicks(points []TickPoint) []SectorTick {
 		return sumI > sumJ
 	})
 
-	return result
+	return result, timeOrder
 }
 
 func uniqueTimes(points []TickPoint) []string {

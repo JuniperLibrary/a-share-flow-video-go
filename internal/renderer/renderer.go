@@ -132,10 +132,11 @@ func RenderVideo(sectors []fetcher.Sector, dateStr, outputPath string, events []
 
 	if copywriteText != "" {
 		rendererDir := config.GetRendererDir()
-		voiceoverDir := filepath.Join(rendererDir, "public", "voiceover")
-		if err := os.MkdirAll(voiceoverDir, 0755); err != nil {
-			return "", fmt.Errorf("create voiceover dir: %w", err)
+		voiceoverDir, voiceoverPrefix, err := newVoiceoverWorkspace(rendererDir, "video")
+		if err != nil {
+			return "", fmt.Errorf("create voiceover workspace: %w", err)
 		}
+		defer os.RemoveAll(voiceoverDir)
 
 		scenes := tts.ParseCopywriting(copywriteText)
 		sceneNames := []string{"hook1", "suspense", "twist", "answer", "hook2"}
@@ -164,23 +165,23 @@ func RenderVideo(sectors []fetcher.Sector, dateStr, outputPath string, events []
 			switch i {
 			case 0:
 				props.Scene1Text = scenes[i]
-				props.Scene1Audio = fmt.Sprintf("voiceover/%s.mp3", sceneNames[i])
+				props.Scene1Audio = filepath.ToSlash(filepath.Join(voiceoverPrefix, fmt.Sprintf("%s.mp3", sceneNames[i])))
 				props.Scene1Frames = frames
 			case 1:
 				props.Scene2Text = scenes[i]
-				props.Scene2Audio = fmt.Sprintf("voiceover/%s.mp3", sceneNames[i])
+				props.Scene2Audio = filepath.ToSlash(filepath.Join(voiceoverPrefix, fmt.Sprintf("%s.mp3", sceneNames[i])))
 				props.Scene2Frames = frames
 			case 2:
 				props.Scene3Text = scenes[i]
-				props.Scene3Audio = fmt.Sprintf("voiceover/%s.mp3", sceneNames[i])
+				props.Scene3Audio = filepath.ToSlash(filepath.Join(voiceoverPrefix, fmt.Sprintf("%s.mp3", sceneNames[i])))
 				props.Scene3Frames = frames
 			case 3:
 				props.Scene4Text = scenes[i]
-				props.Scene4Audio = fmt.Sprintf("voiceover/%s.mp3", sceneNames[i])
+				props.Scene4Audio = filepath.ToSlash(filepath.Join(voiceoverPrefix, fmt.Sprintf("%s.mp3", sceneNames[i])))
 				props.Scene4Frames = frames
 			case 4:
 				props.Scene5Text = scenes[i]
-				props.Scene5Audio = fmt.Sprintf("voiceover/%s.mp3", sceneNames[i])
+				props.Scene5Audio = filepath.ToSlash(filepath.Join(voiceoverPrefix, fmt.Sprintf("%s.mp3", sceneNames[i])))
 				props.Scene5Frames = frames
 			}
 		}
@@ -234,4 +235,14 @@ func RenderVideo(sectors []fetcher.Sector, dateStr, outputPath string, events []
 
 	logger.Info("remotion 渲染完成", zap.String("output", outputPath))
 	return outputPath, nil
+}
+
+func newVoiceoverWorkspace(rendererDir, prefix string) (string, string, error) {
+	jobID := fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
+	publicPrefix := filepath.Join("voiceover", jobID)
+	workspaceDir := filepath.Join(rendererDir, "public", publicPrefix)
+	if err := os.MkdirAll(workspaceDir, 0755); err != nil {
+		return "", "", err
+	}
+	return workspaceDir, publicPrefix, nil
 }

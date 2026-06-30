@@ -154,6 +154,12 @@ func Synthesize(text, outputPath string, opts Options) (Result, error) {
 			lastErr = fmt.Errorf("TTS 输出文件未找到: %w", err)
 			continue
 		}
+		if err := trimAudioSilence(outputPath); err != nil {
+			logger.Debug("TTS 去静音失败，跳过",
+				zap.String("output", outputPath),
+				zap.Error(err),
+			)
+		}
 		duration, _ := GetAudioDuration(outputPath)
 		preset.Voice = voice
 		preset.Rate = rate
@@ -183,6 +189,59 @@ func Synthesize(text, outputPath string, opts Options) (Result, error) {
 // TextToSpeechCommentator 使用默认解说预设，供视频生成链路复用。
 func TextToSpeechCommentator(text, outputPath string) error {
 	return TextToSpeech(text, outputPath)
+}
+
+func trimAudioSilence(audioPath string) error {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		return err
+	}
+
+	origDur, _ := GetAudioDuration(audioPath)
+
+	ext := filepath.Ext(audioPath)
+	if ext == "" {
+		ext = ".mp3"
+	}
+	tmpPath := strings.TrimSuffix(audioPath, ext) + ".trim" + ext
+	origPath := strings.TrimSuffix(audioPath, ext) + ".orig" + ext
+
+	_ = os.Remove(tmpPath)
+	_ = os.Remove(origPath)
+
+	args := []string{
+		"-y",
+		"-i", audioPath,
+		"-af", "silenceremove=start_periods=1:start_duration=0.25:start_threshold=-55dB:stop_periods=1:stop_duration=0.25:stop_threshold=-55dB",
+		"-c:a", "libmp3lame",
+		"-q:a", "4",
+		tmpPath,
+	}
+	cmd := exec.Command("ffmpeg", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ffmpeg 去静音失败: %w 输出:%s", err, string(out))
+	}
+
+	fi, err := os.Stat(tmpPath)
+	if err != nil || fi.Size() == 0 {
+		return fmt.Errorf("ffmpeg 去静音输出无效: %s", tmpPath)
+	}
+
+	newDur, _ := GetAudioDuration(tmpPath)
+	if origDur > 0 && (newDur < 0.5 || newDur < origDur*0.6) {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("ffmpeg 去静音结果异常: %.3fs -> %.3fs", origDur, newDur)
+	}
+
+	if err := os.Rename(audioPath, origPath); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, audioPath); err != nil {
+		_ = os.Rename(origPath, audioPath)
+		return err
+	}
+	_ = os.Remove(origPath)
+	return nil
 }
 
 func firstNonEmpty(values ...string) string {

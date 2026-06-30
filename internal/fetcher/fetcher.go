@@ -43,6 +43,12 @@ type Sector struct {
 	Category             string  `json:"category"`               // "industry" 行业 / "concept" 概念 / "" 未知
 }
 
+type SectorCatalogItem struct {
+	BKCode   string `json:"bk_code"`
+	Name     string `json:"name"`
+	Category string `json:"category"`
+}
+
 // Top21HotSectors 当前市场最热门的 21 个板块。
 var Top21HotSectors = []string{
 	"半导体", "AI应用", "CPO概念", "有色金属", "锂矿概念",
@@ -255,6 +261,129 @@ func FetchTop21HotSectors() ([]Sector, error) {
 		zap.Float64("top_net", results[0].Net))
 
 	return results, nil
+}
+
+func FetchSectorCatalog(category string) ([]SectorCatalogItem, error) {
+	fs, normalized, err := categoryToFS(category)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := fetchEMRaw(fs)
+	if err != nil {
+		return nil, err
+	}
+
+	seen := make(map[string]bool)
+	items := make([]SectorCatalogItem, 0, len(raw))
+	for _, item := range raw {
+		name, _ := item["f14"].(string)
+		code, _ := item["f12"].(string)
+		if name == "" || code == "" {
+			continue
+		}
+		if seen[code] {
+			continue
+		}
+		seen[code] = true
+		items = append(items, SectorCatalogItem{
+			BKCode:   code,
+			Name:     name,
+			Category: normalized,
+		})
+	}
+	return items, nil
+}
+
+func FetchSectorsByCategory(category string) ([]Sector, error) {
+	fs, normalized, err := categoryToFS(category)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := fetchEMRaw(fs)
+	if err != nil {
+		return nil, err
+	}
+	return parseSectorsFromRaw(raw, normalized, true), nil
+}
+
+func categoryToFS(category string) (fs string, normalized string, err error) {
+	switch category {
+	case "", "industry":
+		return "m:90+t:2", "industry", nil
+	case "concept":
+		return "m:90+t:3", "concept", nil
+	case "region":
+		return "m:90+t:1", "region", nil
+	default:
+		return "", "", fmt.Errorf("unknown category: %s", category)
+	}
+}
+
+func parseSectorsFromRaw(raw []map[string]any, category string, keepZero bool) []Sector {
+	var sectors []Sector
+	for _, item := range raw {
+		name, _ := item["f14"].(string)
+		if name == "" {
+			continue
+		}
+		netVal := item["f62"]
+		if netVal == nil {
+			continue
+		}
+		netFloat, ok := toFloat64(netVal)
+		if !ok {
+			continue
+		}
+		if !keepZero && netFloat == 0 {
+			continue
+		}
+		bkCode, _ := item["f12"].(string)
+		rateVal := item["f184"]
+		rateFloat, _ := toFloat64(rateVal)
+		changePctVal := item["f3"]
+		changePctFloat, _ := toFloat64(changePctVal)
+		superNetVal := item["f66"]
+		superNetFloat, _ := toFloat64(superNetVal)
+		superRateVal := item["f69"]
+		superRateFloat, _ := toFloat64(superRateVal)
+		bigNetVal := item["f72"]
+		bigNetFloat, _ := toFloat64(bigNetVal)
+		bigRateVal := item["f75"]
+		bigRateFloat, _ := toFloat64(bigRateVal)
+		volumeVal := item["f5"]
+		volumeFloat, _ := toFloat64(volumeVal)
+		turnoverVal := item["f6"]
+		turnoverFloat, _ := toFloat64(turnoverVal)
+		turnoverRateVal := item["f7"]
+		turnoverRateFloat, _ := toFloat64(turnoverRateVal)
+		leadStockName, _ := item["f140"].(string)
+		leadChangeVal := item["f127"]
+		leadChangeFloat, _ := toFloat64(leadChangeVal)
+		mcapVal := item["f20"]
+		mcapFloat, _ := toFloat64(mcapVal)
+		cmcapVal := item["f21"]
+		cmcapFloat, _ := toFloat64(cmcapVal)
+		sectors = append(sectors, Sector{
+			Name:                 name,
+			Net:                  roundTo2(netFloat / 1e8),
+			Rate:                 roundTo2(rateFloat),
+			ChangePct:            roundTo2(changePctFloat),
+			SuperNet:             roundTo2(superNetFloat / 1e8),
+			SuperRate:            roundTo2(superRateFloat),
+			BigNet:               roundTo2(bigNetFloat / 1e8),
+			BigRate:              roundTo2(bigRateFloat),
+			Volume:               roundTo2(volumeFloat),
+			Turnover:             roundTo2(turnoverFloat / 1e8),
+			BKCode:               bkCode,
+			TurnoverRate:         roundTo2(turnoverRateFloat),
+			LeadStockName:        leadStockName,
+			LeadStockChangePct:   roundTo2(leadChangeFloat),
+			TotalMarketCap:       roundTo2(mcapFloat / 1e8),
+			CirculatingMarketCap: roundTo2(cmcapFloat / 1e8),
+			Category:             category,
+		})
+	}
+	return sectors
 }
 
 func fetchBKCodes() (map[string]string, error) {

@@ -118,32 +118,31 @@ func TestTickSchedule_MidSessionStart(t *testing.T) {
 	}
 }
 
-func TestTickSchedule_MidSessionStart_Includes1500(t *testing.T) {
-	// Simulate the RACE CONDITION scenario:
-	// Fetcher starts at ~14:57, interval=5
-	// currentMinute = nowTradingMinute() = 237 (14:57)
-	// Should collect 14:55 (catch-up), then 15:00
+func TestTickSchedule_MidSessionStart_UsesNextBoundary(t *testing.T) {
+	// Fetcher starts at ~14:57, interval=5.
+	// It should wait for the next real sampling boundary instead of
+	// backfilling 14:55 with current data.
 	schedule := tickSchedule(237, 5, []tradingRange{{0, 119}, {120, 240}})
 
 	if len(schedule) == 0 {
 		t.Fatal("expected non-empty schedule")
 	}
 
-	// First tick should be 235 = 14:55 (closest 5-min boundary at or above start)
+	// First tick should be 15:00, not 14:55.
 	first := schedule[0]
-	if first.Time != "14:55" || first.Minute != 235 {
-		t.Errorf("first tick should be 14:55 (235), got %s (%d)", first.Time, first.Minute)
+	if first.Time != "15:00" || first.Minute != 240 {
+		t.Errorf("first tick should be 15:00 (240), got %s (%d)", first.Time, first.Minute)
 	}
 
-	// Last tick MUST be 15:00 (240)
+	// Last tick MUST also be 15:00.
 	last := schedule[len(schedule)-1]
 	if last.Time != "15:00" || last.Minute != 240 {
 		t.Errorf("last tick MUST be 15:00 (240), got %s (%d) — this is the bug pattern!", last.Time, last.Minute)
 	}
 
-	// Should have exactly 2 ticks: 14:55 and 15:00
-	if len(schedule) != 2 {
-		t.Errorf("expected exactly 2 ticks (14:55, 15:00), got %d: %v", len(schedule), schedule)
+	// Should have exactly 1 tick: 15:00.
+	if len(schedule) != 1 {
+		t.Errorf("expected exactly 1 tick (15:00), got %d: %v", len(schedule), schedule)
 	}
 }
 

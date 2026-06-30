@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -61,6 +62,13 @@ type SectorAll struct {
 	TotalMarketCap       float64 `json:"total_market_cap"`       // 总市值（亿）
 	CirculatingMarketCap float64 `json:"circulating_market_cap"` // 流通市值（亿）
 	Category             string  `json:"category"`               // "industry" 行业板块 / "concept" 概念板块
+}
+
+type SectorCatalogItem struct {
+	BKCode    string `json:"bk_code"`
+	Name      string `json:"name"`
+	Category  string `json:"category"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 type Copywriting struct {
@@ -173,6 +181,14 @@ func (db *DB) initSchema() error {
 		PRIMARY KEY (date, name)
 	);
 
+	CREATE TABLE IF NOT EXISTS sector_catalog (
+		bk_code    TEXT NOT NULL,  -- 板块代码 BKxxxx
+		name       TEXT NOT NULL,  -- 板块名称
+		category   TEXT NOT NULL,  -- "industry" / "concept" / "region"
+		updated_at TEXT NOT NULL,  -- 更新时间 "2006-01-02 15:04:05"
+		PRIMARY KEY (bk_code)
+	);
+
 	CREATE TABLE IF NOT EXISTS tick_events (
 		date    TEXT    NOT NULL,  -- 日期 "2026-05-19"
 		session TEXT    NOT NULL,  -- 时段 "full" / "morning"
@@ -191,12 +207,18 @@ func (db *DB) initSchema() error {
 		ctime       DATETIME NOT NULL,
 		shareurl    TEXT    NOT NULL DEFAULT '',
 		sectors     TEXT    NOT NULL DEFAULT '',
+		classify_status TEXT NOT NULL DEFAULT 'pending',
+		retry_count INTEGER NOT NULL DEFAULT 0,
+		last_retry_at TEXT NOT NULL DEFAULT '',
+		last_error TEXT NOT NULL DEFAULT '',
 		created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_sectors_date ON sectors(datetime);
 	CREATE INDEX IF NOT EXISTS idx_copywriting_date ON copywriting(date);
 	CREATE INDEX IF NOT EXISTS idx_sectors_all_date ON sectors_all(date);
+	CREATE INDEX IF NOT EXISTS idx_sector_catalog_name ON sector_catalog(name);
+	CREATE INDEX IF NOT EXISTS idx_sector_catalog_category ON sector_catalog(category);
 	CREATE INDEX IF NOT EXISTS idx_tick_events_date ON tick_events(date);
 	CREATE INDEX IF NOT EXISTS idx_cls_news_ctime ON cls_news(ctime);
 
@@ -226,6 +248,12 @@ func (db *DB) initSchema() error {
 		format         TEXT NOT NULL DEFAULT 'mobile',
 		video_path     TEXT NOT NULL DEFAULT '',
 		created_at     TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+	);
+
+	CREATE TABLE IF NOT EXISTS ai_config (
+		key         TEXT PRIMARY KEY,
+		value       TEXT NOT NULL DEFAULT '',
+		updated_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 	);
 	`
 	if _, err := db.db.Exec(schema); err != nil {
@@ -262,6 +290,11 @@ func (db *DB) initSchema() error {
 	_, _ = db.db.Exec("ALTER TABLE sectors_all ADD COLUMN lead_stock_change_pct REAL NOT NULL DEFAULT 0")
 	_, _ = db.db.Exec("ALTER TABLE sectors_all ADD COLUMN total_market_cap REAL NOT NULL DEFAULT 0")
 	_, _ = db.db.Exec("ALTER TABLE sectors_all ADD COLUMN circulating_market_cap REAL NOT NULL DEFAULT 0")
+	_, _ = db.db.Exec("ALTER TABLE cls_news ADD COLUMN classify_status TEXT NOT NULL DEFAULT 'pending'")
+	_, _ = db.db.Exec("ALTER TABLE cls_news ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0")
+	_, _ = db.db.Exec("ALTER TABLE cls_news ADD COLUMN last_retry_at TEXT NOT NULL DEFAULT ''")
+	_, _ = db.db.Exec("ALTER TABLE cls_news ADD COLUMN last_error TEXT NOT NULL DEFAULT ''")
+	_, _ = db.db.Exec("CREATE TABLE IF NOT EXISTS ai_config (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')))")
 
 	return nil
 }
@@ -550,6 +583,86 @@ func (db *DB) ListSectorsAllNames() ([]string, error) {
 	return names, rows.Err()
 }
 
+func (db *DB) UpsertSectorCatalog(items []SectorCatalogItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+
+	now := time.Now().Format("2006-01-02 15:04:05")
+
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	tx, err := db.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO sector_catalog (bk_code, name, category, updated_at) VALUES (?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, it := range items {
+		if strings.TrimSpace(it.BKCode) == "" || strings.TrimSpace(it.Name) == "" {
+			continue
+		}
+		updatedAt := strings.TrimSpace(it.UpdatedAt)
+		if updatedAt == "" {
+			updatedAt = now
+		}
+		if _, err := stmt.Exec(it.BKCode, it.Name, it.Category, updatedAt); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+func (db *DB) LoadSectorCatalog(category string) ([]SectorCatalogItem, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	category = strings.TrimSpace(category)
+
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if category == "" {
+		rows, err = db.db.Query("SELECT bk_code, name, category, updated_at FROM sector_catalog ORDER BY category, name")
+	} else {
+		rows, err = db.db.Query("SELECT bk_code, name, category, updated_at FROM sector_catalog WHERE category = ? ORDER BY name", category)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []SectorCatalogItem
+	for rows.Next() {
+		var it SectorCatalogItem
+		if err := rows.Scan(&it.BKCode, &it.Name, &it.Category, &it.UpdatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, it)
+	}
+	return items, rows.Err()
+}
+
+func (db *DB) HasSectorCatalog() (bool, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	var count int
+	if err := db.db.QueryRow("SELECT COUNT(*) FROM sector_catalog").Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 func (db *DB) SaveCopywriting(cw Copywriting) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -636,24 +749,105 @@ func (db *DB) ListTickDates() ([]string, error) {
 
 // CLSNewsRecord 财联社新闻数据库记录。
 type CLSNewsRecord struct {
-	ID         int64  `json:"id"`
-	Title      string `json:"title"`
-	Content    string `json:"content"`
-	Brief      string `json:"brief"`
-	Level      string `json:"level"`
-	ReadingNum int64  `json:"reading_num"`
-	CTime      string `json:"ctime"` // "2026-05-24 16:34:00"
-	ShareURL   string `json:"shareurl"`
-	Sectors    string `json:"sectors"` // JSON 数组字符串
-	CreatedAt  string `json:"created_at"`
+	ID             int64  `json:"id"`
+	Title          string `json:"title"`
+	Content        string `json:"content"`
+	Brief          string `json:"brief"`
+	Level          string `json:"level"`
+	ReadingNum     int64  `json:"reading_num"`
+	CTime          string `json:"ctime"` // "2026-05-24 16:34:00"
+	ShareURL       string `json:"shareurl"`
+	Sectors        string `json:"sectors"` // JSON 数组字符串
+	ClassifyStatus string `json:"classify_status"`
+	RetryCount     int    `json:"retry_count"`
+	LastRetryAt    string `json:"last_retry_at"`
+	LastError      string `json:"last_error"`
+	CreatedAt      string `json:"created_at"`
 }
 
-// UpdateCLSNewsSectors 更新单条新闻的板块标签。
+func normalizeCLSNewsStatusFilter(status string) string {
+	switch strings.TrimSpace(status) {
+	case "", "all":
+		return ""
+	case "pending", "retrying", "failed", "skipped", "classified":
+		return strings.TrimSpace(status)
+	default:
+		return ""
+	}
+}
+
+func clsNewsStatusCondition(status string) (string, []any) {
+	normalized := normalizeCLSNewsStatusFilter(status)
+	if normalized == "" {
+		return "", nil
+	}
+	return " WHERE classify_status = ?", []any{normalized}
+}
+
+// UpdateCLSNewsSectors 更新单条新闻的板块标签并标记为已分类。
 func (db *DB) UpdateCLSNewsSectors(id int64, sectors string) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	_, err := db.db.Exec(`UPDATE cls_news SET sectors = ? WHERE id = ?`, sectors, id)
+	_, err := db.db.Exec(`UPDATE cls_news SET sectors = ?, classify_status = 'classified', last_error = '' WHERE id = ?`, sectors, id)
 	return err
+}
+
+func (db *DB) MarkCLSNewsSkipped(id int64, reason string) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	_, err := db.db.Exec(`UPDATE cls_news SET classify_status = 'skipped', last_error = ? WHERE id = ?`, reason, id)
+	return err
+}
+
+func (db *DB) RecordCLSNewsRetry(id int64, reason string, maxRetries int) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	_, err := db.db.Exec(`
+		UPDATE cls_news
+		SET retry_count = retry_count + 1,
+			last_retry_at = datetime('now','localtime'),
+			last_error = ?,
+			classify_status = CASE
+				WHEN retry_count + 1 >= ? THEN 'failed'
+				ELSE 'retrying'
+			END
+		WHERE id = ?
+	`, reason, maxRetries, id)
+	return err
+}
+
+type CLSNewsClassificationStats struct {
+	PendingCount    int    `json:"pending_count"`
+	RetryingCount   int    `json:"retrying_count"`
+	FailedCount     int    `json:"failed_count"`
+	SkippedCount    int    `json:"skipped_count"`
+	ClassifiedCount int    `json:"classified_count"`
+	LastRetryAt     string `json:"last_retry_at"`
+}
+
+func (db *DB) GetCLSNewsClassificationStats() (CLSNewsClassificationStats, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	var stats CLSNewsClassificationStats
+	err := db.db.QueryRow(`
+		SELECT
+			SUM(CASE WHEN classify_status = 'pending' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN classify_status = 'retrying' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN classify_status = 'failed' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN classify_status = 'skipped' THEN 1 ELSE 0 END),
+			SUM(CASE WHEN classify_status = 'classified' THEN 1 ELSE 0 END),
+			COALESCE(MAX(last_retry_at), '')
+		FROM cls_news
+	`).Scan(
+		&stats.PendingCount,
+		&stats.RetryingCount,
+		&stats.FailedCount,
+		&stats.SkippedCount,
+		&stats.ClassifiedCount,
+		&stats.LastRetryAt,
+	)
+	return stats, err
 }
 
 // SaveCLSNews 批量保存财联社新闻（INSERT OR IGNORE 按 id 去重）。
@@ -671,7 +865,7 @@ func (db *DB) SaveCLSNews(records []CLSNewsRecord) (int, error) {
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO cls_news (id, title, content, brief, level, reading_num, ctime, shareurl, sectors) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO cls_news (id, title, content, brief, level, reading_num, ctime, shareurl, sectors, classify_status, retry_count, last_retry_at, last_error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return 0, err
 	}
@@ -679,7 +873,16 @@ func (db *DB) SaveCLSNews(records []CLSNewsRecord) (int, error) {
 
 	saved := 0
 	for _, r := range records {
-		result, err := stmt.Exec(r.ID, r.Title, r.Content, r.Brief, r.Level, r.ReadingNum, r.CTime, r.ShareURL, r.Sectors)
+		status := strings.TrimSpace(r.ClassifyStatus)
+		if status == "" {
+			sectors := strings.TrimSpace(r.Sectors)
+			if sectors == "" || sectors == "[]" {
+				status = "pending"
+			} else {
+				status = "classified"
+			}
+		}
+		result, err := stmt.Exec(r.ID, r.Title, r.Content, r.Brief, r.Level, r.ReadingNum, r.CTime, r.ShareURL, r.Sectors, status, r.RetryCount, r.LastRetryAt, r.LastError)
 		if err != nil {
 			return saved, err
 		}
@@ -691,12 +894,33 @@ func (db *DB) SaveCLSNews(records []CLSNewsRecord) (int, error) {
 	return saved, tx.Commit()
 }
 
-// LoadLatestNews 加载最新新闻（分页，按 ctime 降序）。
-func (db *DB) LoadLatestNews(limit, offset int) ([]CLSNewsRecord, error) {
+// CLSNewsExists 检查新闻记录是否存在。
+func (db *DB) CLSNewsExists(id int64) bool {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	rows, err := db.db.Query(`SELECT id, title, content, brief, level, reading_num, ctime, shareurl, sectors, created_at FROM cls_news ORDER BY ctime DESC LIMIT ? OFFSET ?`, limit, offset)
+	var exists bool
+	db.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM cls_news WHERE id = ?)`, id).Scan(&exists)
+	return exists
+}
+
+// LoadLatestNews 加载最新新闻（分页，按 ctime 降序）。
+func (db *DB) LoadLatestNews(limit, offset int) ([]CLSNewsRecord, error) {
+	return db.LoadLatestNewsByStatus(limit, offset, "")
+}
+
+func (db *DB) LoadLatestNewsByStatus(limit, offset int, status string) ([]CLSNewsRecord, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	whereClause, args := clsNewsStatusCondition(status)
+	args = append(args, limit, offset)
+	rows, err := db.db.Query(
+		`SELECT id, title, content, brief, level, reading_num, ctime, shareurl, sectors, classify_status, retry_count, last_retry_at, last_error, created_at FROM cls_news`+
+			whereClause+
+			` ORDER BY ctime DESC LIMIT ? OFFSET ?`,
+		args...,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -705,7 +929,37 @@ func (db *DB) LoadLatestNews(limit, offset int) ([]CLSNewsRecord, error) {
 	var records []CLSNewsRecord
 	for rows.Next() {
 		var r CLSNewsRecord
-		if err := rows.Scan(&r.ID, &r.Title, &r.Content, &r.Brief, &r.Level, &r.ReadingNum, &r.CTime, &r.ShareURL, &r.Sectors, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.Title, &r.Content, &r.Brief, &r.Level, &r.ReadingNum, &r.CTime, &r.ShareURL, &r.Sectors, &r.ClassifyStatus, &r.RetryCount, &r.LastRetryAt, &r.LastError, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		records = append(records, r)
+	}
+	return records, rows.Err()
+}
+
+// LoadPendingCLSNews 加载待补标签新闻。
+// sectors 为空字符串或空数组都视为未分类。
+func (db *DB) LoadPendingCLSNews(limit int) ([]CLSNewsRecord, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	rows, err := db.db.Query(`
+		SELECT id, title, content, brief, level, reading_num, ctime, shareurl, sectors, classify_status, retry_count, last_retry_at, last_error, created_at
+		FROM cls_news
+		WHERE (sectors = '' OR sectors = '[]')
+		  AND classify_status IN ('pending', 'retrying')
+		ORDER BY retry_count ASC, ctime DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var records []CLSNewsRecord
+	for rows.Next() {
+		var r CLSNewsRecord
+		if err := rows.Scan(&r.ID, &r.Title, &r.Content, &r.Brief, &r.Level, &r.ReadingNum, &r.CTime, &r.ShareURL, &r.Sectors, &r.ClassifyStatus, &r.RetryCount, &r.LastRetryAt, &r.LastError, &r.CreatedAt); err != nil {
 			return nil, err
 		}
 		records = append(records, r)
@@ -715,18 +969,30 @@ func (db *DB) LoadLatestNews(limit, offset int) ([]CLSNewsRecord, error) {
 
 // LoadNewsByDate 按日期加载新闻（按 ctime 降序）。
 func (db *DB) LoadNewsByDate(date string, limit, offset int) ([]CLSNewsRecord, int, error) {
+	return db.LoadNewsByDateAndStatus(date, limit, offset, "")
+}
+
+func (db *DB) LoadNewsByDateAndStatus(date string, limit, offset int, status string) ([]CLSNewsRecord, int, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
 	prefix := date + "%"
+	statusClause, statusArgs := clsNewsStatusCondition(status)
+	baseWhere := " WHERE ctime LIKE ?"
+	args := []any{prefix}
+	if statusClause != "" {
+		baseWhere += " AND classify_status = ?"
+		args = append(args, statusArgs...)
+	}
 
 	var total int
-	err := db.db.QueryRow("SELECT COUNT(*) FROM cls_news WHERE ctime LIKE ?", prefix).Scan(&total)
+	err := db.db.QueryRow("SELECT COUNT(*) FROM cls_news"+baseWhere, args...).Scan(&total)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	rows, err := db.db.Query(`SELECT id, title, content, brief, level, reading_num, ctime, shareurl, sectors, created_at FROM cls_news WHERE ctime LIKE ? ORDER BY ctime DESC LIMIT ? OFFSET ?`, prefix, limit, offset)
+	queryArgs := append(append([]any{}, args...), limit, offset)
+	rows, err := db.db.Query(`SELECT id, title, content, brief, level, reading_num, ctime, shareurl, sectors, classify_status, retry_count, last_retry_at, last_error, created_at FROM cls_news`+baseWhere+` ORDER BY ctime DESC LIMIT ? OFFSET ?`, queryArgs...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -735,7 +1001,7 @@ func (db *DB) LoadNewsByDate(date string, limit, offset int) ([]CLSNewsRecord, i
 	var records []CLSNewsRecord
 	for rows.Next() {
 		var r CLSNewsRecord
-		if err := rows.Scan(&r.ID, &r.Title, &r.Content, &r.Brief, &r.Level, &r.ReadingNum, &r.CTime, &r.ShareURL, &r.Sectors, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.Title, &r.Content, &r.Brief, &r.Level, &r.ReadingNum, &r.CTime, &r.ShareURL, &r.Sectors, &r.ClassifyStatus, &r.RetryCount, &r.LastRetryAt, &r.LastError, &r.CreatedAt); err != nil {
 			return nil, 0, err
 		}
 		records = append(records, r)
@@ -745,18 +1011,30 @@ func (db *DB) LoadNewsByDate(date string, limit, offset int) ([]CLSNewsRecord, i
 
 // SearchCLSNews 搜索新闻（按标题或正文模糊匹配）。
 func (db *DB) SearchCLSNews(keyword string, limit, offset int) ([]CLSNewsRecord, int, error) {
+	return db.SearchCLSNewsByStatus(keyword, limit, offset, "")
+}
+
+func (db *DB) SearchCLSNewsByStatus(keyword string, limit, offset int, status string) ([]CLSNewsRecord, int, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
 	like := "%" + keyword + "%"
+	statusClause, statusArgs := clsNewsStatusCondition(status)
+	baseWhere := " WHERE (title LIKE ? OR content LIKE ?)"
+	args := []any{like, like}
+	if statusClause != "" {
+		baseWhere += " AND classify_status = ?"
+		args = append(args, statusArgs...)
+	}
 
 	var total int
-	err := db.db.QueryRow("SELECT COUNT(*) FROM cls_news WHERE title LIKE ? OR content LIKE ?", like, like).Scan(&total)
+	err := db.db.QueryRow("SELECT COUNT(*) FROM cls_news"+baseWhere, args...).Scan(&total)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	rows, err := db.db.Query(`SELECT id, title, content, brief, level, reading_num, ctime, shareurl, sectors, created_at FROM cls_news WHERE title LIKE ? OR content LIKE ? ORDER BY ctime DESC LIMIT ? OFFSET ?`, like, like, limit, offset)
+	queryArgs := append(append([]any{}, args...), limit, offset)
+	rows, err := db.db.Query(`SELECT id, title, content, brief, level, reading_num, ctime, shareurl, sectors, classify_status, retry_count, last_retry_at, last_error, created_at FROM cls_news`+baseWhere+` ORDER BY ctime DESC LIMIT ? OFFSET ?`, queryArgs...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -765,7 +1043,7 @@ func (db *DB) SearchCLSNews(keyword string, limit, offset int) ([]CLSNewsRecord,
 	var records []CLSNewsRecord
 	for rows.Next() {
 		var r CLSNewsRecord
-		if err := rows.Scan(&r.ID, &r.Title, &r.Content, &r.Brief, &r.Level, &r.ReadingNum, &r.CTime, &r.ShareURL, &r.Sectors, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.Title, &r.Content, &r.Brief, &r.Level, &r.ReadingNum, &r.CTime, &r.ShareURL, &r.Sectors, &r.ClassifyStatus, &r.RetryCount, &r.LastRetryAt, &r.LastError, &r.CreatedAt); err != nil {
 			return nil, 0, err
 		}
 		records = append(records, r)
@@ -775,12 +1053,42 @@ func (db *DB) SearchCLSNews(keyword string, limit, offset int) ([]CLSNewsRecord,
 
 // GetCLSNewsCount 返回新闻总数。
 func (db *DB) GetCLSNewsCount() (int, error) {
+	return db.GetCLSNewsCountByStatus("")
+}
+
+func (db *DB) GetCLSNewsCountByStatus(status string) (int, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
 	var count int
-	err := db.db.QueryRow("SELECT COUNT(*) FROM cls_news").Scan(&count)
+	whereClause, args := clsNewsStatusCondition(status)
+	err := db.db.QueryRow("SELECT COUNT(*) FROM cls_news"+whereClause, args...).Scan(&count)
 	return count, err
+}
+
+func (db *DB) GetCLSNewsByID(id int64) (CLSNewsRecord, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	var r CLSNewsRecord
+	err := db.db.QueryRow(`
+		SELECT id, title, content, brief, level, reading_num, ctime, shareurl, sectors, classify_status, retry_count, last_retry_at, last_error, created_at
+		FROM cls_news
+		WHERE id = ?
+	`, id).Scan(&r.ID, &r.Title, &r.Content, &r.Brief, &r.Level, &r.ReadingNum, &r.CTime, &r.ShareURL, &r.Sectors, &r.ClassifyStatus, &r.RetryCount, &r.LastRetryAt, &r.LastError, &r.CreatedAt)
+	return r, err
+}
+
+func (db *DB) RequeueCLSNews(id int64) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	_, err := db.db.Exec(`
+		UPDATE cls_news
+		SET classify_status = 'pending',
+			last_error = ''
+		WHERE id = ?
+	`, id)
+	return err
 }
 
 func DateToDatetime(date string) string {
@@ -1043,6 +1351,114 @@ func (db *DB) DeleteNote(id int64) error {
 
 	_, err := db.db.Exec("DELETE FROM notes WHERE id = ?", id)
 	return err
+}
+
+// GetAIConfigValue 读取单个 AI 配置值。
+func (db *DB) GetAIConfigValue(key string) (string, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	var value string
+	err := db.db.QueryRow("SELECT value FROM ai_config WHERE key = ?", key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return value, err
+}
+
+// SetAIConfigValue 写入单个 AI 配置值。
+func (db *DB) SetAIConfigValue(key, value string) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	_, err := db.db.Exec(
+		`INSERT OR REPLACE INTO ai_config (key, value, updated_at) VALUES (?, ?, datetime('now','localtime'))`,
+		key, value,
+	)
+	return err
+}
+
+// GetAllAIConfig 读取所有 AI 配置。
+func (db *DB) GetAllAIConfig() (map[string]string, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	rows, err := db.db.Query("SELECT key, value FROM ai_config")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string]string)
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		result[k] = v
+	}
+	return result, rows.Err()
+}
+
+// MigrateAIConfigFromEnv 从环境变量迁移 AI 配置到数据库。
+// 仅在数据库 ai_config 表为空时执行，避免覆盖用户已有的数据库配置。
+func (db *DB) MigrateAIConfigFromEnv() error {
+	db.mu.RLock()
+	var count int
+	err := db.db.QueryRow("SELECT COUNT(*) FROM ai_config").Scan(&count)
+	db.mu.RUnlock()
+	if err != nil {
+		return err
+	}
+
+	if count > 0 {
+		return nil
+	}
+
+	envConfig := map[string]string{
+		"api_key":        os.Getenv("OPENAI_API_KEY"),
+		"base_url":       os.Getenv("OPENAI_BASE_URL"),
+		"model":          os.Getenv("AI_MODEL"),
+		"model_clsnews":  os.Getenv("AI_MODEL_CLSNEWS"),
+		"model_analyzer": os.Getenv("AI_MODEL_ANALYZER"),
+		"model_analyzer_multiday": os.Getenv("AI_MODEL_ANALYZER_MULTIDAY"),
+		"model_tick":     os.Getenv("AI_MODEL_TICK"),
+		"model_copy":     os.Getenv("AI_MODEL_COPY"),
+		"model_report":   os.Getenv("AI_MODEL_REPORT"),
+		"model_tts":      os.Getenv("AI_MODEL_TTS"),
+		"model_debate":   os.Getenv("AI_MODEL_DEBATE"),
+	}
+
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	tx, err := db.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO ai_config (key, value, updated_at) VALUES (?, ?, datetime('now','localtime'))`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	migrated := 0
+	for key, value := range envConfig {
+		if value == "" {
+			continue
+		}
+		if _, err := stmt.Exec(key, value); err != nil {
+			return err
+		}
+		migrated++
+	}
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	if migrated > 0 {
+		logger.Info("AI 配置已从环境变量迁移到数据库", zap.Int("count", migrated))
+	}
+	return nil
 }
 
 // ExportJSON 将数据库全部表导出为 JSON 文件到 data/ 目录。

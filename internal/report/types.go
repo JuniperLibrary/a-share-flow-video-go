@@ -5,6 +5,7 @@ import "github.com/a-share-flow-video-go/internal/analyzer"
 // SectorSummary 板块摘要，用于日报排行。
 type SectorSummary struct {
 	Name                 string  `json:"name"`
+	Category             string  `json:"category,omitempty"`
 	Net                  float64 `json:"net"`                  // 主力净流入（亿）
 	ChangePct            float64 `json:"changePct"`            // 涨跌幅（%）
 	SuperNet             float64 `json:"superNet"`             // 超大单净流入（亿）
@@ -67,8 +68,8 @@ type DailyReport struct {
 
 // MarketStyleAnalysis 市场风格分析结构体
 type MarketStyleAnalysis struct {
-	Style          string `json:"style"`
-	Tone           string `json:"tone"`
+	Style           string `json:"style"`
+	Tone            string `json:"tone"`
 	Characteristics string `json:"characteristics"`
 }
 
@@ -86,11 +87,11 @@ type FundStructureAnalysis struct {
 
 // IndustryDistributionAnalysis 行业资金分布分析结构体
 type IndustryDistributionAnalysis struct {
-	ConcentrationRatio  string   `json:"concentrationRatio"`
-	LeadingSector       string   `json:"leadingSector"`
-	LeadingSectorNet    string   `json:"leadingSectorNet"`
+	ConcentrationRatio string   `json:"concentrationRatio"`
+	LeadingSector      string   `json:"leadingSector"`
+	LeadingSectorNet   string   `json:"leadingSectorNet"`
 	RotationDirection  string   `json:"rotationDirection"`
-	RotationDetail      string   `json:"rotationDetail"`
+	RotationDetail     string   `json:"rotationDetail"`
 	HighDensitySectors []string `json:"highDensitySectors"`
 	LowDensitySectors  []string `json:"lowDensitySectors"`
 }
@@ -107,18 +108,18 @@ type MarketStructureChangeAnalysis struct {
 
 // OutflowRiskAnalysis 流出风险分析结构体
 type OutflowRiskAnalysis struct {
-	RiskLevel   string `json:"riskLevel"`
-	RiskReason  string `json:"riskReason"`
-	RiskAdvice  string `json:"riskAdvice"`
+	RiskLevel  string `json:"riskLevel"`
+	RiskReason string `json:"riskReason"`
+	RiskAdvice string `json:"riskAdvice"`
 }
 
 // LeaderFundLossAnalysis 龙头资金流失分析结构体
 type LeaderFundLossAnalysis struct {
-	LeaderSector    string `json:"leaderSector"`
-	FundLossAmount  string `json:"fundLossAmount"`
-	FundLossReason  string `json:"fundLossReason"`
-	Continuity      string `json:"continuity"`
-	Duration        string `json:"duration"`
+	LeaderSector   string `json:"leaderSector"`
+	FundLossAmount string `json:"fundLossAmount"`
+	FundLossReason string `json:"fundLossReason"`
+	Continuity     string `json:"continuity"`
+	Duration       string `json:"duration"`
 }
 
 // ThematicCard 专题卡片 - 替代原有固定卡片模板，支持主题化、带确信度的输出。
@@ -133,12 +134,12 @@ type ThematicCard struct {
 
 // SectorRotationResult 板块轮动分析结果。
 type SectorRotationResult struct {
-	Phase       string   `json:"phase"`       // "启动"/"加速"/"高潮"/"退潮"
-	LeaderSector string  `json:"leaderSector"` // 当前领涨板块
-	FollowSectors []string `json:"followSectors"` // 跟涨板块
-	LaggerSectors []string `json:"laggerSectors"` // 滞后板块
-	AvgRotationDays int    `json:"avgRotationDays"` // 平均轮动周期（交易日）
-	RotationAccelerating bool `json:"rotationAccelerating"` // 轮动是否在加速
+	Phase                string   `json:"phase"`                // "启动"/"加速"/"高潮"/"退潮"
+	LeaderSector         string   `json:"leaderSector"`         // 当前领涨板块
+	FollowSectors        []string `json:"followSectors"`        // 跟涨板块
+	LaggerSectors        []string `json:"laggerSectors"`        // 滞后板块
+	AvgRotationDays      int      `json:"avgRotationDays"`      // 平均轮动周期（交易日）
+	RotationAccelerating bool     `json:"rotationAccelerating"` // 轮动是否在加速
 }
 
 // SentimentIndicators 情绪指标量化结果。
@@ -147,8 +148,8 @@ type SentimentIndicators struct {
 	LimitUpCount   int     `json:"limitUpCount"`   // 涨停数
 	LimitDownCount int     `json:"limitDownCount"` // 跌停数
 	HighBoardCount int     `json:"highBoardCount"` // 连板高度（最高）
-	BreakRate      float64 `json:"breakRate"`       // 炸板率 %
-	SentimentScore float64 `json:"sentimentScore"`  // 情绪综合评分 -10 ~ 10
+	BreakRate      float64 `json:"breakRate"`      // 炸板率 %
+	SentimentScore float64 `json:"sentimentScore"` // 情绪综合评分 -10 ~ 10
 }
 
 // DragonTigerSummary 龙虎榜汇总（用于卡片展示）。
@@ -164,9 +165,9 @@ type DragonTigerSummary struct {
 
 // NorthboundSummary 北向资金汇总（用于卡片展示）。
 type NorthboundSummary struct {
-	DailyNet    float64 `json:"dailyNet"`    // 当日净买入
-	WeekNet     float64 `json:"weekNet"`      // 近5日累计
-	MonthNet    float64 `json:"monthNet"`     // 近20日累计
+	DailyNet     float64 `json:"dailyNet"` // 当日净买入
+	WeekNet      float64 `json:"weekNet"`  // 近5日累计
+	MonthNet     float64 `json:"monthNet"` // 近20日累计
 	TopBuyStocks []struct {
 		Name  string  `json:"name"`
 		Value float64 `json:"value"`
@@ -184,8 +185,8 @@ type MarginSummaryExt struct {
 
 // NewsFundMatchAnalysis 新闻与资金匹配分析结构体
 type NewsFundMatchAnalysis struct {
-	MatchedInflowSectors   []string `json:"matchedInflowSectors"`
-	MatchedOutflowSectors   []string `json:"matchedOutflowSectors"`
-	MatchScore             string   `json:"matchScore"`
-	Insight                string   `json:"insight"`
+	MatchedInflowSectors  []string `json:"matchedInflowSectors"`
+	MatchedOutflowSectors []string `json:"matchedOutflowSectors"`
+	MatchScore            string   `json:"matchScore"`
+	Insight               string   `json:"insight"`
 }

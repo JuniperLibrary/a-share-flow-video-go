@@ -22,12 +22,17 @@ type AINewsClassifier struct {
 }
 
 type aiClassifyResult struct {
-	Tags      []string `json:"tags"`
-	Reasoning string   `json:"reasoning"`
+	Tags []string `json:"tags"`
 }
 
 type aiClassifyResponse struct {
 	Results []aiClassifyResult `json:"results"`
+}
+
+type ClassificationResult struct {
+	Tags   []string
+	Status string
+	Error  string
 }
 
 type classifyItem struct {
@@ -61,28 +66,32 @@ var sectorTagDescriptions = []string{
 	"通信服务: 电信运营商(移动/电信/联通)、5G套餐、宽带、云通信、增值电信",
 }
 
-const aiNewsClassifierPrompt = `你是一个A股财经新闻板块标签分类专家。你的任务是根据新闻标题和正文，判断其关联的A股板块。
+const systemPromptForClassifier = `你是A股新闻板块分类器。根据标题+正文判断关联板块，每个新闻0~3个标签。
 
-## 可选板块标签（21个监控板块）
+## 21个监控板块
 %s
+
+## 其他板块
+新能源汽车、光伏、军工、证券、房地产、煤炭、医药、教育、氢能源、核电、汽车整车、零部件、旅游酒店、食品饮料、农业、钢铁、环保、物流、港口航运
 
 ## 规则
-1. 每条新闻分配 0~3 个板块标签。优先从上面的21个监控板块中选择。
-2. 如果21个监控板块中没有合适的标签，可以输出其他合理的A股板块标签（如"新能源汽车"、"光伏"、"军工"、"证券"、"房地产"、"煤炭"、"医药"、"教育"等）。
-3. 如果新闻与A股市场完全无关（如纯国际政治新闻、军事冲突、自然灾害、娱乐八卦等），tags 返回空数组 []。
-4. 标签必须是真实存在的A股板块概念名称，不要虚构。
-5. 只根据新闻内容判断，不要过度泛化。
+1. 每条新闻返回0~3个板块标签
+2. 优先从21个监控板块中选择
+3. 无关新闻返回空数组
+4. 标签必须是真实A股板块名
 
-## 输入新闻（JSON数组）
-%s
+## 输出格式（严格JSON，不要有任何其他文字）
+输入3条新闻时输出：
+{"results":[{"index":0,"tags":["半导体"]},{"index":1,"tags":["AI应用","人工智能"]},{"index":2,"tags":[]}]}
 
-## 输出格式（JSON，严格遵循）
-{"results":[{"index":0,"tags":["半导体",...],"reasoning":"判断理由（10字以内）"},...]}
+注意：
+- 只输出JSON，不要有其他文字
+- results数组长度必须等于输入新闻数量
+- tags数组可以为空[]`
 
-## 注意事项
-- 输出必须是一个合法的 JSON 对象，不要包含任何其他文字。
-- 只返回 JSON，不要用 markdown 代码块包裹。
-- results 数组与输入新闻一一对应，顺序一致。`
+// userPromptForClassifier 是每次请求的 user message 模板，只含新闻数据。
+const userPromptForClassifier = `## 输入新闻（JSON数组）
+%s`
 
 // NewAINewsClassifier 创建一个 AI 新闻分类器。
 func NewAINewsClassifier(cfg config.AIConfig) *AINewsClassifier {
@@ -121,27 +130,32 @@ func (c *AINewsClassifier) ClassifyOne(news CLSNews) ([]string, error) {
 	return allTags[0], nil
 }
 
-// ClassifyBatch 对一批新闻进行 AI 标签分类。
-// 返回与输入等长的切片，每个元素是该新闻的板块标签（最多3个）。
-// nil 表示该新闻因太短或 AI 无法判断而未分类。
-func (c *AINewsClassifier) ClassifyBatch(news []CLSNews) [][]string {
+// ClassifyBatch 对一批新闻进行 AI 标签分类，并返回可观测的分类状态。
+func (c *AINewsClassifier) ClassifyBatch(news []CLSNews) []ClassificationResult {
 	if !c.IsAvailable() {
 		logger.Debug("AI 新闻分类未启用（未配置 API Key）")
-		return make([][]string, len(news))
+		results := make([]ClassificationResult, len(news))
+		for i := range results {
+			results[i] = ClassificationResult{Status: "retry", Error: "AI 新闻分类未启用"}
+		}
+		return results
 	}
 
 	var items []classifyItem
+	results := make([]ClassificationResult, len(news))
 	for i, n := range news {
 		title := strings.TrimSpace(n.Title)
 		content := strings.TrimSpace(n.Content)
 		if utf8.RuneCountInString(title) >= 5 || utf8.RuneCountInString(content) >= 10 {
 			items = append(items, classifyItem{OrigIdx: i, Title: title, Content: content})
+		} else {
+			results[i] = ClassificationResult{Status: "skipped", Error: "内容过短"}
 		}
 	}
 
 	if len(items) == 0 {
 		logger.Debug("AI 新闻分类跳过：所有新闻正文过短", zap.Int("total", len(news)))
-		return make([][]string, len(news))
+		return results
 	}
 
 	logger.Debug("AI 新闻分类开始",
@@ -150,7 +164,6 @@ func (c *AINewsClassifier) ClassifyBatch(news []CLSNews) [][]string {
 	)
 
 	const batchSize = 10
-	results := make([][]string, len(news))
 	processed := make(map[int]bool)
 	taggedCount := 0
 
@@ -168,24 +181,29 @@ func (c *AINewsClassifier) ClassifyBatch(news []CLSNews) [][]string {
 				zap.Error(err),
 			)
 			for _, item := range batch {
-				processed[item.OrigIdx] = false
+				results[item.OrigIdx] = ClassificationResult{Status: "retry", Error: err.Error()}
+				processed[item.OrigIdx] = true
 			}
 			continue
 		}
 
 		for j, tagList := range tags {
 			origIdx := batch[j].OrigIdx
-			results[origIdx] = tagList
-			processed[origIdx] = true
 			if len(tagList) > 0 {
+				results[origIdx] = ClassificationResult{Status: "classified", Tags: tagList}
 				taggedCount++
+			} else {
+				results[origIdx] = ClassificationResult{Status: "retry", Error: "AI 未返回标签"}
 			}
+			processed[origIdx] = true
 		}
 	}
 
 	for i := range news {
 		if !processed[i] {
-			results[i] = nil
+			if results[i].Status == "" {
+				results[i] = ClassificationResult{Status: "retry", Error: "AI 分类未完成"}
+			}
 		}
 	}
 
@@ -198,17 +216,47 @@ func (c *AINewsClassifier) ClassifyBatch(news []CLSNews) [][]string {
 	return results
 }
 
+// classifyBatch 对一批新闻进行 AI 板块标签分类。
 func (c *AINewsClassifier) classifyBatch(items []classifyItem) ([][]string, error) {
-	newsJSON, _ := json.Marshal(items)
+	if len(items) == 0 {
+		return nil, nil
+	}
 
+	preClassified := make(map[int][]string)
+	needAI := make([]classifyItem, 0, len(items))
+	needAIIdxMap := make(map[int]int)
+
+	for _, item := range items {
+		tags := preFilterByKeywords(item.Title + " " + item.Content)
+		if tags != nil {
+			preClassified[item.OrigIdx] = tags
+		} else {
+			needAIIdxMap[item.OrigIdx] = len(needAI)
+			needAI = append(needAI, item)
+		}
+	}
+
+	if len(needAI) == 0 {
+		results := make([][]string, len(items))
+		for i, item := range items {
+			results[i] = preClassified[item.OrigIdx]
+		}
+		return results, nil
+	}
+
+	newsJSON, _ := json.Marshal(needAI)
 	sectorDesc := strings.Join(sectorTagDescriptions, "\n")
-	prompt := fmt.Sprintf(aiNewsClassifierPrompt, sectorDesc, string(newsJSON))
+	systemContent := fmt.Sprintf(systemPromptForClassifier, sectorDesc)
+	userContent := fmt.Sprintf(userPromptForClassifier, string(newsJSON))
 
 	body := map[string]any{
-		"model":       c.cfg.Model,
-		"messages":    []map[string]string{{"role": "user", "content": prompt}},
+		"model": c.cfg.Model,
+		"messages": []map[string]string{
+			{"role": "system", "content": systemContent},
+			{"role": "user", "content": userContent},
+		},
 		"temperature": 0.1,
-		"max_tokens":  4096,
+		"max_tokens":  2048,
 	}
 	bodyBytes, _ := json.Marshal(body)
 
@@ -271,13 +319,77 @@ func (c *AINewsClassifier) classifyBatch(items []classifyItem) ([][]string, erro
 
 		// success — return parsed results directly
 		content := result.Choices[0].Message.Content
-		return parseClassifyResult(content, items)
+		aiResults, err := parseClassifyResult(content, needAI)
+		if err != nil {
+			return nil, err
+		}
+
+		results := make([][]string, len(items))
+		for i, item := range items {
+			if tags, ok := preClassified[item.OrigIdx]; ok {
+				results[i] = tags
+			} else {
+				results[i] = aiResults[needAIIdxMap[item.OrigIdx]]
+			}
+		}
+		return results, nil
 	}
 
 	if lastErr != nil {
 		return nil, lastErr
 	}
 	return nil, fmt.Errorf("classifyBatch: unexpected exit")
+}
+
+func preFilterByKeywords(text string) []string {
+	lower := strings.ToLower(text)
+	matched := make(map[string]bool)
+
+	keywordMap := map[string][]string{
+		"半导体":     {"芯片", "集成电路", "晶圆", "光刻机", "封测", "eda", "半导体"},
+		"AI应用":   {"aigc", "ai+", "多模态", "ai智能体", "ai终端", "ai眼镜", "ai pc"},
+		"CPO概念":  {"共封装", "硅光", "光模块", "800g", "1.6t", "lpo", "光互联"},
+		"有色金属":   {"铜价", "铝价", "锌", "镍", "锡", "铅", "稀土", "黄金", "贵金属"},
+		"锂矿概念":   {"碳酸锂", "氢氧化锂", "盐湖提锂", "锂辉石", "锂云母"},
+		"商业航天":   {"商业火箭", "商业卫星", "卫星互联网", "低轨卫星", "星链", "太空经济"},
+		"电池":     {"固态电池", "锂电池", "磷酸铁锂", "钠离子电池", "动力电池", "储能电池"},
+		"机器人":    {"人形机器人", "具身智能", "减速器", "伺服电机", "灵巧手", "工业机器人"},
+		"创新药":    {"靶向药", "单抗", "双抗", "adc", "car-t", "glp-1", "临床试验", "fda批准"},
+		"白酒":     {"茅台", "五粮液", "酱酒", "酿酒", "白酒消费", "白酒动销"},
+		"消费电子":   {"手机", "折叠屏", "ar/vr", "可穿戴", "oled", "miniled", "ai pc"},
+		"银行":     {"商业银行", "净息差", "信贷", "存款", "不良率", "国有大行", "股份行"},
+		"人工智能":   {"大模型", "llm", "算力", "ai芯片", "机器学习", "深度学习", "nlp", "gpt"},
+		"云计算":    {"云服务", "iaas", "paas", "saas", "公有云", "私有云", "idc", "算力租赁"},
+		"低空经济":   {"evtol", "飞行汽车", "无人机", "空管", "低空基础设施", "通用航空"},
+		"电网设备":   {"特高压", "变压器", "智能电网", "配电网", "充电桩", "输变电"},
+		"通信设备":   {"5g", "6g", "基站", "光通信", "光纤光缆", "交换机"},
+		"传媒":     {"游戏", "影视", "短剧", "出版", "广告营销", "新媒体", "短视频", "直播", "ip"},
+		"国产芯片":   {"gpu", "npu", "ai芯片", "cpu", "信创", "自主可控", "操作系统", "华为芯片"},
+		"元件":     {"mlcc", "电容", "电阻", "电感", "连接器", "igbt", "mosfet", "传感器", "pcb"},
+		"通信服务":   {"移动", "电信", "联通", "5g套餐", "宽带", "云通信"},
+	}
+
+	for tag, keywords := range keywordMap {
+		for _, kw := range keywords {
+			if strings.Contains(lower, kw) {
+				matched[tag] = true
+				break
+			}
+		}
+	}
+
+	if len(matched) == 0 {
+		return nil
+	}
+
+	tags := make([]string, 0, len(matched))
+	for tag := range matched {
+		tags = append(tags, tag)
+	}
+	if len(tags) > 3 {
+		tags = tags[:3]
+	}
+	return tags
 }
 
 func parseClassifyResult(content string, items []classifyItem) ([][]string, error) {
@@ -289,6 +401,10 @@ func parseClassifyResult(content string, items []classifyItem) ([][]string, erro
 
 	var respData aiClassifyResponse
 	if err := json.Unmarshal([]byte(content), &respData); err != nil {
+		logger.Warn("AI 返回 JSON 解析失败",
+			zap.String("content", content),
+			zap.Error(err),
+		)
 		return nil, fmt.Errorf("parse AI JSON output: %w", err)
 	}
 

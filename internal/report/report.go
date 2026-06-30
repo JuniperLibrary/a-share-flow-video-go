@@ -180,6 +180,7 @@ func computeMarketOverview(r *DailyReport, sectors []storage.SectorAll) {
 	for _, s := range sectors {
 		item := SectorSummary{
 			Name:                 s.Name,
+			Category:             s.Category,
 			Net:                  s.Net,
 			ChangePct:            s.ChangePct,
 			SuperNet:             s.SuperNet,
@@ -373,14 +374,14 @@ func calculateRotationSpeed(r *DailyReport) string {
 	if len(r.TopInflows) == 0 || len(r.TopOutflows) == 0 {
 		return "慢"
 	}
-	
+
 	inflowSector := r.TopInflows[0]
 	outflowSector := r.TopOutflows[0]
-	
+
 	// 计算涨跌幅差异
 	inflowChange := inflowSector.ChangePct
 	outflowChange := outflowSector.ChangePct
-	
+
 	if inflowChange > 5 && outflowChange < -5 {
 		return "快"
 	} else if inflowChange > 2 && outflowChange < -2 {
@@ -393,7 +394,7 @@ func calculateRotationSpeed(r *DailyReport) string {
 // MarketStyleAnalysis 市场风格分析结构体
 func getHighDensitySectors(r *DailyReport) []string {
 	var highDensity []string
-	
+
 	if len(r.TopInflows) > 0 {
 		for i, s := range r.TopInflows {
 			if i < 3 && s.Net > 10 { // 资金超过10亿
@@ -401,14 +402,14 @@ func getHighDensitySectors(r *DailyReport) []string {
 			}
 		}
 	}
-	
+
 	return highDensity
 }
 
 // MarketStyleAnalysis 市场风格分析结构体
 func getLowDensitySectors(r *DailyReport) []string {
 	var lowDensity []string
-	
+
 	if len(r.TopOutflows) > 0 {
 		for i, s := range r.TopOutflows {
 			if i < 3 && s.Net < -5 { // 资金流出超过5亿
@@ -416,14 +417,14 @@ func getLowDensitySectors(r *DailyReport) []string {
 			}
 		}
 	}
-	
+
 	return lowDensity
 }
 
 // MarketStyleAnalysis 市场风格分析结构体
 func getProfessionalRecommendations(r *DailyReport, fundStruct FundStructureAnalysis, industryDist IndustryDistributionAnalysis) string {
 	var recommendations []string
-	
+
 	// 1. 资金结构建议
 	if fundStruct.FundType == "机构主导型" {
 		recommendations = append(recommendations, "关注机构持股板块，控制仓位")
@@ -432,12 +433,12 @@ func getProfessionalRecommendations(r *DailyReport, fundStruct FundStructureAnal
 	} else {
 		recommendations = append(recommendations, "市场风格温和，关注行业轮动")
 	}
-	
+
 	// 2. 行业龙头建议
 	if len(r.TopInflows) > 0 {
 		recommendations = append(recommendations, fmt.Sprintf("关注龙头%s的资金持续性", r.TopInflows[0].Name))
 	}
-	
+
 	// 3. 市场情绪建议
 	if fundStruct.RiskLevel == "高" {
 		recommendations = append(recommendations, "市场风险较高，建议减仓")
@@ -446,7 +447,7 @@ func getProfessionalRecommendations(r *DailyReport, fundStruct FundStructureAnal
 	} else {
 		recommendations = append(recommendations, "市场风险较低，可适度参与")
 	}
-	
+
 	return strings.Join(recommendations, "；")
 }
 

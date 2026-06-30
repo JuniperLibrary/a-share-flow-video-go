@@ -23,6 +23,20 @@ func Get() (*DB, error) {
 		} else {
 			globalDB, globalErr = New(config.GetDBPath())
 		}
+		if globalDB != nil {
+			config.SetAIConfigDBFuncs(
+				func() (map[string]string, bool) {
+					all, err := globalDB.GetAllAIConfig()
+					if err != nil || len(all) == 0 {
+						return nil, false
+					}
+					return all, true
+				},
+				func(key, value string) error {
+					return globalDB.SetAIConfigValue(key, value)
+				},
+			)
+		}
 	})
 	return globalDB, globalErr
 }

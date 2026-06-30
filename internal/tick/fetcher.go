@@ -219,9 +219,9 @@ func (tf *TickFetcher) run() {
 			continue
 		}
 
-		startMinute := rng.start
-		if currentMinute > rng.start {
-			startMinute = ((currentMinute-rng.start)/interval)*interval + rng.start
+		startMinute, ok := nextScheduledMinute(currentMinute, interval, rng)
+		if !ok {
+			continue
 		}
 
 		for minute := startMinute; minute <= rng.end; minute += interval {
@@ -235,7 +235,7 @@ func (tf *TickFetcher) run() {
 			if minute == 120 && rng.start == 0 {
 				timeStr = "11:30"
 			}
-			tf.collectTick(dateStr, timeStr, minute)
+			tf.collectTick(dateStr, timeStr)
 
 			if minute < rng.end {
 				select {
@@ -273,7 +273,7 @@ func nowTradingMinute() int {
 	return wallMin - morningStart - 90
 }
 
-func (tf *TickFetcher) collectTick(dateStr, timeStr string, minute int) {
+func (tf *TickFetcher) collectTick(dateStr, timeStr string) {
 	l := logger.With(zap.String("date", dateStr), zap.String("time", timeStr))
 
 	datetime := storage.DateToDatetimeTick(dateStr, timeStr)
@@ -287,7 +287,7 @@ func (tf *TickFetcher) collectTick(dateStr, timeStr string, minute int) {
 
 	l.Info("tick 采集")
 
-	sectors, err := fetcher.FetchTop21HotSectors()
+	sectors, err := FetchTickSectors()
 	if err != nil {
 		tf.mu.Lock()
 		tf.errCount++
@@ -362,6 +362,26 @@ type tradingRange struct {
 	start, end int
 }
 
+func nextScheduledMinute(currentMinute, interval int, rng tradingRange) (int, bool) {
+	if interval <= 0 {
+		return 0, false
+	}
+	if currentMinute <= rng.start {
+		return rng.start, true
+	}
+
+	offset := currentMinute - rng.start
+	remainder := offset % interval
+	next := currentMinute
+	if remainder != 0 {
+		next += interval - remainder
+	}
+	if next > rng.end {
+		return 0, false
+	}
+	return next, true
+}
+
 // tickSchedule 计算从 currentMinute 开始，以 interval 为步长，
 // 在 allRanges 范围内所有待采集的 (tradingMinute, timeStr) 列表。
 // 纯数学计算，不依赖时钟或 IO，用于测试验证调度逻辑。
@@ -377,9 +397,9 @@ func tickSchedule(currentMinute, interval int, allRanges []tradingRange) []struc
 		if rng.end < currentMinute {
 			continue
 		}
-		startMinute := rng.start
-		if currentMinute > rng.start {
-			startMinute = ((currentMinute-rng.start)/interval)*interval + rng.start
+		startMinute, ok := nextScheduledMinute(currentMinute, interval, rng)
+		if !ok {
+			continue
 		}
 		for minute := startMinute; minute <= rng.end; minute += interval {
 			timeStr := minutesToTime(minute)

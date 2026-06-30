@@ -85,14 +85,14 @@ type AIConfig struct {
 
 // moduleModelKeys 环境变量名 → 模块名的映射。
 var moduleModelKeys = map[string]string{
-	"AI_MODEL_CLSNEWS":         "clsnews",
-	"AI_MODEL_ANALYZER":        "analyzer",
+	"AI_MODEL_CLSNEWS":           "clsnews",
+	"AI_MODEL_ANALYZER":          "analyzer",
 	"AI_MODEL_ANALYZER_MULTIDAY": "analyzer_multiday",
-	"AI_MODEL_TICK":            "tick",
-	"AI_MODEL_COPY":            "copy",
-	"AI_MODEL_REPORT":          "report",
-	"AI_MODEL_TTS":             "tts",
-	"AI_MODEL_DEBATE":          "debate",
+	"AI_MODEL_TICK":              "tick",
+	"AI_MODEL_COPY":              "copy",
+	"AI_MODEL_REPORT":            "report",
+	"AI_MODEL_TTS":               "tts",
+	"AI_MODEL_DEBATE":            "debate",
 }
 
 // GetAIConfigFor 返回指定模块的 AI 配置，per-module model 覆盖默认 Model。
@@ -107,12 +107,27 @@ func GetAIConfigFor(module string) AIConfig {
 }
 
 var (
+	aiConfigDBReader func() (map[string]string, bool)
+	aiConfigDBWriter func(key, value string) error
+)
+
+// SetAIConfigDBFuncs registers database read/write functions for AI config.
+// Must be called at startup after storage is initialized.
+func SetAIConfigDBFuncs(reader func() (map[string]string, bool), writer func(key, value string) error) {
+	aiConfigDBReader = reader
+	aiConfigDBWriter = writer
+}
+
+var (
 	projectRoot string
 	rootOnce    sync.Once
 )
 
 // GetProjectRoot returns the project root directory.
 func GetProjectRoot() string {
+	if projectRoot != "" {
+		return projectRoot
+	}
 	rootOnce.Do(func() {
 		// Try working directory first
 		cwd, err := os.Getwd()
@@ -206,8 +221,33 @@ func LoadEnv() error {
 	return scanner.Err()
 }
 
-// GetAIConfig reads AI configuration from environment variables.
+// GetAIConfig reads AI configuration from database (primary) or .env (fallback).
 func GetAIConfig() AIConfig {
+	if aiConfigDBReader != nil {
+		if all, ok := aiConfigDBReader(); ok && len(all) > 0 {
+			cfg := AIConfig{
+				APIKey:  all["api_key"],
+				BaseURL: all["base_url"],
+				Model:   all["model"],
+				Models:  make(map[string]string),
+			}
+			if cfg.BaseURL == "" {
+				cfg.BaseURL = "https://api.openai.com/v1"
+			}
+			cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
+			if cfg.Model == "" {
+				cfg.Model = "gpt-4o-mini"
+			}
+			for _, module := range []string{"clsnews", "analyzer", "analyzer_multiday", "tick", "copy", "report", "tts", "debate"} {
+				if m := all["model_"+module]; m != "" {
+					cfg.Models[module] = m
+				}
+			}
+			if cfg.APIKey != "" {
+				return cfg
+			}
+		}
+	}
 	cfg := AIConfig{
 		APIKey:  os.Getenv("OPENAI_API_KEY"),
 		BaseURL: os.Getenv("OPENAI_BASE_URL"),
@@ -217,7 +257,6 @@ func GetAIConfig() AIConfig {
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = "https://api.openai.com/v1"
 	}
-	// Remove trailing slash
 	cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
 	if cfg.Model == "" {
 		cfg.Model = "gpt-4o-mini"
@@ -230,11 +269,18 @@ func GetAIConfig() AIConfig {
 	return cfg
 }
 
-// SaveAIConfig writes AI configuration to .env file.
+// SaveAIConfig writes AI configuration to database and .env file.
 func SaveAIConfig(cfg AIConfig) error {
-	envPath := GetEnvPath()
+	if aiConfigDBWriter != nil {
+		aiConfigDBWriter("api_key", cfg.APIKey)
+		aiConfigDBWriter("base_url", cfg.BaseURL)
+		aiConfigDBWriter("model", cfg.Model)
+		for module, model := range cfg.Models {
+			aiConfigDBWriter("model_"+module, model)
+		}
+	}
 
-	// Read existing .env to preserve other variables
+	envPath := GetEnvPath()
 	existing := make(map[string]string)
 	if f, err := os.Open(envPath); err == nil {
 		scanner := bufio.NewScanner(f)
@@ -251,12 +297,10 @@ func SaveAIConfig(cfg AIConfig) error {
 		f.Close()
 	}
 
-	// Update AI config
 	existing["OPENAI_API_KEY"] = cfg.APIKey
 	existing["OPENAI_BASE_URL"] = cfg.BaseURL
 	existing["AI_MODEL"] = cfg.Model
 
-	// Write back
 	f, err := os.Create(envPath)
 	if err != nil {
 		return fmt.Errorf("create .env: %w", err)

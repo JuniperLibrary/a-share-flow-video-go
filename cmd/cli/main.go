@@ -32,6 +32,14 @@ func main() {
 		logger.Fatal("SQLite 初始化失败", zap.Error(err))
 	}
 
+	db, err := storage.Get()
+	if err != nil {
+		logger.Fatal("获取数据库实例失败", zap.Error(err))
+	}
+	if err := db.MigrateAIConfigFromEnv(); err != nil {
+		logger.Warn("AI 配置迁移失败", zap.Error(err))
+	}
+
 	useAI := false
 	reportImage := false
 	session := ""
@@ -295,19 +303,11 @@ func processTickDate(dateStr string, sessionOverride string, useAI bool, format 
 		return false
 	}
 
-	today := time.Now().Format("2006-01-02")
 	var sessions []string
 	if sessionOverride != "" {
 		sessions = []string{sessionOverride}
-	} else if dateStr == today {
-		now := time.Now()
-		if now.Hour() < 13 {
-			sessions = []string{"morning"}
-		} else {
-			sessions = []string{"full"}
-		}
 	} else {
-		sessions = []string{"full", "morning"}
+		sessions = []string{"full"}
 	}
 
 	outputDir := config.GetOutputDir()
