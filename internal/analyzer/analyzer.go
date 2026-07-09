@@ -1,15 +1,13 @@
 package analyzer
 
 import (
-	"bytes"
-	"encoding/json"
+	"context"
 	"fmt"
-	"io"
-	"net/http"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/a-share-flow-video-go/internal/ai"
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/fetcher"
 	"github.com/a-share-flow-video-go/internal/logger"
@@ -395,75 +393,27 @@ func AIGenerate(sectors []fetcher.Sector, dateStr string, aiCfg config.AIConfig)
 
 	prompt := fmt.Sprintf(PromptDailyAnalysis, dataSummary)
 
-	body := map[string]any{
-		"model":       aiCfg.Model,
-		"messages":    []map[string]string{{"role": "user", "content": prompt}},
-		"temperature": 0.7,
-		"max_tokens":  3000,
+	var data struct {
+		TimelineEvents []TimelineEvent `json:"timelineEvents"`
+		TickerItems    []TickerItem    `json:"tickerItems"`
+		Events         []MarketEvent   `json:"events"`
 	}
-	bodyBytes, _ := json.Marshal(body)
-
-	req, _ := http.NewRequest("POST", aiCfg.BaseURL+"/chat/completions", bytes.NewReader(bodyBytes))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+aiCfg.APIKey)
-
-	client := &http.Client{Timeout: 180 * time.Second}
-
-	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
-		resp, err := client.Do(req)
-		if err != nil {
-			lastErr = err
-			if attempt == 0 {
-				time.Sleep(time.Second)
-				continue
-			}
-			return nil, nil, nil, lastErr
-		}
-
-		b, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		var result struct {
-			Choices []struct {
-				Message struct {
-					Content string `json:"content"`
-				} `json:"message"`
-			} `json:"choices"`
-		}
-		if err := json.Unmarshal(b, &result); err != nil {
-			return nil, nil, nil, fmt.Errorf("parse API response: %w", err)
-		}
-		if len(result.Choices) == 0 {
-			return nil, nil, nil, fmt.Errorf("empty choices from API")
-		}
-
-		content := result.Choices[0].Message.Content
-		jsonStr := extractJSON(content)
-		if jsonStr == "" {
+	if err := ai.ChatCompletionJSON(context.Background(), aiCfg, prompt, 0.7, 3000, &data); err != nil {
+		// 格式/解析异常视为降级信号（与原逻辑一致：返回 nil 三元组 + nil error），
+		// 传输类错误（超时等）则向上抛出由调用方决定是否降级。
+		if strings.Contains(err.Error(), "无法解析为 JSON") || strings.Contains(err.Error(), "解析 AI JSON 失败") {
 			logger.Warn("大模型返回格式异常")
 			return nil, nil, nil, nil
 		}
-
-		var data struct {
-			TimelineEvents []TimelineEvent `json:"timelineEvents"`
-			TickerItems    []TickerItem    `json:"tickerItems"`
-			Events         []MarketEvent   `json:"events"`
-		}
-		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
-			logger.Warn("JSON 解析失败", zap.Error(err))
-			return nil, nil, nil, nil
-		}
-
-		timeline := clampTimeline(data.TimelineEvents)
-		logger.Info("大模型生成",
-			zap.Int("events", len(data.Events)),
-			zap.Int("timeline", len(timeline)),
-			zap.Int("ticker", len(data.TickerItems)))
-		return data.Events, timeline, data.TickerItems, nil
+		return nil, nil, nil, err
 	}
 
-	return nil, nil, nil, lastErr
+	timeline := clampTimeline(data.TimelineEvents)
+	logger.Info("大模型生成",
+		zap.Int("events", len(data.Events)),
+		zap.Int("timeline", len(timeline)),
+		zap.Int("ticker", len(data.TickerItems)))
+	return data.Events, timeline, data.TickerItems, nil
 }
 
 // AnalyzeAllContent 统一入口：优先尝试 AI 生成，失败时自动降级到数据驱动生成。

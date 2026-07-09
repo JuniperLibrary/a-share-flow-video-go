@@ -407,6 +407,8 @@ func (s *NewsScheduler) classifyOneWorker(id int) {
 					}
 				case "skipped":
 					err = db.MarkCLSNewsSkipped(batch[i].ID, result.Error)
+				case "discarded":
+					err = db.MarkCLSNewsDiscarded(batch[i].ID, result.Error)
 				default:
 					err = db.RecordCLSNewsRetry(batch[i].ID, result.Error, maxClassificationRetries)
 				}

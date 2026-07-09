@@ -769,19 +769,22 @@ func normalizeCLSNewsStatusFilter(status string) string {
 	switch strings.TrimSpace(status) {
 	case "", "all":
 		return ""
-	case "pending", "retrying", "failed", "skipped", "classified":
+	case "pending", "retrying", "failed", "skipped", "classified", "discarded":
 		return strings.TrimSpace(status)
 	default:
 		return ""
 	}
 }
 
-func clsNewsStatusCondition(status string) (string, []any) {
+func clsNewsStatusFilter(status string) (string, []any) {
 	normalized := normalizeCLSNewsStatusFilter(status)
 	if normalized == "" {
-		return "", nil
+		return " AND classify_status != 'discarded'", nil
 	}
-	return " WHERE classify_status = ?", []any{normalized}
+	if normalized == "discarded" {
+		return " AND classify_status = 'discarded'", nil
+	}
+	return " AND classify_status = ?", []any{normalized}
 }
 
 // UpdateCLSNewsSectors 更新单条新闻的板块标签并标记为已分类。
@@ -796,6 +799,14 @@ func (db *DB) MarkCLSNewsSkipped(id int64, reason string) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	_, err := db.db.Exec(`UPDATE cls_news SET classify_status = 'skipped', last_error = ? WHERE id = ?`, reason, id)
+	return err
+}
+
+// MarkCLSNewsDiscarded 标记新闻为已丢弃（AI 未返回标签）。
+func (db *DB) MarkCLSNewsDiscarded(id int64, reason string) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	_, err := db.db.Exec(`UPDATE cls_news SET classify_status = 'discarded', last_error = ? WHERE id = ?`, reason, id)
 	return err
 }
 
@@ -913,10 +924,10 @@ func (db *DB) LoadLatestNewsByStatus(limit, offset int, status string) ([]CLSNew
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
-	whereClause, args := clsNewsStatusCondition(status)
+	whereClause, args := clsNewsStatusFilter(status)
 	args = append(args, limit, offset)
 	rows, err := db.db.Query(
-		`SELECT id, title, content, brief, level, reading_num, ctime, shareurl, sectors, classify_status, retry_count, last_retry_at, last_error, created_at FROM cls_news`+
+		`SELECT id, title, content, brief, level, reading_num, ctime, shareurl, sectors, classify_status, retry_count, last_retry_at, last_error, created_at FROM cls_news WHERE 1=1`+
 			whereClause+
 			` ORDER BY ctime DESC LIMIT ? OFFSET ?`,
 		args...,
@@ -977,13 +988,10 @@ func (db *DB) LoadNewsByDateAndStatus(date string, limit, offset int, status str
 	defer db.mu.RUnlock()
 
 	prefix := date + "%"
-	statusClause, statusArgs := clsNewsStatusCondition(status)
-	baseWhere := " WHERE ctime LIKE ?"
+	statusClause, statusArgs := clsNewsStatusFilter(status)
 	args := []any{prefix}
-	if statusClause != "" {
-		baseWhere += " AND classify_status = ?"
-		args = append(args, statusArgs...)
-	}
+	baseWhere := " WHERE ctime LIKE ?" + statusClause
+	args = append(args, statusArgs...)
 
 	var total int
 	err := db.db.QueryRow("SELECT COUNT(*) FROM cls_news"+baseWhere, args...).Scan(&total)
@@ -1019,13 +1027,10 @@ func (db *DB) SearchCLSNewsByStatus(keyword string, limit, offset int, status st
 	defer db.mu.RUnlock()
 
 	like := "%" + keyword + "%"
-	statusClause, statusArgs := clsNewsStatusCondition(status)
-	baseWhere := " WHERE (title LIKE ? OR content LIKE ?)"
+	statusClause, statusArgs := clsNewsStatusFilter(status)
 	args := []any{like, like}
-	if statusClause != "" {
-		baseWhere += " AND classify_status = ?"
-		args = append(args, statusArgs...)
-	}
+	baseWhere := " WHERE (title LIKE ? OR content LIKE ?)" + statusClause
+	args = append(args, statusArgs...)
 
 	var total int
 	err := db.db.QueryRow("SELECT COUNT(*) FROM cls_news"+baseWhere, args...).Scan(&total)
@@ -1061,8 +1066,8 @@ func (db *DB) GetCLSNewsCountByStatus(status string) (int, error) {
 	defer db.mu.RUnlock()
 
 	var count int
-	whereClause, args := clsNewsStatusCondition(status)
-	err := db.db.QueryRow("SELECT COUNT(*) FROM cls_news"+whereClause, args...).Scan(&count)
+	whereClause, args := clsNewsStatusFilter(status)
+	err := db.db.QueryRow("SELECT COUNT(*) FROM cls_news WHERE 1=1"+whereClause, args...).Scan(&count)
 	return count, err
 }
 
@@ -1412,17 +1417,17 @@ func (db *DB) MigrateAIConfigFromEnv() error {
 	}
 
 	envConfig := map[string]string{
-		"api_key":        os.Getenv("OPENAI_API_KEY"),
-		"base_url":       os.Getenv("OPENAI_BASE_URL"),
-		"model":          os.Getenv("AI_MODEL"),
-		"model_clsnews":  os.Getenv("AI_MODEL_CLSNEWS"),
-		"model_analyzer": os.Getenv("AI_MODEL_ANALYZER"),
+		"api_key":                 os.Getenv("OPENAI_API_KEY"),
+		"base_url":                os.Getenv("OPENAI_BASE_URL"),
+		"model":                   os.Getenv("AI_MODEL"),
+		"model_clsnews":           os.Getenv("AI_MODEL_CLSNEWS"),
+		"model_analyzer":          os.Getenv("AI_MODEL_ANALYZER"),
 		"model_analyzer_multiday": os.Getenv("AI_MODEL_ANALYZER_MULTIDAY"),
-		"model_tick":     os.Getenv("AI_MODEL_TICK"),
-		"model_copy":     os.Getenv("AI_MODEL_COPY"),
-		"model_report":   os.Getenv("AI_MODEL_REPORT"),
-		"model_tts":      os.Getenv("AI_MODEL_TTS"),
-		"model_debate":   os.Getenv("AI_MODEL_DEBATE"),
+		"model_tick":              os.Getenv("AI_MODEL_TICK"),
+		"model_copy":              os.Getenv("AI_MODEL_COPY"),
+		"model_report":            os.Getenv("AI_MODEL_REPORT"),
+		"model_tts":               os.Getenv("AI_MODEL_TTS"),
+		"model_debate":            os.Getenv("AI_MODEL_DEBATE"),
 	}
 
 	db.mu.Lock()

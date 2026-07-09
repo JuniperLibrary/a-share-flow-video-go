@@ -1,15 +1,12 @@
 package analyzer
 
 import (
-	"bytes"
-	"encoding/json"
+	"context"
 	"fmt"
-	"io"
-	"net/http"
 	"sort"
 	"strings"
-	"time"
 
+	"github.com/a-share-flow-video-go/internal/ai"
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/fetcher"
 	"github.com/a-share-flow-video-go/internal/logger"
@@ -172,70 +169,22 @@ func AIGenerateMultiDay(dayData map[string][]fetcher.Sector, dates []string, aiC
 - 板块名必须与数据摘要中完全一致
 - 数值单位统一为"亿"，保留1位小数`, len(dates), dataSummary)
 
-	body := map[string]any{
-		"model":       aiCfg.Model,
-		"messages":    []map[string]string{{"role": "user", "content": prompt}},
-		"temperature": 0.7,
-		"max_tokens":  3000,
-	}
-	bodyBytes, _ := json.Marshal(body)
-
-	req, _ := http.NewRequest("POST", aiCfg.BaseURL+"/chat/completions", bytes.NewReader(bodyBytes))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+aiCfg.APIKey)
-
-	client := &http.Client{Timeout: 180 * time.Second}
-
-	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
-		resp, err := client.Do(req)
-		if err != nil {
-			lastErr = err
-			if attempt == 0 {
-				time.Sleep(time.Second)
-				continue
-			}
-			return MultiDayAnalysis{}, lastErr
-		}
-
-		b, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		var result struct {
-			Choices []struct {
-				Message struct {
-					Content string `json:"content"`
-				} `json:"message"`
-			} `json:"choices"`
-		}
-		if err := json.Unmarshal(b, &result); err != nil {
-			return MultiDayAnalysis{}, fmt.Errorf("parse API response: %w", err)
-		}
-		if len(result.Choices) == 0 {
-			return MultiDayAnalysis{}, fmt.Errorf("empty choices from API")
-		}
-
-		content := result.Choices[0].Message.Content
-		jsonStr := extractJSON(content)
-		if jsonStr == "" {
+	var data MultiDayAnalysis
+	if err := ai.ChatCompletionJSON(context.Background(), aiCfg, prompt, 0.7, 3000, &data); err != nil {
+		// 格式/解析异常视为降级信号（与原逻辑一致：返回空结构体 + nil error），
+		// 传输类错误（超时等）则向上抛出由调用方决定是否降级。
+		if strings.Contains(err.Error(), "无法解析为 JSON") || strings.Contains(err.Error(), "解析 AI JSON 失败") {
 			logger.Warn("多日分析：大模型返回格式异常")
 			return MultiDayAnalysis{}, nil
 		}
-
-		var data MultiDayAnalysis
-		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
-			logger.Warn("多日分析：JSON 解析失败", zap.Error(err))
-			return MultiDayAnalysis{}, nil
-		}
-
-		logger.Info("多日分析：大模型生成",
-			zap.Int("trends", len(data.TrendInsights)),
-			zap.Int("changes", len(data.RankingChanges)),
-			zap.Int("ticker", len(data.TickerItems)))
-		return data, nil
+		return MultiDayAnalysis{}, err
 	}
 
-	return MultiDayAnalysis{}, lastErr
+	logger.Info("多日分析：大模型生成",
+		zap.Int("trends", len(data.TrendInsights)),
+		zap.Int("changes", len(data.RankingChanges)),
+		zap.Int("ticker", len(data.TickerItems)))
+	return data, nil
 }
 
 // DataDrivenMultiDay 数据驱动降级方案。
@@ -375,9 +324,9 @@ func DataDrivenMultiDay(dayData map[string][]fetcher.Sector, dates []string) Mul
 	}
 
 	logger.Info("多日分析：数据驱动生成",
-			zap.Int("trends", len(insights)),
-			zap.Int("changes", len(rankingChanges)),
-			zap.Int("ticker", len(tickers)))
+		zap.Int("trends", len(insights)),
+		zap.Int("changes", len(rankingChanges)),
+		zap.Int("ticker", len(tickers)))
 	return summary
 }
 

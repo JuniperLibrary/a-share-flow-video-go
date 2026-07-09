@@ -1,16 +1,14 @@
 package tick
 
 import (
-	"bytes"
-	"encoding/json"
+	"context"
 	"fmt"
-	"io"
 	"math"
-	"net/http"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/a-share-flow-video-go/internal/ai"
 	"github.com/a-share-flow-video-go/internal/analyzer"
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/logger"
@@ -91,13 +89,13 @@ func TickDataDrivenGenerate(points []TickPoint, session string) ([]analyzer.Mark
 	}
 
 	type RankChange struct {
-		Time       string
-		Minutes    int
-		Sector     string
-		FromRank   int
-		ToRank     int
-		PrevNet    float64
-		CurrNet    float64
+		Time     string
+		Minutes  int
+		Sector   string
+		FromRank int
+		ToRank   int
+		PrevNet  float64
+		CurrNet  float64
 	}
 	var rankChanges []RankChange
 	for i := 1; i < len(timeOrder); i++ {
@@ -300,15 +298,15 @@ func TickDataDrivenGenerate(points []TickPoint, session string) ([]analyzer.Mark
 		}
 		events = append(events, analyzer.MarketEvent{
 			EventType: "market", Frame: totalFrames * 3 / 100,
-			Text:    "A股开盘",
-			Subtext: fmt.Sprintf("资金%s，%d板块主力流入", sentimentStr, inflowCount),
+			Text:       "A股开盘",
+			Subtext:    fmt.Sprintf("资金%s，%d板块主力流入", sentimentStr, inflowCount),
 			Importance: 2,
 		})
 		if len(topFirst) > 0 {
 			events = append(events, analyzer.MarketEvent{
 				EventType: "concentration", Frame: totalFrames * 12 / 100,
-				Text:    fmt.Sprintf("%s开盘领涨", topFirst[0].Name),
-				Subtext: fmt.Sprintf("净流入%.1f亿，多头集结", topFirst[0].Net),
+				Text:       fmt.Sprintf("%s开盘领涨", topFirst[0].Name),
+				Subtext:    fmt.Sprintf("净流入%.1f亿，多头集结", topFirst[0].Net),
 				Importance: 3,
 			})
 		}
@@ -320,10 +318,10 @@ func TickDataDrivenGenerate(points []TickPoint, session string) ([]analyzer.Mark
 		}
 		frame := timeMinutesToFrame(sp.Minutes, totalFrames)
 		events = append(events, analyzer.MarketEvent{
-			EventType: ifElse(sp.IsInflow, "sentiment", "aberration"),
-			Frame:     frame,
-			Text:      fmt.Sprintf("%s资金%s", sp.Sector, ifElse(sp.IsInflow, "加速涌入", "加速流出")),
-			Subtext:   fmt.Sprintf("单时段%s%.1f亿", ifElse(sp.IsInflow, "净流入", "净流出"), absF(sp.Delta)),
+			EventType:  ifElse(sp.IsInflow, "sentiment", "aberration"),
+			Frame:      frame,
+			Text:       fmt.Sprintf("%s资金%s", sp.Sector, ifElse(sp.IsInflow, "加速涌入", "加速流出")),
+			Subtext:    fmt.Sprintf("单时段%s%.1f亿", ifElse(sp.IsInflow, "净流入", "净流出"), absF(sp.Delta)),
 			Importance: ifElseInt(absF(sp.Delta) > 10, 3, 2),
 		})
 	}
@@ -334,10 +332,10 @@ func TickDataDrivenGenerate(points []TickPoint, session string) ([]analyzer.Mark
 		}
 		frame := timeMinutesToFrame(rc.Minutes, totalFrames)
 		events = append(events, analyzer.MarketEvent{
-			EventType: "rotation",
-			Frame:     frame,
-			Text:      fmt.Sprintf("%s板块轮动", rc.Sector),
-			Subtext:   fmt.Sprintf("排名从第%d变化至第%d", rc.FromRank, rc.ToRank),
+			EventType:  "rotation",
+			Frame:      frame,
+			Text:       fmt.Sprintf("%s板块轮动", rc.Sector),
+			Subtext:    fmt.Sprintf("排名从第%d变化至第%d", rc.FromRank, rc.ToRank),
 			Importance: 2,
 		})
 	}
@@ -345,8 +343,8 @@ func TickDataDrivenGenerate(points []TickPoint, session string) ([]analyzer.Mark
 	conclusion := buildConclusionFromCumulative(cumulative) + " 你最看好哪个方向？"
 	events = append(events, analyzer.MarketEvent{
 		EventType: "market", Frame: totalFrames * 95 / 100,
-		Text:    "资金流总结",
-		Subtext: conclusion,
+		Text:       "资金流总结",
+		Subtext:    conclusion,
 		Importance: 3,
 	})
 
@@ -477,74 +475,26 @@ func AITickGenerate(points []TickPoint, dateStr string, session string, aiCfg co
 
 	prompt := fmt.Sprintf(PromptTickAnalysis, dataSummary)
 
-	body := map[string]any{
-		"model":       aiCfg.Model,
-		"messages":    []map[string]string{{"role": "user", "content": prompt}},
-		"temperature": 0.7,
-		"max_tokens":  3000,
+	var data struct {
+		TimelineEvents []analyzer.TimelineEvent `json:"timelineEvents"`
+		TickerItems    []analyzer.TickerItem    `json:"tickerItems"`
+		Events         []analyzer.MarketEvent   `json:"events"`
 	}
-	bodyBytes, _ := json.Marshal(body)
-
-	req, _ := http.NewRequest("POST", aiCfg.BaseURL+"/chat/completions", bytes.NewReader(bodyBytes))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+aiCfg.APIKey)
-
-	client := &http.Client{Timeout: 180 * time.Second}
-
-	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
-		resp, err := client.Do(req)
-		if err != nil {
-			lastErr = err
-			if attempt == 0 {
-				time.Sleep(time.Second)
-				continue
-			}
-			return nil, nil, nil, lastErr
-		}
-
-		b, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		var result struct {
-			Choices []struct {
-				Message struct {
-					Content string `json:"content"`
-				} `json:"message"`
-			} `json:"choices"`
-		}
-		if err := json.Unmarshal(b, &result); err != nil {
-			return nil, nil, nil, fmt.Errorf("parse API response: %w", err)
-		}
-		if len(result.Choices) == 0 {
-			return nil, nil, nil, fmt.Errorf("empty choices from API")
-		}
-
-		content := result.Choices[0].Message.Content
-		jsonStr := extractJSON(content)
-		if jsonStr == "" {
+	if err := ai.ChatCompletionJSON(context.Background(), aiCfg, prompt, 0.7, 3000, &data); err != nil {
+		// 格式/解析异常视为降级信号（与原逻辑一致：返回 nil 三元组 + nil error），
+		// 传输类错误（超时等）则向上抛出由调用方决定是否降级。
+		if strings.Contains(err.Error(), "无法解析为 JSON") || strings.Contains(err.Error(), "解析 AI JSON 失败") {
 			logger.Warn("大模型返回格式异常")
 			return nil, nil, nil, nil
 		}
-
-		var data struct {
-			TimelineEvents []analyzer.TimelineEvent `json:"timelineEvents"`
-			TickerItems    []analyzer.TickerItem    `json:"tickerItems"`
-			Events         []analyzer.MarketEvent   `json:"events"`
-		}
-		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
-			logger.Warn("JSON 解析失败", zap.Error(err))
-			return nil, nil, nil, nil
-		}
-
-		logger.Info("游资视角AI分析",
-			zap.Int("events", len(data.Events)),
-			zap.Int("timeline", len(data.TimelineEvents)),
-			zap.Int("ticker", len(data.TickerItems)))
-		return data.Events, data.TimelineEvents, data.TickerItems, nil
+		return nil, nil, nil, err
 	}
 
-	return nil, nil, nil, lastErr
+	logger.Info("游资视角AI分析",
+		zap.Int("events", len(data.Events)),
+		zap.Int("timeline", len(data.TimelineEvents)),
+		zap.Int("ticker", len(data.TickerItems)))
+	return data.Events, data.TimelineEvents, data.TickerItems, nil
 }
 
 // AnalyzeTickContent Tick 事件分析统一入口：优先尝试 AI 游资复盘生成，失败时自动降级到数据驱动生成。
@@ -565,28 +515,6 @@ func AnalyzeTickContent(points []TickPoint, dateStr string, session string) ([]a
 		return TickDataDrivenGenerate(points, session)
 	}
 	return analyzer.FilterBySession(events, timeline, ticker, session)
-}
-
-func extractJSON(content string) string {
-	s := strings.TrimSpace(content)
-	// 去除 markdown 代码块包装 ```json ... ```
-	if strings.HasPrefix(s, "```") {
-		s = strings.TrimPrefix(s, "```json")
-		s = strings.TrimPrefix(s, "```")
-		if idx := strings.LastIndex(s, "```"); idx >= 0 {
-			s = s[:idx]
-		}
-		s = strings.TrimSpace(s)
-	}
-	start := strings.Index(s, "{")
-	if start == -1 {
-		return ""
-	}
-	end := strings.LastIndex(s, "}")
-	if end == -1 || end < start {
-		return ""
-	}
-	return s[start : end+1]
 }
 
 func parseDateDisplay(dateStr string) string {

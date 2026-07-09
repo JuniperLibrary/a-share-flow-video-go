@@ -1,15 +1,14 @@
 package report
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/a-share-flow-video-go/internal/ai"
 	"github.com/a-share-flow-video-go/internal/analyzer"
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/fetcher"
@@ -294,18 +293,6 @@ func toSectorAll(sectors []storage.Sector) []storage.SectorAll {
 	return result
 }
 
-func extractJSON(content string) string {
-	start := strings.Index(content, "{")
-	if start == -1 {
-		return ""
-	}
-	end := strings.LastIndex(content, "}")
-	if end == -1 || end < start {
-		return ""
-	}
-	return content[start : end+1]
-}
-
 func parseDateDisplay(dateStr string) string {
 	t, err := time.Parse("2006-01-02", dateStr)
 	if err != nil {
@@ -519,58 +506,14 @@ func AIGenerateThematic(dateStr string, r *DailyReport, sectors []storage.Sector
 		getProfessionalRecommendations(r, fundStructure, industryDist),
 	)
 
-	body := map[string]any{
-		"model":       aiCfg.Model,
-		"messages":    []map[string]string{{"role": "user", "content": prompt}},
-		"temperature": 0.5,
-		"max_tokens":  4096,
-	}
-	bodyBytes, _ := json.Marshal(body)
-
-	req, _ := http.NewRequest("POST", aiCfg.BaseURL+"/chat/completions", bytes.NewReader(bodyBytes))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+aiCfg.APIKey)
-
-	client := &http.Client{Timeout: 180 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", "", nil, nil, fmt.Errorf("API request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		return "", "", nil, nil, fmt.Errorf("API HTTP %d: %s", resp.StatusCode, string(b))
-	}
-
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", "", nil, nil, fmt.Errorf("decode response: %w", err)
-	}
-	if len(result.Choices) == 0 {
-		return "", "", nil, nil, fmt.Errorf("empty choices")
-	}
-
-	content := result.Choices[0].Message.Content
-	jsonStr := extractJSON(content)
-	if jsonStr == "" {
-		return "", "", nil, nil, fmt.Errorf("no JSON in AI response")
-	}
-
 	var aiResult struct {
 		Reasoning     string         `json:"reasoning"`
 		Summary       string         `json:"summary"`
 		Outlook       string         `json:"outlook"`
 		ThematicCards []ThematicCard `json:"thematicCards"`
 	}
-	if err := json.Unmarshal([]byte(jsonStr), &aiResult); err != nil {
-		return "", "", nil, nil, fmt.Errorf("parse AI JSON: %w", err)
+	if err := ai.ChatCompletionJSON(context.Background(), aiCfg, prompt, 0.5, 4096, &aiResult); err != nil {
+		return "", "", nil, nil, fmt.Errorf("AI 日报生成失败: %w", err)
 	}
 
 	logger.Info("日报 AI 生成成功",

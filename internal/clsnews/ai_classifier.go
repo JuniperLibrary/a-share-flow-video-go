@@ -1,15 +1,13 @@
 package clsnews
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
-	"time"
 	"unicode/utf8"
 
+	"github.com/a-share-flow-video-go/internal/ai"
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/logger"
 	"go.uber.org/zap"
@@ -17,8 +15,7 @@ import (
 
 // AINewsClassifier 使用大模型对新闻进行板块标签分类。
 type AINewsClassifier struct {
-	cfg    config.AIConfig
-	client *http.Client
+	cfg config.AIConfig
 }
 
 type aiClassifyResult struct {
@@ -31,14 +28,14 @@ type aiClassifyResponse struct {
 
 type ClassificationResult struct {
 	Tags   []string
-	Status string
+	Status string // "classified", "skipped", "discarded", "retry"
 	Error  string
 }
 
 type classifyItem struct {
 	OrigIdx int    `json:"idx"`
-	Title    string `json:"title"`
-	Content  string `json:"content"`
+	Title   string `json:"title"`
+	Content string `json:"content"`
 }
 
 // sectorTagDescriptions 21 个监控板块的描述，用于 AI prompt。
@@ -97,9 +94,6 @@ const userPromptForClassifier = `## 输入新闻（JSON数组）
 func NewAINewsClassifier(cfg config.AIConfig) *AINewsClassifier {
 	return &AINewsClassifier{
 		cfg: cfg,
-		client: &http.Client{
-			Timeout: 180 * time.Second,
-		},
 	}
 }
 
@@ -193,7 +187,7 @@ func (c *AINewsClassifier) ClassifyBatch(news []CLSNews) []ClassificationResult 
 				results[origIdx] = ClassificationResult{Status: "classified", Tags: tagList}
 				taggedCount++
 			} else {
-				results[origIdx] = ClassificationResult{Status: "retry", Error: "AI 未返回标签"}
+				results[origIdx] = ClassificationResult{Status: "discarded", Error: "AI 未返回标签"}
 			}
 			processed[origIdx] = true
 		}
@@ -249,96 +243,29 @@ func (c *AINewsClassifier) classifyBatch(items []classifyItem) ([][]string, erro
 	systemContent := fmt.Sprintf(systemPromptForClassifier, sectorDesc)
 	userContent := fmt.Sprintf(userPromptForClassifier, string(newsJSON))
 
-	body := map[string]any{
-		"model": c.cfg.Model,
-		"messages": []map[string]string{
-			{"role": "system", "content": systemContent},
-			{"role": "user", "content": userContent},
-		},
-		"temperature": 0.1,
-		"max_tokens":  4096,
-	}
-	bodyBytes, _ := json.Marshal(body)
-
-	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
-		if attempt > 0 {
-			backoff := time.Duration(attempt+1) * 500 * time.Millisecond
-			logger.Debug("AI 新闻分类重试",
-				zap.Int("attempt", attempt+1),
-				zap.Duration("backoff", backoff),
-				zap.Error(lastErr),
-			)
-			time.Sleep(backoff)
-		}
-
-		req, err := http.NewRequest("POST", c.cfg.BaseURL+"/chat/completions", bytes.NewReader(bodyBytes))
-		if err != nil {
-			lastErr = fmt.Errorf("create request: %w", err)
-			continue
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
-
-		resp, err := c.client.Do(req)
-		if err != nil {
-			lastErr = fmt.Errorf("API request: %w", err)
-			continue
-		}
-
-		b, readErr := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if readErr != nil {
-			lastErr = fmt.Errorf("read response: %w", readErr)
-			continue
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			lastErr = fmt.Errorf("API HTTP %d: %s", resp.StatusCode, string(b))
-			if resp.StatusCode >= 500 {
-				continue
-			}
-			return nil, lastErr
-		}
-
-		var result struct {
-			Choices []struct {
-				Message struct {
-					Content string `json:"content"`
-				} `json:"message"`
-			} `json:"choices"`
-		}
-		if err := json.Unmarshal(b, &result); err != nil {
-			lastErr = fmt.Errorf("parse API response: %w", err)
-			continue
-		}
-		if len(result.Choices) == 0 {
-			lastErr = fmt.Errorf("empty choices from API")
-			continue
-		}
-
-		// success — return parsed results directly
-		content := result.Choices[0].Message.Content
-		aiResults, err := parseClassifyResult(content, needAI)
-		if err != nil {
-			return nil, err
-		}
-
-		results := make([][]string, len(items))
-		for i, item := range items {
-			if tags, ok := preClassified[item.OrigIdx]; ok {
-				results[i] = tags
-			} else {
-				results[i] = aiResults[needAIIdxMap[item.OrigIdx]]
-			}
-		}
-		return results, nil
+	content, err := ai.ChatCompletionRaw(context.Background(), c.cfg,
+		[]ai.ChatMessage{
+			{Role: "system", Content: systemContent},
+			{Role: "user", Content: userContent},
+		}, 0.1, 4096)
+	if err != nil {
+		return nil, fmt.Errorf("新闻分类 AI 请求失败: %w", err)
 	}
 
-	if lastErr != nil {
-		return nil, lastErr
+	aiResults, err := parseClassifyResult(content, needAI)
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("classifyBatch: unexpected exit")
+
+	results := make([][]string, len(items))
+	for i, item := range items {
+		if tags, ok := preClassified[item.OrigIdx]; ok {
+			results[i] = tags
+		} else {
+			results[i] = aiResults[needAIIdxMap[item.OrigIdx]]
+		}
+	}
+	return results, nil
 }
 
 func preFilterByKeywords(text string) []string {
@@ -346,27 +273,27 @@ func preFilterByKeywords(text string) []string {
 	matched := make(map[string]bool)
 
 	keywordMap := map[string][]string{
-		"半导体":     {"芯片", "集成电路", "晶圆", "光刻机", "封测", "eda", "半导体"},
-		"AI应用":   {"aigc", "ai+", "多模态", "ai智能体", "ai终端", "ai眼镜", "ai pc"},
-		"CPO概念":  {"共封装", "硅光", "光模块", "800g", "1.6t", "lpo", "光互联"},
-		"有色金属":   {"铜价", "铝价", "锌", "镍", "锡", "铅", "稀土", "黄金", "贵金属"},
-		"锂矿概念":   {"碳酸锂", "氢氧化锂", "盐湖提锂", "锂辉石", "锂云母"},
-		"商业航天":   {"商业火箭", "商业卫星", "卫星互联网", "低轨卫星", "星链", "太空经济"},
-		"电池":     {"固态电池", "锂电池", "磷酸铁锂", "钠离子电池", "动力电池", "储能电池"},
-		"机器人":    {"人形机器人", "具身智能", "减速器", "伺服电机", "灵巧手", "工业机器人"},
-		"创新药":    {"靶向药", "单抗", "双抗", "adc", "car-t", "glp-1", "临床试验", "fda批准"},
-		"白酒":     {"茅台", "五粮液", "酱酒", "酿酒", "白酒消费", "白酒动销"},
-		"消费电子":   {"手机", "折叠屏", "ar/vr", "可穿戴", "oled", "miniled", "ai pc"},
-		"银行":     {"商业银行", "净息差", "信贷", "存款", "不良率", "国有大行", "股份行"},
-		"人工智能":   {"大模型", "llm", "算力", "ai芯片", "机器学习", "深度学习", "nlp", "gpt"},
-		"云计算":    {"云服务", "iaas", "paas", "saas", "公有云", "私有云", "idc", "算力租赁"},
-		"低空经济":   {"evtol", "飞行汽车", "无人机", "空管", "低空基础设施", "通用航空"},
-		"电网设备":   {"特高压", "变压器", "智能电网", "配电网", "充电桩", "输变电"},
-		"通信设备":   {"5g", "6g", "基站", "光通信", "光纤光缆", "交换机"},
-		"传媒":     {"游戏", "影视", "短剧", "出版", "广告营销", "新媒体", "短视频", "直播", "ip"},
-		"国产芯片":   {"gpu", "npu", "ai芯片", "cpu", "信创", "自主可控", "操作系统", "华为芯片"},
-		"元件":     {"mlcc", "电容", "电阻", "电感", "连接器", "igbt", "mosfet", "传感器", "pcb"},
-		"通信服务":   {"移动", "电信", "联通", "5g套餐", "宽带", "云通信"},
+		"半导体":   {"芯片", "集成电路", "晶圆", "光刻机", "封测", "eda", "半导体"},
+		"AI应用":  {"aigc", "ai+", "多模态", "ai智能体", "ai终端", "ai眼镜", "ai pc"},
+		"CPO概念": {"共封装", "硅光", "光模块", "800g", "1.6t", "lpo", "光互联"},
+		"有色金属":  {"铜价", "铝价", "锌", "镍", "锡", "铅", "稀土", "黄金", "贵金属"},
+		"锂矿概念":  {"碳酸锂", "氢氧化锂", "盐湖提锂", "锂辉石", "锂云母"},
+		"商业航天":  {"商业火箭", "商业卫星", "卫星互联网", "低轨卫星", "星链", "太空经济"},
+		"电池":    {"固态电池", "锂电池", "磷酸铁锂", "钠离子电池", "动力电池", "储能电池"},
+		"机器人":   {"人形机器人", "具身智能", "减速器", "伺服电机", "灵巧手", "工业机器人"},
+		"创新药":   {"靶向药", "单抗", "双抗", "adc", "car-t", "glp-1", "临床试验", "fda批准"},
+		"白酒":    {"茅台", "五粮液", "酱酒", "酿酒", "白酒消费", "白酒动销"},
+		"消费电子":  {"手机", "折叠屏", "ar/vr", "可穿戴", "oled", "miniled", "ai pc"},
+		"银行":    {"商业银行", "净息差", "信贷", "存款", "不良率", "国有大行", "股份行"},
+		"人工智能":  {"大模型", "llm", "算力", "ai芯片", "机器学习", "深度学习", "nlp", "gpt"},
+		"云计算":   {"云服务", "iaas", "paas", "saas", "公有云", "私有云", "idc", "算力租赁"},
+		"低空经济":  {"evtol", "飞行汽车", "无人机", "空管", "低空基础设施", "通用航空"},
+		"电网设备":  {"特高压", "变压器", "智能电网", "配电网", "充电桩", "输变电"},
+		"通信设备":  {"5g", "6g", "基站", "光通信", "光纤光缆", "交换机"},
+		"传媒":    {"游戏", "影视", "短剧", "出版", "广告营销", "新媒体", "短视频", "直播", "ip"},
+		"国产芯片":  {"gpu", "npu", "ai芯片", "cpu", "信创", "自主可控", "操作系统", "华为芯片"},
+		"元件":    {"mlcc", "电容", "电阻", "电感", "连接器", "igbt", "mosfet", "传感器", "pcb"},
+		"通信服务":  {"移动", "电信", "联通", "5g套餐", "宽带", "云通信"},
 	}
 
 	for tag, keywords := range keywordMap {

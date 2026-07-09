@@ -1,17 +1,15 @@
 package debate
 
 import (
-	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
+	"github.com/a-share-flow-video-go/internal/ai"
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/logger"
 	"go.uber.org/zap"
@@ -224,60 +222,11 @@ func GenerateScript(reportText string, aiCfg config.AIConfig, structuredData ...
 }
 
 func callLLM(aiCfg config.AIConfig, prompt string, temperature float64, maxTokens int) (string, error) {
-	body := map[string]any{
-		"model":       aiCfg.Model,
-		"messages":    []map[string]string{{"role": "user", "content": prompt}},
-		"temperature": temperature,
-		"max_tokens":  maxTokens,
+	raw, err := ai.ChatCompletion(context.Background(), aiCfg, prompt, temperature, maxTokens)
+	if err != nil {
+		return "", fmt.Errorf("LLM 请求失败: %w", err)
 	}
-	bodyBytes, _ := json.Marshal(body)
-
-	client := &http.Client{Timeout: 180 * time.Second}
-
-	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
-		req, _ := http.NewRequest("POST", aiCfg.BaseURL+"/chat/completions", bytes.NewReader(bodyBytes))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+aiCfg.APIKey)
-
-		resp, err := client.Do(req)
-		if err != nil {
-			lastErr = err
-			if attempt < 2 && strings.Contains(err.Error(), "context deadline exceeded") {
-				time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
-				continue
-			}
-			return "", fmt.Errorf("LLM 请求失败: %w", err)
-		}
-
-		respBody, readErr := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		if readErr != nil {
-			return "", fmt.Errorf("LLM 响应读取失败: %w", readErr)
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			return "", fmt.Errorf("LLM HTTP %d: %s", resp.StatusCode, string(respBody))
-		}
-
-		var chatResp struct {
-			Choices []struct {
-				Message struct {
-					Content string `json:"content"`
-				} `json:"message"`
-			} `json:"choices"`
-		}
-		if err := json.Unmarshal(respBody, &chatResp); err != nil {
-			return "", fmt.Errorf("LLM 响应解析失败: %w", err)
-		}
-		if len(chatResp.Choices) == 0 {
-			return "", fmt.Errorf("LLM 返回空 choices")
-		}
-
-		raw := strings.TrimSpace(chatResp.Choices[0].Message.Content)
-		return stripCodeFence(raw), nil
-	}
-	return "", fmt.Errorf("LLM 请求失败: %w", lastErr)
+	return stripCodeFence(raw), nil
 }
 
 func parseScript(raw string) (Script, error) {
