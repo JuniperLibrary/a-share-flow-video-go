@@ -322,6 +322,52 @@ func GetAudioDuration(audioPath string) (float64, error) {
 	return duration, nil
 }
 
+var copyBodyCleanReplacer = strings.NewReplacer(
+	"[钩子]", "",
+	"[悬念]", "",
+	"[反转]", "",
+	"[答案]", "",
+	"[收尾]", "",
+	"钩子", "",
+	"悬念", "",
+	"反转", "",
+	"答案", "",
+	"收尾", "",
+)
+
+var businessBuzzwordReplacer = strings.NewReplacer(
+	"闭环", "完整流程",
+	"抓手", "切入点",
+	"颗粒度", "细致程度",
+	"对齐", "同步",
+	"拉齐", "同步",
+	"赋能", "帮助",
+	"赛道", "领域",
+	"弯道超车", "后发追上",
+	"占领心智", "形成印象",
+	"心智", "印象",
+)
+
+var writtenToOralReplacer = strings.NewReplacer(
+	"综上所述", "说白了",
+	"不难看出", "你再往深看",
+	"显而易见", "关键",
+	"值得注意的是", "更关键的来了",
+	"整体而言", "今天盘面",
+	"整体来看", "今天盘面",
+	"综合来看", "今天盘面",
+	"客观来说", "说句实在话",
+	"坦率地讲", "说句实在话",
+	"达到了", "到了",
+	"取得了", "干到了",
+	"占比达到了", "占到了",
+	"的一个", "的",
+	"非常明显的", "明显的",
+	"进行了", "做了",
+	"实现了", "做到了",
+	"；", "，",
+)
+
 func ParseCopywriting(text string) (scenes []string) {
 	lines := strings.Split(text, "\n")
 
@@ -334,6 +380,7 @@ func ParseCopywriting(text string) (scenes []string) {
 		if strings.HasPrefix(trimmed, "[") {
 			if idx := strings.Index(trimmed, "]"); idx > 0 {
 				content := strings.TrimSpace(trimmed[idx+1:])
+				content = cleanCopyBody(content)
 				if content != "" {
 					scenes = append(scenes, content)
 				}
@@ -345,7 +392,10 @@ func ParseCopywriting(text string) (scenes []string) {
 		for _, line := range lines {
 			trimmed := strings.TrimSpace(line)
 			if trimmed != "" {
-				scenes = append(scenes, trimmed)
+				cleaned := cleanCopyBody(trimmed)
+				if cleaned != "" {
+					scenes = append(scenes, cleaned)
+				}
 			}
 		}
 	}
@@ -357,6 +407,22 @@ func ParseCopywriting(text string) (scenes []string) {
 	}
 
 	return scenes[:5]
+}
+
+func cleanCopyBody(s string) string {
+	cleaned := copyBodyCleanReplacer.Replace(s)
+	cleaned = writtenToOralReplacer.Replace(cleaned)
+	cleaned = businessBuzzwordReplacer.Replace(cleaned)
+	for strings.Contains(cleaned, "[") {
+		start := strings.Index(cleaned, "[")
+		end := strings.Index(cleaned[start:], "]")
+		if end < 0 {
+			break
+		}
+		cleaned = cleaned[:start] + cleaned[start+end+1:]
+	}
+	cleaned = strings.Join(strings.Fields(cleaned), " ")
+	return strings.TrimSpace(cleaned)
 }
 
 func EnsureEdgeTTS() error {

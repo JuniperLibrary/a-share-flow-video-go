@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/a-share-flow-video-go/internal/analyzer"
@@ -22,11 +25,15 @@ import (
 
 // CLI 入口：命令行视频生成器。
 // 支持参数：--ai(AI文案模式) --session=morning/full YYYY-MM-DD(指定日期)
+// SIGINT / SIGTERM 会先取消正在跑的 Remotion 进程再退出。
 func main() {
 	if err := logger.InitFromEnv(); err != nil {
 		panic(err)
 	}
 	defer logger.Sync()
+
+	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	if _, err := storage.Get(); err != nil {
 		logger.Fatal("SQLite 初始化失败", zap.Error(err))
@@ -112,7 +119,11 @@ func main() {
 		)
 		successCount := 0
 		for _, dateStr := range dates {
-			if processTickDate(dateStr, session, useAI, format) {
+			if rootCtx.Err() != nil {
+				logger.Warn("收到退出信号，停止处理后续日期")
+				break
+			}
+			if processTickDate(rootCtx, dateStr, session, useAI, format) {
 				successCount++
 			}
 		}
@@ -141,7 +152,11 @@ func main() {
 
 	successCount := 0
 	for _, dateStr := range dates {
-		if processDate(dateStr, useAI, session, collectOnly) {
+		if rootCtx.Err() != nil {
+			logger.Warn("收到退出信号，停止处理后续日期")
+			break
+		}
+		if processDate(rootCtx, dateStr, useAI, session, collectOnly) {
 			successCount++
 		}
 	}
@@ -154,9 +169,14 @@ func main() {
 	)
 }
 
-func processDate(dateStr string, useAI bool, sessionOverride string, collectOnly bool) bool {
+func processDate(ctx context.Context, dateStr string, useAI bool, sessionOverride string, collectOnly bool) bool {
 	l := logger.With(zap.String("date", dateStr))
 	l.Info("处理日期")
+
+	if ctx != nil && ctx.Err() != nil {
+		l.Info("已取消，跳过日期处理")
+		return false
+	}
 
 	if _, err := time.Parse("2006-01-02", dateStr); err != nil {
 		l.Error("无效日期格式", zap.String("date", dateStr), zap.String("expected", "YYYY-MM-DD"))
@@ -191,6 +211,10 @@ func processDate(dateStr string, useAI bool, sessionOverride string, collectOnly
 	}
 
 	for _, session := range sessions {
+		if ctx != nil && ctx.Err() != nil {
+			l.Info("已取消，跳过剩余 session")
+			break
+		}
 		sessCfg := config.SessionConfigs[session]
 		sl := l.With(zap.String("session", sessCfg.TitleSuffix))
 		sl.Info("生成视频")
@@ -294,7 +318,10 @@ func generateSession(sectors []fetcher.Sector, dateStr, dateDir string, useAI bo
 	l.Info("文案已保存")
 }
 
-func processTickDate(dateStr string, sessionOverride string, useAI bool, format string) bool {
+func processTickDate(ctx context.Context, dateStr string, sessionOverride string, useAI bool, format string) bool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	l := logger.With(zap.String("date", dateStr))
 	l.Info("处理 Tick 视频")
 
@@ -313,6 +340,10 @@ func processTickDate(dateStr string, sessionOverride string, useAI bool, format 
 	outputDir := config.GetOutputDir()
 	success := false
 	for _, sess := range sessions {
+		if ctx.Err() != nil {
+			l.Warn("收到取消信号，停止 Tick 渲染")
+			return false
+		}
 		sessCfg := config.SessionConfigs[sess]
 		sl := l.With(zap.String("session", sessCfg.TitleSuffix))
 		sl.Info("生成 Tick 视频")
@@ -325,6 +356,15 @@ func processTickDate(dateStr string, sessionOverride string, useAI bool, format 
 		}
 		sectors := tick.PointsToSectors(points)
 
+		if db, dbErr := storage.Get(); dbErr == nil {
+			if daily, loadErr := db.LoadSectorsAll(dateStr); loadErr == nil && len(daily) > 0 {
+				sectors = fetcher.MergeSectorsWithDaily(sectors, daily, 5)
+				sl.Info("已合并全板块日线行情",
+					zap.Int("tickSectors", len(tick.PointsToSectors(points))),
+					zap.Int("mergedSectors", len(sectors)),
+					zap.Int("dailyRows", len(daily)))
+			}
+		}
 		// 在渲染前生成文案，用于 TTS 语音合成
 		var copywriteText string
 		if useAI {
@@ -362,9 +402,16 @@ func processTickDate(dateStr string, sessionOverride string, useAI bool, format 
 		}
 
 		if renderMobile {
+			if ctx.Err() != nil {
+				return false
+			}
 			outPathMobile := filepath.Join(outputDir, dateStr, fmt.Sprintf("%s_tick_mobile.mp4", sessCfg.FilenameSuffix))
-			outMobile, rErr := tick.RenderTickVideo(dateStr, outPathMobile, "mobile", sess, nil, nil, nil, copywriteText, newsPagesMobile)
+			outMobile, rErr := tick.RenderTickVideo(ctx, dateStr, outPathMobile, "mobile", sess, nil, nil, nil, copywriteText, newsPagesMobile)
 			if rErr != nil {
+				if ctx.Err() != nil {
+					sl.Warn("Tick Mobile 渲染被用户取消")
+					return false
+				}
 				sl.Error("Tick Mobile Remotion 渲染失败", zap.Error(rErr))
 			} else {
 				sl.Info("Tick Mobile 视频已保存", zap.String("output", outMobile))
@@ -373,9 +420,16 @@ func processTickDate(dateStr string, sessionOverride string, useAI bool, format 
 		}
 
 		if renderTV {
-			outPathTV := filepath.Join(outputDir, dateStr, fmt.Sprintf("%s_tick.mp4", sessCfg.FilenameSuffix))
-			outTV, rErr := tick.RenderTickVideo(dateStr, outPathTV, "tv", sess, nil, nil, nil, copywriteText, newsPagesTV)
+			if ctx.Err() != nil {
+				return false
+			}
+			outPathTV := filepath.Join(outputDir, dateStr, fmt.Sprintf("%s_tick_tv.mp4", sessCfg.FilenameSuffix))
+			outTV, rErr := tick.RenderTickVideo(ctx, dateStr, outPathTV, "tv", sess, nil, nil, nil, copywriteText, newsPagesTV)
 			if rErr != nil {
+				if ctx.Err() != nil {
+					sl.Warn("Tick TV 渲染被用户取消")
+					return false
+				}
 				sl.Error("Tick TV Remotion 渲染失败", zap.Error(rErr))
 			} else {
 				sl.Info("Tick TV 视频已保存", zap.String("output", outTV))

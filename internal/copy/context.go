@@ -17,6 +17,11 @@ type sectorFlow struct {
 }
 
 func splitSectorFlows(sectors []fetcher.Sector) (inflows, outflows []sectorFlow, netTotal, totalSuper, totalBig float64) {
+	strength := fetcher.SectorStrengthScore(sectors)
+	nameToSector := make(map[string]fetcher.Sector, len(sectors))
+	for _, s := range sectors {
+		nameToSector[s.Name] = s
+	}
 	for _, s := range sectors {
 		item := sectorFlow{s.Name, s.Net, s.SuperNet, s.BigNet, s.ChangePct}
 		netTotal += s.Net
@@ -28,8 +33,31 @@ func splitSectorFlows(sectors []fetcher.Sector) (inflows, outflows []sectorFlow,
 			outflows = append(outflows, item)
 		}
 	}
-	sort.Slice(inflows, func(i, j int) bool { return inflows[i].Net > inflows[j].Net })
-	sort.Slice(outflows, func(i, j int) bool { return outflows[i].Net < outflows[j].Net })
+
+	lessByStrength := func(a, b sectorFlow, expectInflow bool) bool {
+		sa, oka := strength[a.Name]
+		sb, okb := strength[b.Name]
+		if oka && okb {
+			if sa != sb {
+				return sa < sb
+			}
+		} else {
+			_ = nameToSector
+		}
+		if expectInflow {
+			if a.Net != b.Net {
+				return a.Net > b.Net
+			}
+			return a.ChgPct > b.ChgPct
+		}
+		if a.Net != b.Net {
+			return a.Net < b.Net
+		}
+		return a.ChgPct < b.ChgPct
+	}
+
+	sort.SliceStable(inflows, func(i, j int) bool { return lessByStrength(inflows[i], inflows[j], true) })
+	sort.SliceStable(outflows, func(i, j int) bool { return lessByStrength(outflows[i], outflows[j], false) })
 	return inflows, outflows, netTotal, totalSuper, totalBig
 }
 

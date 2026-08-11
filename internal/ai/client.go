@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -24,13 +25,42 @@ import (
 
 // Default tunables (overridable via environment variables).
 const (
-	defaultTimeoutSec     = 180
+	defaultTimeoutSec     = 60
 	defaultMaxRetries     = 3
 	defaultRetryBaseDelay = 500 * time.Millisecond
+	defaultClientTimeout  = 260 * time.Second
 	envTimeoutSec         = "AI_TIMEOUT_SEC"
 	envMaxRetries         = "AI_MAX_RETRIES"
 	envRetryBaseDelayMs   = "AI_RETRY_BASE_DELAY_MS"
 )
+
+// sharedClient is a long-lived http.Client that reuses TLS connections with a
+// bounded idle pool. It avoids the classic "can't assign requested address"
+// port-exhaustion bug seen when every LLM call opens a fresh TCP socket that
+// lingers in TIME_WAIT. All AI callers MUST route through this client.
+var sharedClient = newSharedHTTPClient()
+
+func newSharedHTTPClient() *http.Client {
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		MaxIdleConns:          32,
+		MaxIdleConnsPerHost:   8,
+		MaxConnsPerHost:       32,
+		IdleConnTimeout:       45 * time.Second,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ExpectContinueTimeout: 2 * time.Second,
+		// macOS/Linux: SO_REUSEADDR 尽量降低 TIME_WAIT 后的 bind 失败概率
+		DialContext: (&net.Dialer{
+			Timeout:   15 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2: true,
+	}
+	return &http.Client{
+		Transport: transport,
+		Timeout:   defaultClientTimeout,
+	}
+}
 
 // timeoutPerAttempt returns the per-attempt deadline duration.
 func timeoutPerAttempt() time.Duration {
@@ -87,9 +117,10 @@ type chatResponse struct {
 // isRetryable reports whether a failed attempt should be retried.
 // Transient: network/timeout errors, connection resets, HTTP 429 (rate limit),
 // and 5xx (server errors). Permanent: 4xx client errors (auth, bad request) are NOT retried.
+// NOTE: Darwin/macOS 会把源端口耗尽（EADDRNOTAVAIL）包装成 "can't assign requested address"。
+// 这种错误理论上是瞬态的（等 30s MSL 内核回收），我们仍标为 retryable，让 backoff 起作用。
 func isRetryable(err error, statusCode int) bool {
 	if err != nil {
-		// url.Error wraps the underlying net.Error / context error.
 		msg := err.Error()
 		if strings.Contains(msg, "context deadline exceeded") ||
 			strings.Contains(msg, "Client.Timeout") ||
@@ -98,7 +129,9 @@ func isRetryable(err error, statusCode int) bool {
 			strings.Contains(msg, "EOF") ||
 			strings.Contains(msg, "i/o timeout") ||
 			strings.Contains(msg, "TLS handshake timeout") ||
-			strings.Contains(msg, "no such host") {
+			strings.Contains(msg, "no such host") ||
+			strings.Contains(msg, "can't assign requested address") ||
+			strings.Contains(msg, "address already in use") {
 			return true
 		}
 		return false
@@ -200,8 +233,17 @@ func doAttempt(ctx context.Context, baseURL, apiKey string, reqBody chatRequest)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	resp, dErr := http.DefaultClient.Do(req)
+	resp, dErr := sharedClient.Do(req)
 	if dErr != nil {
+		// macOS 源端口耗尽（EADDRNOTAVAIL）时，主动关闭 idle conns + 短 backoff，
+		// 把 TIME_WAIT 腾出来，给下一次重试让路。
+		msg := dErr.Error()
+		if strings.Contains(msg, "can't assign requested address") ||
+			strings.Contains(msg, "address already in use") {
+			if t, ok := sharedClient.Transport.(*http.Transport); ok {
+				t.CloseIdleConnections()
+			}
+		}
 		return "", 0, dErr
 	}
 	defer resp.Body.Close()

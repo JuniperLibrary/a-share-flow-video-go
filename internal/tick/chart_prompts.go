@@ -5,9 +5,9 @@ package tick
 
 const (
 	// ChartNarrationTmplInflection 拐点解说模板。
-	// Args: timePrefix ("09:45，"), sectorName, action, direction, delta, cum.
-	// 示例: "注意看，09:45，有色金属突然加速，单笔净流入12.5亿，累计85.3亿。"
-	ChartNarrationTmplInflection = "注意看，%s%s%s，单笔%s%.1f亿，累计%.1f亿。"
+	// Args: timePrefix ("09:45，"), sectorName, action, deltaDirection, delta, cumDirection, cum.
+	// 示例: "注意看，09:45，有色金属突然加速，单段净流入12.5亿，累计净流入85.3亿。"
+	ChartNarrationTmplInflection = "注意看，%s%s%s，单段%s%.1f亿，累计%s%.1f亿。"
 
 	// ChartNarrationActionAccelerate 突然加速
 	ChartNarrationActionAccelerate = "突然加速"
@@ -21,22 +21,22 @@ const (
 
 	// ChartNarrationTmplOpen 开盘段：有显著板块。
 	// Args: top2Joined, direction, absTotal.
-	// 示例: "开盘后资金率先涌入有色金属、AI应用，整体净流入85亿元。"
-	ChartNarrationTmplOpen = "开盘后资金率先涌入%s，整体%s%.0f亿元。"
+	// 示例: "开盘先看有色金属、AI应用，资金率先点火，盘面合计净流入85亿元。"
+	ChartNarrationTmplOpen = "开盘先看%s，资金率先点火，盘面合计%s%.0f亿元。"
 	// ChartNarrationTmplOpenFallback 开盘段：资金变动不显著。
-	ChartNarrationTmplOpenFallback = "开盘后各板块资金变动不大，整体%s%.0f亿元。"
+	ChartNarrationTmplOpenFallback = "开盘资金先试探，主要方向还没完全拉开差距，盘面合计%s%.0f亿元。"
 
 	// ChartNarrationTmplMid 盘中段：有显著板块。
-	// 示例: "盘中有色金属持续领跑，累计净流入85亿元。"
-	ChartNarrationTmplMid = "盘中%s持续领跑，累计%s%.0f亿元。"
+	// 示例: "盘中主线逐步清晰，有色金属、AI应用处在资金前排，合计净流入85亿元。"
+	ChartNarrationTmplMid = "盘中主线逐步清晰，%s处在资金前排，合计%s%.0f亿元。"
 	// ChartNarrationTmplMidFallback 盘中段：资金变动不显著。
-	ChartNarrationTmplMidFallback = "盘中资金格局平稳，累计%s%.0f亿元。"
+	ChartNarrationTmplMidFallback = "盘中轮动明显加快，资金仍在试探切换，合计%s%.0f亿元。"
 
 	// ChartNarrationTmplClose 尾盘段：有显著板块。
-	// 示例: "尾盘来看，有色金属领先，全天净流入85亿元。"
-	ChartNarrationTmplClose = "尾盘来看，%s领先，全天%s%.0f亿元。"
+	// 示例: "临近收盘，有色金属、AI应用仍在资金前排，全天合计净流入85亿元。"
+	ChartNarrationTmplClose = "临近收盘，%s仍在资金前排，全天合计%s%.0f亿元。"
 	// ChartNarrationTmplCloseFallback 尾盘段：资金变动不显著。
-	ChartNarrationTmplCloseFallback = "收盘板块资金整体%s%.0f亿元，分布较为分散。"
+	ChartNarrationTmplCloseFallback = "收盘看资金分布仍偏分散，全天合计%s%.0f亿元。"
 
 	// ChartNarrationSectorFmt 板块方向金额拼接格式。
 	// Args: sectorName, direction, absNet.

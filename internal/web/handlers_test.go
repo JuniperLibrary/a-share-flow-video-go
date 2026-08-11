@@ -19,9 +19,9 @@ func TestValidDateFormat(t *testing.T) {
 		{"2026-6-24", false},
 		{"24-06-2026", false},
 		{"20260624", false},
-		{"2026-13-01", false},  // invalid month
-		{"2026-00-01", false},  // zero month
-		{"2026-01-32", false},  // invalid day
+		{"2026-13-01", false}, // invalid month
+		{"2026-00-01", false}, // zero month
+		{"2026-01-32", false}, // invalid day
 		{"abc", false},
 	}
 	for _, tc := range tests {
@@ -57,8 +57,8 @@ func TestExtractReportMetrics_Partial(t *testing.T) {
 	json := `{"netTotal": 42.0}`
 	m := extractReportMetrics(json)
 	assert.Equal(t, 42.0, m.NetTotal)
-	assert.Equal(t, 0, m.InflowCount)       // zero value
-	assert.Equal(t, "", m.StructureDesc)     // zero value
+	assert.Equal(t, 0, m.InflowCount)    // zero value
+	assert.Equal(t, "", m.StructureDesc) // zero value
 }
 
 func TestExtractReportMetrics_Malformed(t *testing.T) {

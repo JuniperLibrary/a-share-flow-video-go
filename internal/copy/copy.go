@@ -28,12 +28,36 @@ func GenerateCopywriting(sectors []fetcher.Sector, dateStr, session string) stri
 		item := sectorSummary{s.Name, s.Net, s.SuperNet, s.BigNet, s.ChangePct}
 		if s.Net > 0 {
 			inflows = append(inflows, item)
-		} else {
+		} else if s.Net < 0 {
 			outflows = append(outflows, item)
 		}
 	}
-	sort.Slice(inflows, func(i, j int) bool { return inflows[i].Net > inflows[j].Net })
-	sort.Slice(outflows, func(i, j int) bool { return outflows[i].Net < outflows[j].Net })
+
+	strength := fetcher.SectorStrengthScore(sectors)
+	lessInflow := func(i, j int) bool {
+		si, oki := strength[inflows[i].Name]
+		sj, okj := strength[inflows[j].Name]
+		if oki && okj && si != sj {
+			return si < sj
+		}
+		if inflows[i].Net != inflows[j].Net {
+			return inflows[i].Net > inflows[j].Net
+		}
+		return inflows[i].ChgPct > inflows[j].ChgPct
+	}
+	lessOutflow := func(i, j int) bool {
+		si, oki := strength[outflows[i].Name]
+		sj, okj := strength[outflows[j].Name]
+		if oki && okj && si != sj {
+			return si < sj
+		}
+		if outflows[i].Net != outflows[j].Net {
+			return outflows[i].Net < outflows[j].Net
+		}
+		return outflows[i].ChgPct < outflows[j].ChgPct
+	}
+	sort.SliceStable(inflows, lessInflow)
+	sort.SliceStable(outflows, lessOutflow)
 
 	netTotal := 0.0
 	var totalSuper, totalBig float64
@@ -144,6 +168,7 @@ func GenerateCopywritingAI(sectors []fetcher.Sector, dateStr, session, prevPredi
 		return "", err
 	}
 	text = normalizeHallucinatedSectorNames(text, sectors, inflows)
+	text = normalizeTaggedCopy(text)
 
 	if issues := ValidateCopy(text, brief, inflows); len(issues) > 0 {
 		fixPrompt := fmt.Sprintf(PromptFixCopy,
@@ -152,7 +177,29 @@ func GenerateCopywritingAI(sectors []fetcher.Sector, dateStr, session, prevPredi
 			brief.Format(),
 		)
 		if fixed, fixErr := chatCompletion(fixPrompt, 0.5, 900); fixErr == nil && fixed != "" {
-			text = fixed
+			text = normalizeTaggedCopy(fixed)
+		}
+	}
+
+	anchorPool := append([]string{}, hookGreetingPhrases...)
+	anchorPool = append(anchorPool, transitionPhrases...)
+	anchorPool = append(anchorPool, closingInteractionPhrases...)
+	anchorPool = append(anchorPool, closingOperationPhrases...)
+	var anchorLines []string
+	for _, a := range anchorPool {
+		a = strings.TrimSpace(a)
+		if a != "" {
+			anchorLines = append(anchorLines, "  - "+a)
+		}
+	}
+	anchorBlock := strings.Join(anchorLines, "\n")
+
+	humanPrompt := fmt.Sprintf(PromptHumanizeCopy, anchorBlock, brief.Format(), text)
+	if humanized, hErr := chatCompletion(humanPrompt, 0.82, 900); hErr == nil && humanized != "" {
+		normalizedHuman := normalizeHallucinatedSectorNames(humanized, sectors, inflows)
+		normalizedHuman = normalizeTaggedCopy(normalizedHuman)
+		if postIssues := ValidateCopy(normalizedHuman, brief, inflows); len(postIssues) == 0 {
+			text = normalizedHuman
 		}
 	}
 
@@ -178,6 +225,67 @@ func normalizeHallucinatedSectorNames(text string, sectors []fetcher.Sector, inf
 		}
 	}
 	return text
+}
+
+var businessBuzzwordReplacer = strings.NewReplacer(
+	"闭环", "完整流程",
+	"抓手", "切入点",
+	"颗粒度", "细致程度",
+	"对齐", "同步",
+	"拉齐", "同步",
+	"赋能", "帮助",
+	"赛道", "领域",
+	"弯道超车", "后发追上",
+	"占领心智", "形成印象",
+	"心智", "印象",
+)
+
+var writtenToOralReplacer = strings.NewReplacer(
+	"综上所述", "说白了",
+	"不难看出", "你再往深看",
+	"显而易见", "关键",
+	"值得注意的是", "更关键的来了",
+	"整体而言", "今天盘面",
+	"整体来看", "今天盘面",
+	"综合来看", "今天盘面",
+	"客观来说", "说句实在话",
+	"坦率地讲", "说句实在话",
+	"整体来看", "今天盘面",
+	"达到了", "到了",
+	"取得了", "干到了",
+	"占比达到了", "占到了",
+	"的一个", "的",
+	"非常明显的", "明显的",
+	"进行了", "做了",
+	"实现了", "做到了",
+)
+
+func normalizeTaggedCopy(text string) string {
+	tags := []string{"[钩子]", "[悬念]", "[反转]", "[答案]", "[收尾]"}
+	lines := strings.Split(text, "\n")
+	normalized := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if !strings.HasPrefix(trimmed, tag) {
+				continue
+			}
+			if idx := strings.Index(trimmed, "]"); idx >= 0 {
+				content := strings.TrimSpace(trimmed[idx+1:])
+				content = writtenToOralReplacer.Replace(content)
+				content = businessBuzzwordReplacer.Replace(content)
+				content = strings.Join(strings.Fields(content), " ")
+				if content != "" {
+					normalized = append(normalized, fmt.Sprintf("%s %s", tag, content))
+					break
+				}
+			}
+		}
+	}
+	if len(normalized) == len(tags) {
+		return strings.Join(normalized, "\n")
+	}
+	return strings.TrimSpace(text)
 }
 
 func absF(x float64) float64 {

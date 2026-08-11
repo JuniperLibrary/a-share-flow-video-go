@@ -191,9 +191,9 @@ func TestScheduleLifecycle_Weekday(t *testing.T) {
 	s := &TickScheduler{}
 
 	type check struct {
-		h, m   int
-		run    bool
-		stop   bool
+		h, m    int
+		run     bool
+		stop    bool
 		session bool
 	}
 

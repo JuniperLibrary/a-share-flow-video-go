@@ -11,13 +11,24 @@ import (
 
 // MainStructureResult LLM 输出的主线结构收尾分析。
 type MainStructureResult struct {
-	Conclusion    string `json:"conclusion"`
-	Concentration string `json:"concentration"`
-	Risk          string `json:"risk"`
-	Structure     string `json:"structure"`
-	Outlook       string `json:"outlook"`
-	Signal        string `json:"signal,omitempty"`
-	Action        string `json:"action,omitempty"`
+	Conclusion    string                `json:"conclusion"`
+	Concentration string                `json:"concentration"`
+	Risk          string                `json:"risk"`
+	Structure     string                `json:"structure"`
+	Outlook       string                `json:"outlook"`
+	Signal        string                `json:"signal,omitempty"`
+	Action        string                `json:"action,omitempty"`
+	Actions       []MainStructureAction `json:"actions,omitempty"`
+	Recap         string                `json:"recap,omitempty"`
+	Highlight     string                `json:"highlight,omitempty"`
+	Risks         string                `json:"risks,omitempty"`
+	PlanIntro     string                `json:"plan_intro,omitempty"`
+	PlanActions   string                `json:"plan_actions,omitempty"`
+}
+
+type MainStructureAction struct {
+	Priority string `json:"priority"` // high / medium / low
+	Text     string `json:"text"`
 }
 
 type sectorStat struct {
