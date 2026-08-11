@@ -2,7 +2,6 @@ package copy
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -16,56 +15,7 @@ func GenerateCopywriting(sectors []fetcher.Sector, dateStr, session string) stri
 		sessCfg = config.SessionConfigs["full"]
 	}
 
-	type sectorSummary struct {
-		Name     string
-		Net      float64
-		SuperNet float64
-		BigNet   float64
-		ChgPct   float64
-	}
-	var inflows, outflows []sectorSummary
-	for _, s := range sectors {
-		item := sectorSummary{s.Name, s.Net, s.SuperNet, s.BigNet, s.ChangePct}
-		if s.Net > 0 {
-			inflows = append(inflows, item)
-		} else if s.Net < 0 {
-			outflows = append(outflows, item)
-		}
-	}
-
-	strength := fetcher.SectorStrengthScore(sectors)
-	lessInflow := func(i, j int) bool {
-		si, oki := strength[inflows[i].Name]
-		sj, okj := strength[inflows[j].Name]
-		if oki && okj && si != sj {
-			return si < sj
-		}
-		if inflows[i].Net != inflows[j].Net {
-			return inflows[i].Net > inflows[j].Net
-		}
-		return inflows[i].ChgPct > inflows[j].ChgPct
-	}
-	lessOutflow := func(i, j int) bool {
-		si, oki := strength[outflows[i].Name]
-		sj, okj := strength[outflows[j].Name]
-		if oki && okj && si != sj {
-			return si < sj
-		}
-		if outflows[i].Net != outflows[j].Net {
-			return outflows[i].Net < outflows[j].Net
-		}
-		return outflows[i].ChgPct < outflows[j].ChgPct
-	}
-	sort.SliceStable(inflows, lessInflow)
-	sort.SliceStable(outflows, lessOutflow)
-
-	netTotal := 0.0
-	var totalSuper, totalBig float64
-	for _, s := range sectors {
-		netTotal += s.Net
-		totalSuper += s.SuperNet
-		totalBig += s.BigNet
-	}
+	inflows, outflows, netTotal, totalSuper, totalBig := splitSectorFlows(sectors)
 
 	dateDisplay := formatDate(dateStr)
 	sessionLabel := sessCfg.TitleSuffix

@@ -53,6 +53,7 @@ func main() {
 	days := 0
 	useTick := false
 	collectOnly := false
+	ingestSectorsAll := false
 	format := "mobile"
 	var dates []string
 
@@ -63,6 +64,11 @@ func main() {
 			useAI = true
 		case arg == "--report-image":
 			reportImage = true
+		case arg == "--ingest-sectors-all":
+			ingestSectorsAll = true
+		case strings.HasPrefix(arg, "--ingest-sectors-all="):
+			ingestSectorsAll = true
+			dates = append(dates, strings.TrimPrefix(arg, "--ingest-sectors-all="))
 		case strings.HasPrefix(arg, "--report-image="):
 			dateStr := strings.TrimPrefix(arg, "--report-image=")
 			if err := runReportImage(dateStr); err != nil {
@@ -97,6 +103,31 @@ func main() {
 			fmt.Fprintf(os.Stderr, "生成日报图片失败: %v\n", err)
 			os.Exit(1)
 		}
+		return
+	}
+
+	// --ingest-sectors-all 抓取并写入 sectors_all 全量板块日线（行业+概念 双向正负净流）
+	if ingestSectorsAll {
+		if len(dates) == 0 {
+			dates = []string{time.Now().Format("2006-01-02")}
+		}
+		logger.Info("抓取 sectors_all 全量板块日线",
+			zap.Int("count", len(dates)),
+			zap.String("dates", strings.Join(dates, ", ")),
+		)
+		successCount := 0
+		for _, dateStr := range dates {
+			if rootCtx.Err() != nil {
+				logger.Warn("收到退出信号，停止处理后续日期")
+				break
+			}
+			if err := runIngestSectorsAll(dateStr); err != nil {
+				logger.Error("写入 sectors_all 失败", zap.String("date", dateStr), zap.Error(err))
+				continue
+			}
+			successCount++
+		}
+		logger.Info("sectors_all 抓取完成", zap.Int("success", successCount), zap.Int("total", len(dates)))
 		return
 	}
 
@@ -356,10 +387,17 @@ func processTickDate(ctx context.Context, dateStr string, sessionOverride string
 		}
 		sectors := tick.PointsToSectors(points)
 
-		if db, dbErr := storage.Get(); dbErr == nil {
+		if daily, fetchErr := fetcher.FetchSectorsAllDaily(dateStr); fetchErr == nil && len(daily) > 0 {
+			sectors = fetcher.MergeSectorsWithDaily(sectors, daily, 5)
+			sl.Info("已合并当日全板块行情(实时抓取)",
+				zap.Int("tickSectors", len(tick.PointsToSectors(points))),
+				zap.Int("mergedSectors", len(sectors)),
+				zap.Int("dailyRows", len(daily)))
+		} else if db, dbErr := storage.Get(); dbErr == nil {
 			if daily, loadErr := db.LoadSectorsAll(dateStr); loadErr == nil && len(daily) > 0 {
 				sectors = fetcher.MergeSectorsWithDaily(sectors, daily, 5)
-				sl.Info("已合并全板块日线行情",
+				sl.Warn("在线抓取失败，降级用 sectors_all 表(可能非15:00收盘快照)",
+					zap.Error(fetchErr),
 					zap.Int("tickSectors", len(tick.PointsToSectors(points))),
 					zap.Int("mergedSectors", len(sectors)),
 					zap.Int("dailyRows", len(daily)))

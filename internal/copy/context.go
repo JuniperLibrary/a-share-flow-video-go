@@ -17,7 +17,7 @@ type sectorFlow struct {
 }
 
 func splitSectorFlows(sectors []fetcher.Sector) (inflows, outflows []sectorFlow, netTotal, totalSuper, totalBig float64) {
-	strength := fetcher.SectorStrengthScore(sectors)
+	inflowStrength := fetcher.SectorStrengthScore(sectors)
 	nameToSector := make(map[string]fetcher.Sector, len(sectors))
 	for _, s := range sectors {
 		nameToSector[s.Name] = s
@@ -34,7 +34,66 @@ func splitSectorFlows(sectors []fetcher.Sector) (inflows, outflows []sectorFlow,
 		}
 	}
 
+	outflowSectors := make([]fetcher.Sector, 0, len(outflows))
+	for _, f := range outflows {
+		if s, ok := nameToSector[f.Name]; ok {
+			outflowSectors = append(outflowSectors, s)
+		}
+	}
+	outflowStrength := make(map[string]float64, len(outflowSectors))
+	if n := len(outflowSectors); n > 0 {
+		byChg := make([]int, n)
+		byAbsNet := make([]int, n)
+		byTurnover := make([]int, n)
+		for i := range outflowSectors {
+			byChg[i] = i
+			byAbsNet[i] = i
+			byTurnover[i] = i
+		}
+		sort.SliceStable(byChg, func(i, j int) bool {
+			return outflowSectors[byChg[i]].ChangePct < outflowSectors[byChg[j]].ChangePct
+		})
+		sort.SliceStable(byAbsNet, func(i, j int) bool {
+			ai := outflowSectors[byAbsNet[i]]
+			aj := outflowSectors[byAbsNet[j]]
+			absI := ai.Net
+			absJ := aj.Net
+			if absI < 0 {
+				absI = -absI
+			}
+			if absJ < 0 {
+				absJ = -absJ
+			}
+			return absI > absJ
+		})
+		sort.SliceStable(byTurnover, func(i, j int) bool {
+			return outflowSectors[byTurnover[i]].Turnover > outflowSectors[byTurnover[j]].Turnover
+		})
+		chgRank := make([]int, n)
+		netRank := make([]int, n)
+		turnRank := make([]int, n)
+		for rank := 0; rank < n; rank++ {
+			chgRank[byChg[rank]] = rank
+			netRank[byAbsNet[rank]] = rank
+			turnRank[byTurnover[rank]] = rank
+		}
+		rankScore := func(r, total int) float64 {
+			if total <= 1 {
+				return 0
+			}
+			return float64(r) / float64(total-1)
+		}
+		for i, s := range outflowSectors {
+			sc := 0.55*rankScore(chgRank[i], n) + 0.30*rankScore(netRank[i], n) + 0.15*rankScore(turnRank[i], n)
+			outflowStrength[s.Name] = sc
+		}
+	}
+
 	lessByStrength := func(a, b sectorFlow, expectInflow bool) bool {
+		strength := inflowStrength
+		if !expectInflow {
+			strength = outflowStrength
+		}
 		sa, oka := strength[a.Name]
 		sb, okb := strength[b.Name]
 		if oka && okb {
@@ -43,6 +102,17 @@ func splitSectorFlows(sectors []fetcher.Sector) (inflows, outflows []sectorFlow,
 			}
 		} else {
 			_ = nameToSector
+		}
+		absA := a.Net
+		absB := b.Net
+		if absA < 0 {
+			absA = -absA
+		}
+		if absB < 0 {
+			absB = -absB
+		}
+		if absA != absB {
+			return absA > absB
 		}
 		if expectInflow {
 			if a.Net != b.Net {

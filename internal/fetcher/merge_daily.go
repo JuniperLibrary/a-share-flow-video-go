@@ -3,9 +3,66 @@ package fetcher
 import (
 	"math"
 	"sort"
+	"strings"
 
 	"github.com/a-share-flow-video-go/internal/storage"
 )
+
+var platformBucketExact = map[string]bool{
+	"融资融券": true, "MSCI中国": true, "富时罗素": true, "沪股通": true, "深股通": true,
+	"标准普尔": true, "2026中报预增": true, "大盘股": true, "中盘股": true, "小盘股": true,
+	"沪深300": true, "HS300_": true, "上证50": true, "上证50_": true, "上证180_": true,
+	"上证380_": true, "中证500": true, "中证1000": true, "中证2000": true, "深成500": true,
+	"深证成指": true, "创业板指": true, "科创50": true, "央国企改革": true, "国企改革": true,
+	"题材股": true, "东方财富热股": true, "最近多板": true, "高股息": true, "低价股": true,
+	"高价股": true, "预亏": true, "扭亏": true, "摘帽": true, "增持": true, "回购": true,
+	"股权激励": true, "员工持股": true, "举牌": true, "异动股": true, "庄股": true,
+	"独角兽": true, "壳资源": true, "分拆上市": true, "债转股": true, "北交所概念": true,
+	"四川板块": true, "北京板块": true, "上海板块": true, "广东板块": true, "浙江板块": true,
+	"江苏板块": true, "山东板块": true, "河南板块": true, "湖北板块": true, "湖南板块": true,
+	"福建板块": true, "安徽板块": true, "河北板块": true, "陕西板块": true, "重庆板块": true,
+	"天津板块": true, "辽宁板块": true, "吉林板块": true, "黑龙江板块": true, "江西板块": true,
+	"山西板块": true, "云南板块": true, "贵州板块": true, "广西板块": true, "新疆板块": true,
+	"西藏板块": true, "青海板块": true, "甘肃板块": true, "宁夏板块": true, "内蒙古板块": true,
+	"海南板块": true, "深圳板块": true, "新三板": true,
+}
+
+var platformBucketPrefix = []string{
+	"昨日", "新股", "次新股", "中报", "年报", "一季报", "三季报",
+	"预增", "预亏", "扭亏", "ST", "*ST",
+}
+
+var platformBucketContains = []string{
+	"成份", "指数", "精选", "核心资产",
+}
+
+func isPlatformBucket(name string) bool {
+	if name == "" {
+		return true
+	}
+	if platformBucketExact[name] {
+		return true
+	}
+	if strings.HasSuffix(name, "_") {
+		return true
+	}
+	for _, p := range platformBucketPrefix {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	for _, p := range platformBucketContains {
+		if strings.Contains(name, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsPlatformBucket reports whether a sector name is a composite market label /
+// platform bucket (融资融券 / MSCI中国 / 四川板块 / 东方财富热股 …)
+// instead of a tradable industry or concept.
+func IsPlatformBucket(name string) bool { return isPlatformBucket(name) }
 
 func abs64(v float64) float64 {
 	if v < 0 {
@@ -130,6 +187,9 @@ func MergeSectorsWithDaily(tickSectors []Sector, daily []storage.SectorAll, wild
 		var candidates []Sector
 		for _, d := range daily {
 			if tickNameSet[d.Name] {
+				continue
+			}
+			if isPlatformBucket(d.Name) {
 				continue
 			}
 			if math.Abs(d.Net) < 3 && math.Abs(d.ChangePct) < 2.5 {

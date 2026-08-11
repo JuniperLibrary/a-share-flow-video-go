@@ -1,16 +1,14 @@
 package web
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
+	"github.com/a-share-flow-video-go/internal/fetcher"
 	"github.com/a-share-flow-video-go/internal/logger"
 	"github.com/a-share-flow-video-go/internal/storage"
 )
@@ -121,126 +119,21 @@ func runSaveAllTask(task *SaveAllTask) {
 		zap.String("date", task.Date),
 	)
 
-	var allSectors []storage.SectorAll
-	allFS := []struct {
-		fs       string
-		category string
-	}{{"m:90+t:2", "industry"}, {"m:90+t:3", "concept"}}
-	for _, item := range allFS {
-		for pn := 1; ; pn++ {
-			task.mu.Lock()
-			task.Progress = fmt.Sprintf("获取第%d页(%s)...", pn, item.category)
-			task.mu.Unlock()
-
-			url := fmt.Sprintf("https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData?fields=f12,f14,f3,f5,f6,f62,f66,f69,f72,f75,f184&pn=%d&pz=500&fid=f62&po=1&fs=%s&ut=b2884a39ad64002292a3e90d46a5", pn, item.fs)
-			req, err := http.NewRequest("GET", url, nil)
-			if err != nil {
-				task.mu.Lock()
-				task.Status = "error"
-				task.Err = err.Error()
-				task.mu.Unlock()
-				logger.Error("全板块数据API请求创建失败",
-					zap.String("date", task.Date),
-					zap.String("category", item.category),
-					zap.Int("page", pn),
-					zap.Error(err),
-				)
-				return
-			}
-			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-			req.Header.Set("Referer", "https://emdatah5.eastmoney.com/dc/zjlx/index")
-
-			resp, err := exportHTTPClient.Do(req)
-			if err != nil {
-				task.mu.Lock()
-				task.Status = "error"
-				task.Err = fmt.Sprintf("API请求失败: %v", err)
-				task.mu.Unlock()
-				logger.Error("全板块数据API请求失败",
-					zap.String("date", task.Date),
-					zap.String("category", item.category),
-					zap.Int("page", pn),
-					zap.Error(err),
-				)
-				return
-			}
-
-			var result struct {
-				Data struct {
-					Diff []map[string]any `json:"diff"`
-				} `json:"data"`
-			}
-			b, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			json.Unmarshal(b, &result)
-
-			pageItemCount := len(result.Data.Diff)
-			logger.Info("全板块数据页获取成功",
-				zap.String("date", task.Date),
-				zap.String("category", item.category),
-				zap.Int("page", pn),
-				zap.Int("items", pageItemCount),
-			)
-
-			for _, d := range result.Data.Diff {
-				name, _ := d["f14"].(string)
-				code, _ := d["f12"].(string)
-				netVal := d["f62"]
-				rateVal := d["f184"]
-				if name == "" || netVal == nil {
-					continue
-				}
-				if f, ok := toFloat64(netVal); ok && f != 0 {
-					rateFloat, _ := toFloat64(rateVal)
-					changePctFloat, _ := toFloat64(d["f3"])
-					superNetFloat, _ := toFloat64(d["f66"])
-					superRateFloat, _ := toFloat64(d["f69"])
-					bigNetFloat, _ := toFloat64(d["f72"])
-					bigRateFloat, _ := toFloat64(d["f75"])
-					volumeFloat, _ := toFloat64(d["f5"])
-					turnoverFloat, _ := toFloat64(d["f6"])
-					turnoverRateFloat, _ := toFloat64(d["f7"])
-					leadStockName, _ := d["f140"].(string)
-					leadChangeFloat, _ := toFloat64(d["f127"])
-					mcapFloat, _ := toFloat64(d["f20"])
-					cmcapFloat, _ := toFloat64(d["f21"])
-					allSectors = append(allSectors, storage.SectorAll{
-						Date:                 task.Date,
-						Code:                 code,
-						Name:                 name,
-						Net:                  roundTo2(f / 1e8),
-						Rate:                 roundTo2(rateFloat),
-						ChangePct:            roundTo2(changePctFloat),
-						SuperNet:             roundTo2(superNetFloat / 1e8),
-						SuperRate:            roundTo2(superRateFloat),
-						BigNet:               roundTo2(bigNetFloat / 1e8),
-						BigRate:              roundTo2(bigRateFloat),
-						Volume:               roundTo2(volumeFloat),
-						Turnover:             roundTo2(turnoverFloat / 1e8),
-						TurnoverRate:         roundTo2(turnoverRateFloat),
-						LeadStockName:        leadStockName,
-						LeadStockChangePct:   roundTo2(leadChangeFloat),
-						TotalMarketCap:       roundTo2(mcapFloat / 1e8),
-						CirculatingMarketCap: roundTo2(cmcapFloat / 1e8),
-						Category:             item.category,
-					})
-				}
-			}
-
-			if pageItemCount < 500 {
-				break
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
-
-		logger.Info("全板块数据分类获取完成",
+	allSectors, fetchErr := fetcher.FetchSectorsAllDaily(task.Date)
+	if fetchErr != nil {
+		task.mu.Lock()
+		task.Status = "error"
+		task.Err = fmt.Sprintf("抓取全板块失败: %v", fetchErr)
+		task.mu.Unlock()
+		logger.Error("全板块数据抓取失败",
 			zap.String("date", task.Date),
-			zap.String("category", item.category),
+			zap.Error(fetchErr),
 		)
+		return
 	}
 
 	task.mu.Lock()
-	task.Progress = "正在保存到数据库..."
+	task.Progress = fmt.Sprintf("抓取完成: %d 条，正在保存到数据库...", len(allSectors))
 	task.Count = len(allSectors)
 	task.mu.Unlock()
 

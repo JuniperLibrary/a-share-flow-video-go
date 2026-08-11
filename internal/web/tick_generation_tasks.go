@@ -289,10 +289,14 @@ func runTickGenerateTask(task *tickGenerateTask) {
 	} else {
 		sectors := tick.PointsToSectors(points)
 
-		if db, dbErr := storage.Get(); dbErr == nil {
+		if daily, fetchErr := fetcher.FetchSectorsAllDaily(task.Date); fetchErr == nil && len(daily) > 0 {
+			sectors = fetcher.MergeSectorsWithDaily(sectors, daily, 5)
+			task.appendLog(fmt.Sprintf("📊 合并全板块行情(实时抓取 15:00 收盘快照)：tick=%d，日线=%d，合并后=%d",
+				len(tick.PointsToSectors(points)), len(daily), len(sectors)))
+		} else if db, dbErr := storage.Get(); dbErr == nil {
 			if daily, loadErr := db.LoadSectorsAll(task.Date); loadErr == nil && len(daily) > 0 {
 				sectors = fetcher.MergeSectorsWithDaily(sectors, daily, 5)
-				task.appendLog(fmt.Sprintf("📊 合并全板块行情：tick=%d，日线=%d，合并后=%d",
+				task.appendLog(fmt.Sprintf("📊 在线抓取失败，降级 sectors_all 表(可能非收盘)：tick=%d，日线=%d，合并后=%d",
 					len(tick.PointsToSectors(points)), len(daily), len(sectors)))
 			}
 		}

@@ -429,6 +429,27 @@ func (db *DB) LoadTickSectors(date string) ([]Sector, error) {
 	return sectors, rows.Err()
 }
 
+func (db *DB) LoadSectorsByExactTime(date string, timeStr string) ([]Sector, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	datetime := date + " " + timeStr
+	rows, err := db.db.Query("SELECT datetime, name, net, rate, change_pct, super_net, super_rate, big_net, big_rate, volume, turnover, bk_code, turnover_rate, lead_stock_name, lead_stock_change_pct, total_market_cap, circulating_market_cap, input_date FROM sectors WHERE datetime = ? ORDER BY ABS(net) DESC", datetime)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sectors []Sector
+	for rows.Next() {
+		var s Sector
+		if err := rows.Scan(&s.Datetime, &s.Name, &s.Net, &s.Rate, &s.ChangePct, &s.SuperNet, &s.SuperRate, &s.BigNet, &s.BigRate, &s.Volume, &s.Turnover, &s.BKCode, &s.TurnoverRate, &s.LeadStockName, &s.LeadStockChangePct, &s.TotalMarketCap, &s.CirculatingMarketCap, &s.InputDate); err != nil {
+			return nil, err
+		}
+		sectors = append(sectors, s)
+	}
+	return sectors, rows.Err()
+}
+
 func (db *DB) HasTickData(datetime string) (bool, error) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -462,6 +483,18 @@ func (db *DB) SaveSectorsAll(sectors []SectorAll) error {
 		return err
 	}
 	defer tx.Rollback()
+
+	dateSet := make(map[string]bool, 1)
+	for _, s := range sectors {
+		if s.Date != "" {
+			dateSet[s.Date] = true
+		}
+	}
+	for d := range dateSet {
+		if _, err := tx.Exec(`DELETE FROM sectors_all WHERE date = ?`, d); err != nil {
+			return err
+		}
+	}
 
 	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO sectors_all (date, code, name, net, rate, change_pct, super_net, super_rate, big_net, big_rate, volume, turnover, turnover_rate, lead_stock_name, lead_stock_change_pct, total_market_cap, circulating_market_cap, category) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {

@@ -86,16 +86,15 @@ func newRequest(method, url string) (*http.Request, error) {
 	return req, nil
 }
 
-func fetchEMRaw(fs string) ([]map[string]any, error) {
+func fetchEMPaginate(fs, fid, po string, pageSize int) ([]map[string]any, error) {
 	var allDiff []map[string]any
-	pn := 1
-
-	for {
+	seen := make(map[string]bool)
+	for pn := 1; ; pn++ {
 		var result emResponse
 		var err error
-
 		for attempt := 1; attempt <= 3; attempt++ {
-			url := fmt.Sprintf("https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData?fields=f12,f14,f3,f5,f6,f7,f20,f21,f62,f66,f69,f72,f75,f127,f140,f184&pn=%d&pz=500&fid=f62&po=1&fs=%s&ut=b2884a393a59ad64002292a3e90d46a5", pn, fs)
+			url := fmt.Sprintf("https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData?fields=f12,f14,f3,f5,f6,f7,f20,f21,f62,f66,f69,f72,f75,f127,f140,f184&pn=%d&pz=%d&fid=%s&po=%s&fs=%s&ut=b2884a393a59ad64002292a3e90d46a5",
+				pn, pageSize, fid, po, fs)
 
 			req, reqErr := newRequest("GET", url)
 			if reqErr != nil {
@@ -109,7 +108,6 @@ func fetchEMRaw(fs string) ([]map[string]any, error) {
 				}
 				return nil, reqErr
 			}
-
 			if resp.StatusCode != http.StatusOK {
 				resp.Body.Close()
 				if attempt < 3 {
@@ -118,7 +116,6 @@ func fetchEMRaw(fs string) ([]map[string]any, error) {
 				}
 				return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 			}
-
 			if reqErr = decodeJSON(resp.Body, &result); reqErr != nil {
 				resp.Body.Close()
 				if attempt < 3 {
@@ -133,22 +130,64 @@ func fetchEMRaw(fs string) ([]map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-
-		if result.Data.Diff == nil {
+		if result.Data.Diff == nil || len(result.Data.Diff) == 0 {
 			break
 		}
-		allDiff = append(allDiff, result.Data.Diff...)
-
-		if len(result.Data.Diff) < 100 {
+		hadNew := false
+		for _, d := range result.Data.Diff {
+			code, _ := d["f12"].(string)
+			if code != "" && seen[code] {
+				continue
+			}
+			if code != "" {
+				seen[code] = true
+			}
+			allDiff = append(allDiff, d)
+			hadNew = true
+		}
+		if !hadNew || len(result.Data.Diff) < pageSize {
 			break
 		}
-		pn++
 	}
-
 	if len(allDiff) == 0 {
 		return nil, fmt.Errorf("empty response")
 	}
 	return allDiff, nil
+}
+
+func fetchEMRaw(fs string) ([]map[string]any, error) {
+	var allDiff []map[string]any
+	seen := make(map[string]bool)
+	for _, sortPass := range []struct {
+		fid string
+		po  string
+	}{
+		{fid: "f62", po: "1"},
+		{fid: "f62", po: "0"},
+	} {
+		page, err := fetchEMPaginate(fs, sortPass.fid, sortPass.po, 500)
+		if err != nil {
+			continue
+		}
+		for _, d := range page {
+			code, _ := d["f12"].(string)
+			if code != "" && seen[code] {
+				continue
+			}
+			if code != "" {
+				seen[code] = true
+			}
+			allDiff = append(allDiff, d)
+		}
+	}
+	if len(allDiff) == 0 {
+		return nil, fmt.Errorf("empty response")
+	}
+	return allDiff, nil
+}
+
+func fetchEMRawAll(fs string) ([]map[string]any, error) {
+	return fetchEMPaginate(fs, "f12", "1", 1000)
 }
 
 func decodeJSON(r io.Reader, v any) error {
@@ -830,6 +869,78 @@ func loadCSV(filename, dateStr string) ([]Sector, error) {
 // FetchAllRaw 获取全量板块数据（不经过目标列表过滤）。
 func FetchAllRaw() ([]Sector, error) {
 	return fetchPrimaryData()
+}
+
+// FetchSectorsAllDaily 抓取行业(m:90+t:2) + 概念(m:90+t:3) **全量有净流板块（含净流入/净出全部）**，转成 storage.SectorAll。
+// 排序采用东方财富 ZJLX 接口标准模式：fid=f62（主力净流）× po=1（净流入 DESC，Top 500/页）+ po=0（净流出 ASC，流出最大在前，Top500/页）双向翻页 + code 去重；
+// 说明：ZJLX getZDYLBData 仅在按 f62 净流排序时才返回**全量有资金动作的行业+概念**；若按非净流字段（如 f12 代码升序）排序会触发接口数据截断（仅返回 <10% 板块），不可使用。
+// 产品含义：全量板块 = 所有当日有主力资金净流入或净流出（非零/非无数据）的行业 + 概念；无净流数据的冷门板块/空概念无分析价值自动过滤。
+// dateStr: 业务日期，仅写入结构体，不依赖东方财富接口时间（东方财富返回最新）。
+func FetchSectorsAllDaily(dateStr string) ([]storage.SectorAll, error) {
+	targets := []struct {
+		fs       string
+		category string
+	}{
+		{"m:90+t:2", "industry"},
+		{"m:90+t:3", "concept"},
+	}
+	var out []storage.SectorAll
+	seen := make(map[string]bool)
+	for _, t := range targets {
+		raw, err := fetchEMRaw(t.fs)
+		if err != nil {
+			return nil, fmt.Errorf("fetch %s/%s: %w", t.fs, t.category, err)
+		}
+		for _, item := range raw {
+			name, _ := item["f14"].(string)
+			code, _ := item["f12"].(string)
+			netVal := item["f62"]
+			if name == "" || netVal == nil || (code != "" && seen[t.category+"|"+code]) || isPlatformBucket(name) {
+				continue
+			}
+			net, ok := toFloat64(netVal)
+			if !ok {
+				continue
+			}
+			if code != "" {
+				seen[t.category+"|"+code] = true
+			}
+			rate, _ := toFloat64(item["f184"])
+			chg, _ := toFloat64(item["f3"])
+			sNet, _ := toFloat64(item["f66"])
+			sRate, _ := toFloat64(item["f69"])
+			bNet, _ := toFloat64(item["f72"])
+			bRate, _ := toFloat64(item["f75"])
+			vol, _ := toFloat64(item["f5"])
+			turn, _ := toFloat64(item["f6"])
+			toRate, _ := toFloat64(item["f7"])
+			lead, _ := item["f140"].(string)
+			leadChg, _ := toFloat64(item["f127"])
+			mcap, _ := toFloat64(item["f20"])
+			cmcap, _ := toFloat64(item["f21"])
+			out = append(out, storage.SectorAll{
+				Date:                 dateStr,
+				Code:                 code,
+				Name:                 name,
+				Net:                  roundTo2(net / 1e8),
+				Rate:                 roundTo2(rate),
+				ChangePct:            roundTo2(chg),
+				SuperNet:             roundTo2(sNet / 1e8),
+				SuperRate:            roundTo2(sRate),
+				BigNet:               roundTo2(bNet / 1e8),
+				BigRate:              roundTo2(bRate),
+				Volume:               roundTo2(vol),
+				Turnover:             roundTo2(turn / 1e8),
+				TurnoverRate:         roundTo2(toRate),
+				LeadStockName:        lead,
+				LeadStockChangePct:   roundTo2(leadChg),
+				TotalMarketCap:       roundTo2(mcap / 1e8),
+				CirculatingMarketCap: roundTo2(cmcap / 1e8),
+				Category:             t.category,
+			})
+		}
+	}
+	return out, nil
 }
 
 func getField(record []string, colIdx map[string]int, field string) string {
