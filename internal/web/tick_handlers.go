@@ -210,7 +210,11 @@ func handleTickStream(c *gin.Context, tickSched *tick.TickScheduler) {
 	defer unsubscribe()
 
 	snapshot := tickSched.GetFetcher().GetSnapshot()
-	data, _ := json.Marshal(snapshot)
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		logger.Warn("序列化 tick 快照失败", zap.Error(err))
+		return
+	}
 	line := fmt.Sprintf(`{"type":"tick","text":%s}`, jsonStr(string(data)))
 	c.Writer.Write([]byte(line + "\n"))
 	c.Writer.Flush()

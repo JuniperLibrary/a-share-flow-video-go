@@ -72,8 +72,14 @@ func runExportTask(task *ExportTask) {
 	}
 
 	saveCheckpoint := func() {
-		data, _ := json.Marshal(map[string]int{"page": task.Page})
-		os.WriteFile(checkpointPath, data, 0644)
+		data, err := json.Marshal(map[string]int{"page": task.Page})
+		if err != nil {
+			logger.Warn("序列化检查点失败: " + err.Error())
+			return
+		}
+		if err := os.WriteFile(checkpointPath, data, 0644); err != nil {
+			logger.Warn("写入检查点失败: " + err.Error())
+		}
 	}
 
 	fetchPage := func(fs string, pn int) ([]storage.SectorAll, bool, error) {
@@ -96,8 +102,13 @@ func runExportTask(task *ExportTask) {
 				Diff []map[string]any `json:"diff"`
 			} `json:"data"`
 		}
-		b, _ := io.ReadAll(resp.Body)
-		json.Unmarshal(b, &result)
+		b, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, false, fmt.Errorf("读取东方财富响应失败: %w", err)
+		}
+		if err := json.Unmarshal(b, &result); err != nil {
+			return nil, false, fmt.Errorf("解析东方财富响应失败: %w", err)
+		}
 
 		var page []storage.SectorAll
 		for _, item := range result.Data.Diff {

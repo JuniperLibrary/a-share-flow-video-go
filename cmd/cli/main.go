@@ -554,6 +554,10 @@ func generateMultiDayVideo(endDate string, days int, useAI bool) {
 	l.Info("逐 tick 数据", zap.Int("dates", len(tickData)), zap.Int("totalSnapshots", totalTicks))
 
 	outputDir := config.GetOutputDir()
+	if len(tradingDays) == 0 {
+		l.Error("无交易日数据，无法生成多日视频")
+		return
+	}
 	dateLabel := tradingDays[0]
 	if len(tradingDays) > 1 {
 		dateLabel = tradingDays[0] + "_to_" + tradingDays[len(tradingDays)-1]

@@ -265,8 +265,10 @@ func (s *Scheduler) execute(session string) {
 		if err != nil {
 			logger.Warn("日报生成失败", zap.String("date", todayStr), zap.Error(err))
 		} else {
-			reportJSON, _ := json.Marshal(r)
-			if db, err := storage.Get(); err == nil {
+			reportJSON, err := json.Marshal(r)
+			if err != nil {
+				logger.Warn("序列化日报失败", zap.Error(err))
+			} else if db, err := storage.Get(); err == nil {
 				_ = db.SaveDailyReport(todayStr, "full", r.Summary, r.Outlook, string(reportJSON))
 				logger.Info("日报已生成", zap.String("date", todayStr))
 			}

@@ -238,7 +238,10 @@ func (c *AINewsClassifier) classifyBatch(items []classifyItem) ([][]string, erro
 		return results, nil
 	}
 
-	newsJSON, _ := json.Marshal(needAI)
+	newsJSON, err := json.Marshal(needAI)
+	if err != nil {
+		return nil, fmt.Errorf("序列化待分类新闻失败: %w", err)
+	}
 	sectorDesc := strings.Join(sectorTagDescriptions, "\n")
 	systemContent := fmt.Sprintf(systemPromptForClassifier, sectorDesc)
 	userContent := fmt.Sprintf(userPromptForClassifier, string(newsJSON))

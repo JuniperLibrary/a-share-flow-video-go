@@ -52,7 +52,11 @@ func (s *SSEWriter) Send(msgType, text string) {
 }
 
 func jsonStr(s string) string {
-	b, _ := json.Marshal(s)
+	b, err := json.Marshal(s)
+	if err != nil {
+		logger.Warn("序列化 SSE 文本失败", zap.Error(err))
+		return ""
+	}
 	return string(b)
 }
 
@@ -219,6 +223,10 @@ func handleGenerateMultiDay(c *gin.Context) {
 	sse.Send("log", fmt.Sprintf("⏱️ 逐 tick 数据: %d 日, %d 个时间点快照", len(tickData), totalTickSnapshots))
 
 	outputDir := config.GetOutputDir()
+	if len(tradingDays) == 0 {
+		sse.Send("error", "无交易日数据，无法生成多日视频")
+		return
+	}
 	dateLabel := tradingDays[0]
 	if len(tradingDays) > 1 {
 		dateLabel = tradingDays[0] + "_to_" + tradingDays[len(tradingDays)-1]

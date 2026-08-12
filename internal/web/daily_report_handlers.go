@@ -53,7 +53,9 @@ func extractReportMetrics(reportJSON string) reportMetrics {
 		return reportMetrics{}
 	}
 	var m reportMetrics
-	json.Unmarshal([]byte(reportJSON), &m)
+	if err := json.Unmarshal([]byte(reportJSON), &m); err != nil {
+		logger.Warn("解析日报指标失败，使用零值: " + err.Error())
+	}
 	return m
 }
 
@@ -139,6 +141,10 @@ func handleDailyReportGenerate(c *gin.Context) {
 		return
 	}
 
-	reportBytes, _ := json.Marshal(r)
+	reportBytes, err := json.Marshal(r)
+	if err != nil {
+		logger.InternalError(c, "序列化日报失败", err)
+		return
+	}
 	c.JSON(200, dailyReportResponse(req.Date, session, r.Summary, r.Outlook, string(reportBytes), true))
 }

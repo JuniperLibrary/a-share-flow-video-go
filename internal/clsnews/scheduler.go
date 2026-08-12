@@ -385,7 +385,11 @@ func (s *NewsScheduler) classifyOneWorker(id int) {
 				switch result.Status {
 				case "classified":
 					batch[i].Sectors = result.Tags
-					sectorsJSON, _ := json.Marshal(result.Tags)
+					sectorsJSON, err := json.Marshal(result.Tags)
+					if err != nil {
+						logger.Warn("序列化板块标签失败", zap.Error(err))
+						continue
+					}
 					if db.CLSNewsExists(batch[i].ID) {
 						err = db.UpdateCLSNewsSectors(batch[i].ID, string(sectorsJSON))
 					} else {

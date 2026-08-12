@@ -128,8 +128,10 @@ func Generate(dateStr string) (*DailyReport, error) {
 	report.CreatedAt = time.Now().In(shanghaiTZ).Format("2006-01-02 15:04:05")
 
 	// 9. 保存到 DB
-	reportJSON, _ := json.Marshal(report)
-	if err := db.SaveDailyReport(dateStr, session, report.Summary, report.Outlook, string(reportJSON)); err != nil {
+	reportJSON, err := json.Marshal(report)
+	if err != nil {
+		logger.Warn("序列化日报失败", zap.Error(err))
+	} else if err := db.SaveDailyReport(dateStr, session, report.Summary, report.Outlook, string(reportJSON)); err != nil {
 		logger.Warn("保存日报失败", zap.Error(err))
 	}
 

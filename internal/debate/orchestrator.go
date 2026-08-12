@@ -266,7 +266,11 @@ func (o *Orchestrator) executeTools(ctx context.Context, calls []ToolCall) strin
 			fmt.Fprintf(&b, "- %s: 错误 %v\n", call.Name, err)
 			continue
 		}
-		out, _ := json.Marshal(result)
+		out, err := json.Marshal(result)
+		if err != nil {
+			fmt.Fprintf(&b, "- %s: 序列化结果失败 %v\n", call.Name, err)
+			continue
+		}
 		fmt.Fprintf(&b, "- %s: %s\n", call.Name, string(out))
 	}
 	return b.String()
