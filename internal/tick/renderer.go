@@ -1397,7 +1397,7 @@ func BuildSectorTicks(points []TickPoint) ([]SectorTick, []string) {
 	return buildSectorTicks(points)
 }
 
-func applyDailyToSectorTicks(ticks []SectorTick, times []string, dateStr string) []SectorTick {
+func applyDailyToSectorTicks(ticks []SectorTick, _ []string, dateStr string) []SectorTick {
 	db, err := storage.Get()
 	if err != nil {
 		return ticks
@@ -1411,10 +1411,8 @@ func applyDailyToSectorTicks(ticks []SectorTick, times []string, dateStr string)
 		byName[d.Name] = d
 	}
 
-	tickNames := make(map[string]bool, len(ticks))
 	for i := range ticks {
 		t := &ticks[i]
-		tickNames[t.Name] = true
 		if d, ok := byName[t.Name]; ok {
 			if d.ChangePct != 0 {
 				t.ChangePct = d.ChangePct
@@ -1455,62 +1453,6 @@ func applyDailyToSectorTicks(ticks []SectorTick, times []string, dateStr string)
 			if d.Volume != 0 {
 				t.Volume = d.Volume
 			}
-		}
-	}
-
-	limit := 5
-	if len(ticks) >= 26 {
-		limit = 0
-	}
-	if limit > 0 {
-		var wildcards []SectorTick
-		for _, d := range daily {
-			if tickNames[d.Name] {
-				continue
-			}
-			if math.Abs(d.Net) < 3 && math.Abs(d.ChangePct) < 2.5 {
-				continue
-			}
-			timesN := len(times)
-			if timesN == 0 {
-				timesN = 48
-			}
-			flat := make([]float64, timesN)
-			step := d.Net / float64(timesN)
-			cum := 0.0
-			for i := 0; i < timesN; i++ {
-				cum += step
-				flat[i] = cum
-			}
-			wildcards = append(wildcards, SectorTick{
-				Name:                 d.Name,
-				Data:                 flat,
-				Rate:                 d.Rate,
-				ChangePct:            d.ChangePct,
-				SuperNet:             d.SuperNet,
-				SuperRate:            d.SuperRate,
-				BigNet:               d.BigNet,
-				BigRate:              d.BigRate,
-				Volume:               d.Volume,
-				Turnover:             d.Turnover,
-				TurnoverRate:         d.TurnoverRate,
-				LeadStockName:        d.LeadStockName,
-				LeadStockChangePct:   d.LeadStockChangePct,
-				TotalMarketCap:       d.TotalMarketCap,
-				CirculatingMarketCap: d.CirculatingMarketCap,
-				Color:                "",
-			})
-		}
-		if len(wildcards) > 0 {
-			sort.SliceStable(wildcards, func(i, j int) bool {
-				si := 0.5*math.Abs(wildcards[i].ChangePct) + 0.2*math.Abs(wildcards[i].Rate) + 0.3*wildcards[i].Turnover
-				sj := 0.5*math.Abs(wildcards[j].ChangePct) + 0.2*math.Abs(wildcards[j].Rate) + 0.3*wildcards[j].Turnover
-				return si > sj
-			})
-			if len(wildcards) > limit {
-				wildcards = wildcards[:limit]
-			}
-			ticks = append(ticks, wildcards...)
 		}
 	}
 
