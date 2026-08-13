@@ -381,15 +381,7 @@ var farewellSignoffPool = []string{
 	"明天再战，晚安！",
 }
 
-var farewellOralPool = []string{
-	"今天就聊到这里，祝大家明天出手顺顺利利，持仓稳稳抬轿，明天开盘见！",
-	"今天就到这里，祝各位账户长红，每一笔交易都有回报，明天我们盘中再见！",
-	"收盘了，祝大家明天节奏踩得准，承接拿得住，高位舍得跑，明天开盘不见不散！",
-	"今天就说到这里，祝愿大家持仓长阳，账户新高，祝好，明天见！",
-	"今天复盘就到这里，祝大家明天行情稳稳，出手都踩对时点，明天再战，晚安！",
-}
-
-func buildFarewellTexts(displayDate string) (oral string, blessing string, signoff string) {
+func buildFarewellTexts(displayDate string) (blessing string, signoff string) {
 	seed := 0
 	for _, r := range displayDate {
 		seed = (seed*31 + int(r)) % 1000003
@@ -397,10 +389,9 @@ func buildFarewellTexts(displayDate string) (oral string, blessing string, signo
 	if seed < 0 {
 		seed = -seed
 	}
-	oral = farewellOralPool[seed%len(farewellOralPool)]
 	blessing = farewellBlessingPool[(seed/7)%len(farewellBlessingPool)]
 	signoff = farewellSignoffPool[(seed/11)%len(farewellSignoffPool)]
-	return oral, blessing, signoff
+	return blessing, signoff
 }
 
 func sumSectorTickNet(st *SectorTick) float64 {
@@ -1079,7 +1070,7 @@ func RenderTickVideo(ctx context.Context, dateStr, outputPath, format, session s
 			}
 		}
 
-		_, farewellBlessing, farewellSignoff := buildFarewellTexts(displayDate)
+		farewellBlessing, farewellSignoff := BuildFarewellTexts(displayDate, sectorTicks)
 		// 口播与画面保持完全一致：直接朗读画面显示的最新祝福语 + 告别语，
 		// 不再使用独立的旧口播文案池（否则 MP3 与视频文字不一致）。
 		farewellText = farewellBlessing + " " + farewellSignoff
@@ -1104,8 +1095,6 @@ func RenderTickVideo(ctx context.Context, dateStr, outputPath, format, session s
 			}
 			farewellAudio = audioRel
 			farewellFrames = frames
-			_ = farewellBlessing
-			_ = farewellSignoff
 		})
 
 		wg.Wait()
@@ -1221,11 +1210,11 @@ func RenderTickVideo(ctx context.Context, dateStr, outputPath, format, session s
 			props.FarewellAudio = farewellAudio
 			props.FarewellFrames = farewellFrames
 			props.FarewellText = farewellText
-			_, b, s := buildFarewellTexts(displayDate)
+			b, s := buildFarewellTexts(displayDate)
 			props.FarewellBlessing = b
 			props.FarewellSignoff = s
 		} else {
-			_, b, s := buildFarewellTexts(displayDate)
+			b, s := buildFarewellTexts(displayDate)
 			props.FarewellBlessing = b
 			props.FarewellSignoff = s
 			props.FarewellText = farewellText

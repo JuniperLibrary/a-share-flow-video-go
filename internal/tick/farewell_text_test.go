@@ -11,7 +11,7 @@ import (
 func TestFarewellTexts_OralMatchesBlessingAndSignoff(t *testing.T) {
 	dates := []string{"07-15", "08-13", "01-02", "12-31", "06-30"}
 	for _, d := range dates {
-		_, blessing, signoff := buildFarewellTexts(d)
+		blessing, signoff := buildFarewellTexts(d)
 		oral := blessing + " " + signoff
 
 		if oral == "" {
@@ -27,6 +27,20 @@ func TestFarewellTexts_OralMatchesBlessingAndSignoff(t *testing.T) {
 		if !containsStr(farewellSignoffPool, signoff) {
 			t.Fatalf("date=%s: signoff %q 不在告别语池", d, signoff)
 		}
+	}
+}
+
+// TestFarewellTexts_NoAIKeyFallsBackToStaticPool 验证未配置 API key 时，
+// BuildFarewellTexts 回退到静态祝福语池，保证视频生成不依赖 LLM。
+func TestFarewellTexts_NoAIKeyFallsBackToStaticPool(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+
+	blessing, signoff := BuildFarewellTexts("08-13", nil)
+	if !containsStr(farewellBlessingPool, blessing) {
+		t.Fatalf("无 key 时应回退静态池，blessing %q 不在池中", blessing)
+	}
+	if !containsStr(farewellSignoffPool, signoff) {
+		t.Fatalf("无 key 时应回退静态池，signoff %q 不在池中", signoff)
 	}
 }
 
