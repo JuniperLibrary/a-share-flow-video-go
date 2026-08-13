@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -77,11 +78,25 @@ var SessionConfigs = map[string]SessionConfig{
 
 // AIConfig holds LLM API configuration.
 type AIConfig struct {
-	APIKey  string
-	BaseURL string
-	Model   string
-	Models  map[string]string // per-module model 覆盖，key 为模块名
+	APIKey              string
+	BaseURL             string
+	Model               string
+	Models              map[string]string // per-module model 覆盖，key 为模块名
+	TimeoutSec          int               // 单次请求超时（秒），<=0 表示走 env/默认 60s
+	MaxRetries          int               // 重试次数（总尝试=1+MaxRetries），<=0 表示走 env/默认 3
+	RetryBaseDelayMs    int               // 指数退避基础延迟（毫秒），<=0 表示走 env/默认 500ms
+	CopyTotalDeadlineSec int              // 文案 AI 总 deadline（秒），超过直接降级模板；<=0 走 env/默认 180s
+	CopyHumanizeEnabled  bool             // 是否启用第 3 轮「人味润色」LLM（true 多 1 次 round-trip 30s+）；默认 false 省耗时
 }
+
+// aiTunablesKeys 数据库 KV key 名 与 env 名 对齐，方便 UI/CLI/后端三处一致。
+const (
+	AITunableKeyTimeoutSec           = "ai_timeout_sec"
+	AITunableKeyMaxRetries           = "ai_max_retries"
+	AITunableKeyRetryBaseDelayMs     = "ai_retry_base_delay_ms"
+	AITunableKeyCopyTotalDeadlineSec = "copy_total_deadline_sec"
+	AITunableKeyCopyHumanizeEnabled  = "copy_humanize_enabled"
+)
 
 // moduleModelKeys 环境变量名 → 模块名的映射。
 var moduleModelKeys = map[string]string{
@@ -221,16 +236,38 @@ func LoadEnv() error {
 	return scanner.Err()
 }
 
+// parseAITunablesFromEnv 从环境变量解析 AI 超时/重试调参，未设置或非法则 fallback 到默认。
+func parseAITunablesFromEnv() (timeoutSec, maxRetries, retryBaseDelayMs int, hasAny bool) {
+	timeoutSec, maxRetries, retryBaseDelayMs = 0, -1, 0
+	if v := os.Getenv("AI_TIMEOUT_SEC"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			timeoutSec = n
+			hasAny = true
+		}
+	}
+	if v := os.Getenv("AI_MAX_RETRIES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			maxRetries = n
+			hasAny = true
+		}
+	}
+	if v := os.Getenv("AI_RETRY_BASE_DELAY_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			retryBaseDelayMs = n
+			hasAny = true
+		}
+	}
+	return timeoutSec, maxRetries, retryBaseDelayMs, hasAny
+}
+
 // GetAIConfig reads AI configuration from database (primary) or .env (fallback).
 func GetAIConfig() AIConfig {
+	cfg := AIConfig{Models: make(map[string]string)}
 	if aiConfigDBReader != nil {
 		if all, ok := aiConfigDBReader(); ok && len(all) > 0 {
-			cfg := AIConfig{
-				APIKey:  all["api_key"],
-				BaseURL: all["base_url"],
-				Model:   all["model"],
-				Models:  make(map[string]string),
-			}
+			cfg.APIKey = all["api_key"]
+			cfg.BaseURL = all["base_url"]
+			cfg.Model = all["model"]
 			if cfg.BaseURL == "" {
 				cfg.BaseURL = "https://api.openai.com/v1"
 			}
@@ -243,17 +280,45 @@ func GetAIConfig() AIConfig {
 					cfg.Models[module] = m
 				}
 			}
+			if v := all[AITunableKeyTimeoutSec]; v != "" {
+				if n, err := strconv.Atoi(v); err == nil && n > 0 {
+					cfg.TimeoutSec = n
+				}
+			}
+			if v := all[AITunableKeyMaxRetries]; v != "" {
+				if n, err := strconv.Atoi(v); err == nil && n > 0 {
+					cfg.MaxRetries = n
+				}
+			}
+			if v := all[AITunableKeyRetryBaseDelayMs]; v != "" {
+				if n, err := strconv.Atoi(v); err == nil && n > 0 {
+					cfg.RetryBaseDelayMs = n
+				}
+			}
+			if v := all[AITunableKeyCopyTotalDeadlineSec]; v != "" {
+				if n, err := strconv.Atoi(v); err == nil && n > 0 {
+					cfg.CopyTotalDeadlineSec = n
+				}
+			}
+			dbSetHumanize := false
+			if v := all[AITunableKeyCopyHumanizeEnabled]; v != "" {
+				dbSetHumanize = true
+				switch strings.ToLower(v) {
+				case "1", "true", "yes", "on":
+					cfg.CopyHumanizeEnabled = true
+				case "0", "false", "no", "off":
+					cfg.CopyHumanizeEnabled = false
+				}
+			}
 			if cfg.APIKey != "" {
+				_ = dbSetHumanize
 				return cfg
 			}
 		}
 	}
-	cfg := AIConfig{
-		APIKey:  os.Getenv("OPENAI_API_KEY"),
-		BaseURL: os.Getenv("OPENAI_BASE_URL"),
-		Model:   os.Getenv("AI_MODEL"),
-		Models:  make(map[string]string),
-	}
+	cfg.APIKey = os.Getenv("OPENAI_API_KEY")
+	cfg.BaseURL = os.Getenv("OPENAI_BASE_URL")
+	cfg.Model = os.Getenv("AI_MODEL")
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = "https://api.openai.com/v1"
 	}
@@ -265,6 +330,33 @@ func GetAIConfig() AIConfig {
 		if m := os.Getenv(envKey); m != "" {
 			cfg.Models[module] = m
 		}
+	}
+	if to, mr, rb, ok := parseAITunablesFromEnv(); ok {
+		if cfg.TimeoutSec == 0 {
+			cfg.TimeoutSec = to
+		}
+		if cfg.MaxRetries == 0 {
+			cfg.MaxRetries = mr
+		}
+		if cfg.RetryBaseDelayMs == 0 {
+			cfg.RetryBaseDelayMs = rb
+		}
+	}
+	if cfg.CopyTotalDeadlineSec == 0 {
+		if v := os.Getenv("COPY_TOTAL_DEADLINE_SEC"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				cfg.CopyTotalDeadlineSec = n
+			}
+		}
+	}
+	// Humanize: 默认 false（省 1 次 round-trip 30s+），除非 DB 显式设置或 env 显式打开
+	dbSetHumanize := false // env fallback 分支本来就是默认 false，这里无需再读 DB
+	_ = dbSetHumanize
+	switch strings.ToLower(os.Getenv("COPY_HUMANIZE_ENABLED")) {
+	case "1", "true", "yes", "on":
+		cfg.CopyHumanizeEnabled = true
+	case "0", "false", "no", "off":
+		cfg.CopyHumanizeEnabled = false
 	}
 	return cfg
 }
@@ -278,6 +370,19 @@ func SaveAIConfig(cfg AIConfig) error {
 		for module, model := range cfg.Models {
 			aiConfigDBWriter("model_"+module, model)
 		}
+		if cfg.TimeoutSec > 0 {
+			aiConfigDBWriter(AITunableKeyTimeoutSec, strconv.Itoa(cfg.TimeoutSec))
+		}
+		if cfg.MaxRetries > 0 {
+			aiConfigDBWriter(AITunableKeyMaxRetries, strconv.Itoa(cfg.MaxRetries))
+		}
+		if cfg.RetryBaseDelayMs > 0 {
+			aiConfigDBWriter(AITunableKeyRetryBaseDelayMs, strconv.Itoa(cfg.RetryBaseDelayMs))
+		}
+		if cfg.CopyTotalDeadlineSec > 0 {
+			aiConfigDBWriter(AITunableKeyCopyTotalDeadlineSec, strconv.Itoa(cfg.CopyTotalDeadlineSec))
+		}
+		aiConfigDBWriter(AITunableKeyCopyHumanizeEnabled, strconv.FormatBool(cfg.CopyHumanizeEnabled))
 	}
 
 	envPath := GetEnvPath()
@@ -300,6 +405,19 @@ func SaveAIConfig(cfg AIConfig) error {
 	existing["OPENAI_API_KEY"] = cfg.APIKey
 	existing["OPENAI_BASE_URL"] = cfg.BaseURL
 	existing["AI_MODEL"] = cfg.Model
+	if cfg.TimeoutSec > 0 {
+		existing["AI_TIMEOUT_SEC"] = strconv.Itoa(cfg.TimeoutSec)
+	}
+	if cfg.MaxRetries > 0 {
+		existing["AI_MAX_RETRIES"] = strconv.Itoa(cfg.MaxRetries)
+	}
+	if cfg.RetryBaseDelayMs > 0 {
+		existing["AI_RETRY_BASE_DELAY_MS"] = strconv.Itoa(cfg.RetryBaseDelayMs)
+	}
+	if cfg.CopyTotalDeadlineSec > 0 {
+		existing["COPY_TOTAL_DEADLINE_SEC"] = strconv.Itoa(cfg.CopyTotalDeadlineSec)
+	}
+	existing["COPY_HUMANIZE_ENABLED"] = strconv.FormatBool(cfg.CopyHumanizeEnabled)
 
 	f, err := os.Create(envPath)
 	if err != nil {

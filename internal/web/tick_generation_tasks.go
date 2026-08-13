@@ -13,8 +13,10 @@ import (
 	"github.com/a-share-flow-video-go/internal/copy"
 	"github.com/a-share-flow-video-go/internal/fetcher"
 	"github.com/a-share-flow-video-go/internal/hotnews"
+	"github.com/a-share-flow-video-go/internal/logger"
 	"github.com/a-share-flow-video-go/internal/storage"
 	"github.com/a-share-flow-video-go/internal/tick"
+	"go.uber.org/zap"
 )
 
 type tickGenerateTask struct {
@@ -44,10 +46,18 @@ type tickGenerateRequest struct {
 	Format   string `json:"format"`
 }
 
+const (
+	// finishedTaskTTL 终态（done/error/cancelled）任务在内存 + DB 保留的最小 TTL
+	finishedTaskTTL = 2 * time.Hour
+	// tickGeneratePruneInterval 后台清理器执行周期
+	tickGeneratePruneInterval = 1 * time.Minute
+)
+
 var (
 	tickGenerateTasks     = make(map[string]*tickGenerateTask)
 	tickGenerateActiveKey = make(map[string]string)
 	tickGenerateTasksMu   sync.RWMutex
+	tickGeneratePruneOnce sync.Once
 )
 
 func normalizeTickGenerateRequest(body *tickGenerateRequest) {
@@ -108,6 +118,7 @@ func newTickGenerateTask(body tickGenerateRequest) *tickGenerateTask {
 
 func startOrReuseTickGenerateTask(body tickGenerateRequest) (*tickGenerateTask, bool) {
 	key := buildTickGenerateTaskKey(body)
+	tickGeneratePruneOnce.Do(startTickGeneratePruner)
 
 	tickGenerateTasksMu.Lock()
 	defer tickGenerateTasksMu.Unlock()
@@ -122,15 +133,151 @@ func startOrReuseTickGenerateTask(body tickGenerateRequest) (*tickGenerateTask, 
 	task := newTickGenerateTask(body)
 	tickGenerateTasks[task.ID] = task
 	tickGenerateActiveKey[key] = task.ID
+	_ = persistTickTask(task) // 异步不阻塞：失败仅记日志
 	go runTickGenerateTask(task)
 	return task, false
 }
 
 func getTickGenerateTask(taskID string) (*tickGenerateTask, bool) {
+	tickGeneratePruneOnce.Do(startTickGeneratePruner)
+
 	tickGenerateTasksMu.RLock()
-	defer tickGenerateTasksMu.RUnlock()
-	task, ok := tickGenerateTasks[taskID]
-	return task, ok
+	t, ok := tickGenerateTasks[taskID]
+	tickGenerateTasksMu.RUnlock()
+	if ok && t != nil {
+		return t, true
+	}
+
+	if db, dbErr := storage.Get(); dbErr == nil {
+		if snap, loadErr := db.LoadTickGenerateTask(taskID); loadErr == nil && snap != nil {
+			rebuilt := rebuildTickTaskFromSnapshot(snap)
+			if rebuilt != nil {
+				tickGenerateTasksMu.Lock()
+				if _, exists := tickGenerateTasks[taskID]; !exists {
+					tickGenerateTasks[taskID] = rebuilt
+					// 仅当 DB 里还是 pending/running 时可能需要占 active key，否则不抢
+					if rebuilt.isActive() {
+						tickGenerateActiveKey[rebuilt.Key] = taskID
+					}
+				}
+				tickGenerateTasksMu.Unlock()
+				return rebuilt, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func persistTickTask(t *tickGenerateTask) error {
+	if t == nil || t.ID == "" {
+		return nil
+	}
+	db, dbErr := storage.Get()
+	if dbErr != nil {
+		return dbErr
+	}
+	t.mu.RLock()
+	logs := append([]string(nil), t.Logs...)
+	snap := &storage.TickGenerateTaskSnapshot{
+		ID:         t.ID,
+		Key:        t.Key,
+		Date:       t.Date,
+		Session:    t.Session,
+		CopyMode:   t.CopyMode,
+		Format:     t.Format,
+		Status:     t.Status,
+		Progress:   t.Progress,
+		Logs:       logs,
+		Error:      t.Error,
+		CreatedAt:  t.CreatedAt.Format("2006-01-02 15:04:05"),
+		UpdatedAt:  t.UpdatedAt.Format("2006-01-02 15:04:05"),
+		MobilePath: t.MobilePath,
+		TVPath:     t.TVPath,
+	}
+	t.mu.RUnlock()
+	return db.UpsertTickGenerateTask(snap)
+}
+
+func rebuildTickTaskFromSnapshot(snap *storage.TickGenerateTaskSnapshot) *tickGenerateTask {
+	if snap == nil || snap.ID == "" {
+		return nil
+	}
+	createdAt, cErr := time.ParseInLocation("2006-01-02 15:04:05", snap.CreatedAt, time.Local)
+	updatedAt, uErr := time.ParseInLocation("2006-01-02 15:04:05", snap.UpdatedAt, time.Local)
+	if cErr != nil {
+		createdAt = time.Now()
+	}
+	if uErr != nil {
+		updatedAt = time.Now()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	if snap.Status == "done" || snap.Status == "error" || snap.Status == "cancelled" {
+		cancel() // 终态任务不保留可取消的上下文
+	}
+	return &tickGenerateTask{
+		ID:         snap.ID,
+		Key:        snap.Key,
+		Date:       snap.Date,
+		Session:    snap.Session,
+		CopyMode:   snap.CopyMode,
+		Format:     snap.Format,
+		Status:     snap.Status,
+		Progress:   snap.Progress,
+		Logs:       snap.Logs,
+		Error:      snap.Error,
+		CreatedAt:  createdAt,
+		UpdatedAt:  updatedAt,
+		MobilePath: snap.MobilePath,
+		TVPath:     snap.TVPath,
+		ctx:        ctx,
+		cancel:     cancel,
+	}
+}
+
+func isTerminalStatus(status string) bool {
+	switch status {
+	case "done", "error", "cancelled":
+		return true
+	}
+	return false
+}
+
+// startTickGeneratePruner 后台清理：
+//   - 内存：终态 + 更新时间 > finishedTaskTTL 就 delete
+//   - DB  ：终态 + updated_at < (now - finishedTaskTTL*12) 就 delete（保留时间更长方便事后查）
+func startTickGeneratePruner() {
+	go func() {
+		ticker := time.NewTicker(tickGeneratePruneInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			now := time.Now()
+			// 内存清理
+			func() {
+				tickGenerateTasksMu.Lock()
+				defer tickGenerateTasksMu.Unlock()
+				for id, t := range tickGenerateTasks {
+					if t == nil {
+						delete(tickGenerateTasks, id)
+						continue
+					}
+					t.mu.RLock()
+					upd := t.UpdatedAt
+					st := t.Status
+					t.mu.RUnlock()
+					if isTerminalStatus(st) && now.Sub(upd) > finishedTaskTTL {
+						delete(tickGenerateTasks, id)
+					}
+				}
+			}()
+			// DB 清理
+			if db, dbErr := storage.Get(); dbErr == nil {
+				cutoff := now.Add(-finishedTaskTTL * 12)
+				if prErr := db.PruneTickGenerateTasksOlderThan(cutoff); prErr != nil {
+					logger.Warn("tick 任务表清理失败", zap.Error(prErr))
+				}
+			}
+		}
+	}()
 }
 
 func releaseTickGenerateTaskKey(task *tickGenerateTask) {
@@ -149,17 +296,33 @@ func (t *tickGenerateTask) isActive() bool {
 
 func (t *tickGenerateTask) setStatus(status, progress string) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	t.Status = status
 	t.Progress = progress
 	t.UpdatedAt = time.Now()
+	t.mu.Unlock()
+	if isTerminalStatus(status) {
+		releaseTickGenerateTaskKey(t)
+	}
+	_ = persistTickTask(t)
 }
 
 func (t *tickGenerateTask) appendLog(text string) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	t.Logs = append(t.Logs, text)
 	t.UpdatedAt = time.Now()
+	shouldPersist := len(t.Logs) == 1 || len(t.Logs)%3 == 0 || len(t.Logs)%5 == 0
+	t.mu.Unlock()
+	if shouldPersist {
+		_ = persistTickTask(t)
+	}
+}
+
+func (t *tickGenerateTask) setPathLocked(field *string, value string) {
+	t.mu.Lock()
+	*field = value
+	t.UpdatedAt = time.Now()
+	t.mu.Unlock()
+	_ = persistTickTask(t)
 }
 
 func (t *tickGenerateTask) fail(err error) {
@@ -175,6 +338,7 @@ func (t *tickGenerateTask) fail(err error) {
 	}
 	t.mu.Unlock()
 	releaseTickGenerateTaskKey(t)
+	_ = persistTickTask(t)
 }
 
 func (t *tickGenerateTask) complete(progress string) {
@@ -188,6 +352,7 @@ func (t *tickGenerateTask) complete(progress string) {
 	}
 	t.mu.Unlock()
 	releaseTickGenerateTaskKey(t)
+	_ = persistTickTask(t)
 }
 
 // Cancel 中断正在进行的渲染。若任务已结束则返回错误。
@@ -205,6 +370,11 @@ func (t *tickGenerateTask) Cancel() error {
 	if t.cancel != nil {
 		t.cancel()
 	}
+	// 持久化
+	go func(t *tickGenerateTask) {
+		releaseTickGenerateTaskKey(t)
+		_ = persistTickTask(t)
+	}(t)
 	return nil
 }
 
@@ -277,7 +447,7 @@ func runTickGenerateTask(task *tickGenerateTask) {
 
 	if isCancelled(task.ctx) {
 		task.appendLog("🛑 生成已取消（数据准备后）")
-		releaseTickGenerateTaskKey(task)
+		task.setStatus("cancelled", "生成已取消（数据准备后）")
 		return
 	}
 
@@ -320,7 +490,7 @@ func runTickGenerateTask(task *tickGenerateTask) {
 
 	if isCancelled(task.ctx) {
 		task.appendLog("🛑 生成已取消（文案阶段）")
-		releaseTickGenerateTaskKey(task)
+		task.setStatus("cancelled", "生成已取消（文案阶段）")
 		return
 	}
 
@@ -350,7 +520,7 @@ func runTickGenerateTask(task *tickGenerateTask) {
 	if renderMobile {
 		if isCancelled(task.ctx) {
 			task.appendLog("🛑 生成已取消（渲染前）")
-			releaseTickGenerateTaskKey(task)
+			task.setStatus("cancelled", "生成已取消（渲染前）")
 			return
 		}
 		task.appendLog("🎬 开始渲染 Tick 曲线视频 (Mobile 9:16)...")
@@ -360,14 +530,12 @@ func runTickGenerateTask(task *tickGenerateTask) {
 		if rErr != nil {
 			if isCancelled(task.ctx) {
 				task.appendLog("🛑 Mobile 渲染已取消")
-				releaseTickGenerateTaskKey(task)
+				task.setStatus("cancelled", "Mobile 渲染已取消")
 				return
 			}
 			task.appendLog(fmt.Sprintf("⚠️ Mobile 渲染失败: %v", rErr))
 		} else {
-			task.mu.Lock()
-			task.MobilePath = outMobile
-			task.mu.Unlock()
+			task.setPathLocked(&task.MobilePath, outMobile)
 			var fileInfo string
 			if fi, err := os.Stat(outMobile); err == nil {
 				fileInfo = fmt.Sprintf("%.1fMB", float64(fi.Size())/1024/1024)
@@ -379,7 +547,7 @@ func runTickGenerateTask(task *tickGenerateTask) {
 	if renderTV {
 		if isCancelled(task.ctx) {
 			task.appendLog("🛑 生成已取消（TV 渲染前）")
-			releaseTickGenerateTaskKey(task)
+			task.setStatus("cancelled", "生成已取消（TV 渲染前）")
 			return
 		}
 		task.appendLog("🎬 开始渲染 Tick 曲线视频 (TV 16:9)...")
@@ -389,16 +557,14 @@ func runTickGenerateTask(task *tickGenerateTask) {
 		if rErr != nil {
 			if isCancelled(task.ctx) {
 				task.appendLog("🛑 TV 渲染已取消")
-				releaseTickGenerateTaskKey(task)
+				task.setStatus("cancelled", "TV 渲染已取消")
 				return
 			}
 			task.fail(fmt.Errorf("TV 渲染失败: %w", rErr))
 			return
 		}
 
-		task.mu.Lock()
-		task.TVPath = outTV
-		task.mu.Unlock()
+		task.setPathLocked(&task.TVPath, outTV)
 		var fileInfo string
 		if fi, err := os.Stat(outTV); err == nil {
 			fileInfo = fmt.Sprintf("%.1fMB", float64(fi.Size())/1024/1024)

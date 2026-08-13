@@ -23,15 +23,12 @@ import (
 	"go.uber.org/zap"
 )
 
-// Default tunables (overridable via environment variables).
+// Default tunables (overridable via environment variables or AIConfig fields).
 const (
 	defaultTimeoutSec     = 60
 	defaultMaxRetries     = 3
 	defaultRetryBaseDelay = 500 * time.Millisecond
 	defaultClientTimeout  = 260 * time.Second
-	envTimeoutSec         = "AI_TIMEOUT_SEC"
-	envMaxRetries         = "AI_MAX_RETRIES"
-	envRetryBaseDelayMs   = "AI_RETRY_BASE_DELAY_MS"
 )
 
 // sharedClient is a long-lived http.Client that reuses TLS connections with a
@@ -49,7 +46,6 @@ func newSharedHTTPClient() *http.Client {
 		IdleConnTimeout:       45 * time.Second,
 		TLSHandshakeTimeout:   15 * time.Second,
 		ExpectContinueTimeout: 2 * time.Second,
-		// macOS/Linux: SO_REUSEADDR 尽量降低 TIME_WAIT 后的 bind 失败概率
 		DialContext: (&net.Dialer{
 			Timeout:   15 * time.Second,
 			KeepAlive: 30 * time.Second,
@@ -62,32 +58,53 @@ func newSharedHTTPClient() *http.Client {
 	}
 }
 
-// timeoutPerAttempt returns the per-attempt deadline duration.
-func timeoutPerAttempt() time.Duration {
-	if v := os.Getenv(envTimeoutSec); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return time.Duration(n) * time.Second
-		}
+// envInt reads an environment variable as int, returning (value, ok=true)
+// only when the variable is set and parses with the given predicate.
+func envInt(key string, pred func(int) bool) (int, bool) {
+	v := os.Getenv(key)
+	if v == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || !pred(n) {
+		return 0, false
+	}
+	return n, true
+}
+
+// resolveAttemptTimeout returns the per-attempt deadline duration with the
+// following priority: aiCfg.TimeoutSec (DB-persisted, UI 可调) > env AI_TIMEOUT_SEC > default 60s.
+func resolveAttemptTimeout(aiCfg config.AIConfig) time.Duration {
+	if aiCfg.TimeoutSec > 0 {
+		return time.Duration(aiCfg.TimeoutSec) * time.Second
+	}
+	if n, ok := envInt("AI_TIMEOUT_SEC", func(n int) bool { return n > 0 }); ok {
+		return time.Duration(n) * time.Second
 	}
 	return defaultTimeoutSec * time.Second
 }
 
-// maxRetries returns the configured retry count (total attempts = 1 + maxRetries).
-func maxRetries() int {
-	if v := os.Getenv(envMaxRetries); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-			return n
-		}
+// resolveMaxRetries returns the retry count (总尝试次数 = 1 + resolveMaxRetries) with:
+// aiCfg.MaxRetries > 0 → env AI_MAX_RETRIES → default 3.
+// 注：aiCfg.MaxRetries <=0 视为未显式设置，走 env/default，避免 int 零值被当成"禁用重试"。
+func resolveMaxRetries(aiCfg config.AIConfig) int {
+	if aiCfg.MaxRetries > 0 {
+		return aiCfg.MaxRetries
+	}
+	if n, ok := envInt("AI_MAX_RETRIES", func(n int) bool { return n >= 0 }); ok {
+		return n
 	}
 	return defaultMaxRetries
 }
 
-// retryBaseDelay returns the base backoff delay for exponential backoff.
-func retryBaseDelay() time.Duration {
-	if v := os.Getenv(envRetryBaseDelayMs); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return time.Duration(n) * time.Millisecond
-		}
+// resolveRetryBaseDelay returns the exponential-backoff base delay with:
+// aiCfg.RetryBaseDelayMs > env AI_RETRY_BASE_DELAY_MS > default 500ms.
+func resolveRetryBaseDelay(aiCfg config.AIConfig) time.Duration {
+	if aiCfg.RetryBaseDelayMs > 0 {
+		return time.Duration(aiCfg.RetryBaseDelayMs) * time.Millisecond
+	}
+	if n, ok := envInt("AI_RETRY_BASE_DELAY_MS", func(n int) bool { return n > 0 }); ok {
+		return time.Duration(n) * time.Millisecond
 	}
 	return defaultRetryBaseDelay
 }
@@ -173,12 +190,14 @@ func ChatCompletionRaw(ctx context.Context, aiCfg config.AIConfig, messages []Ch
 		MaxTokens:   maxTokens,
 	}
 
-	attempts := 1 + maxRetries()
+	attempts := 1 + resolveMaxRetries(aiCfg)
+	attemptTimeout := resolveAttemptTimeout(aiCfg)
+	retryBase := resolveRetryBaseDelay(aiCfg)
 	var lastErr error
 
 	for attempt := 0; attempt < attempts; attempt++ {
 		if attempt > 0 {
-			delay := retryBaseDelay() * time.Duration(1<<uint(attempt-1))
+			delay := retryBase * time.Duration(1<<uint(attempt-1))
 			logger.Warn("AI 请求重试",
 				zap.Int("attempt", attempt+1),
 				zap.Int("max_attempts", attempts),
@@ -193,7 +212,7 @@ func ChatCompletionRaw(ctx context.Context, aiCfg config.AIConfig, messages []Ch
 
 		// Per-attempt deadline so a hung connection does not block forever and
 		// so retries get a fresh deadline each time.
-		attemptCtx, cancel := context.WithTimeout(ctx, timeoutPerAttempt())
+		attemptCtx, cancel := context.WithTimeout(ctx, attemptTimeout)
 		content, status, err := doAttempt(attemptCtx, baseURL, aiCfg.APIKey, reqBody)
 		cancel()
 

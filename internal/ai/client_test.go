@@ -77,7 +77,7 @@ func TestExtractJSON(t *testing.T) {
 }
 
 func TestChatCompletionRetriesOn5xx(t *testing.T) {
-	t.Setenv(envMaxRetries, "2") // 3 attempts total
+	t.Setenv("AI_MAX_RETRIES", "2") // 3 attempts total
 	var hits int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := atomic.AddInt32(&hits, 1)
@@ -105,7 +105,7 @@ func TestChatCompletionRetriesOn5xx(t *testing.T) {
 }
 
 func TestChatCompletionNoRetryOn4xx(t *testing.T) {
-	t.Setenv(envMaxRetries, "3")
+	t.Setenv("AI_MAX_RETRIES", "3")
 	var hits int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&hits, 1)
@@ -145,8 +145,8 @@ func TestChatCompletionJSONStripsFence(t *testing.T) {
 }
 
 func TestChatCompletionTimeoutRetries(t *testing.T) {
-	t.Setenv(envMaxRetries, "2")
-	t.Setenv(envTimeoutSec, "1") // 1s per-attempt deadline
+	t.Setenv("AI_MAX_RETRIES", "2")
+	t.Setenv("AI_TIMEOUT_SEC", "1") // 1s per-attempt deadline
 	var hits int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := atomic.AddInt32(&hits, 1)

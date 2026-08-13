@@ -255,6 +255,23 @@ func (db *DB) initSchema() error {
 		value       TEXT NOT NULL DEFAULT '',
 		updated_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 	);
+
+	CREATE TABLE IF NOT EXISTS tick_generate_tasks (
+		id          TEXT    PRIMARY KEY,        -- tick_YYYYMMDD_nano
+		task_key    TEXT    NOT NULL DEFAULT '', -- date|session|copy_mode|format
+		date        TEXT    NOT NULL DEFAULT '',
+		session     TEXT    NOT NULL DEFAULT '',
+		copy_mode   TEXT    NOT NULL DEFAULT '',
+		format      TEXT    NOT NULL DEFAULT '',
+		status      TEXT    NOT NULL DEFAULT 'pending',
+		progress    TEXT    NOT NULL DEFAULT '',
+		logs_json   TEXT    NOT NULL DEFAULT '[]',
+		error_msg   TEXT    NOT NULL DEFAULT '',
+		created_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+		updated_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+		mobile_path TEXT    NOT NULL DEFAULT '',
+		tv_path     TEXT    NOT NULL DEFAULT ''
+	);
 	`
 	if _, err := db.db.Exec(schema); err != nil {
 		return err
@@ -1497,6 +1514,99 @@ func (db *DB) MigrateAIConfigFromEnv() error {
 		logger.Info("AI 配置已从环境变量迁移到数据库", zap.Int("count", migrated))
 	}
 	return nil
+}
+
+// TickGenerateTaskSnapshot 是 tick_generate_tasks 的 DB 行视图，
+// 与 web 层的 tickGenerateTask 对齐但不含 ctx/cancel/mu。
+type TickGenerateTaskSnapshot struct {
+	ID         string   `json:"id"`
+	Key        string   `json:"key"`
+	Date       string   `json:"date"`
+	Session    string   `json:"session"`
+	CopyMode   string   `json:"copy_mode"`
+	Format     string   `json:"format"`
+	Status     string   `json:"status"`
+	Progress   string   `json:"progress"`
+	Logs       []string `json:"logs"`
+	Error      string   `json:"error"`
+	CreatedAt  string   `json:"created_at"`
+	UpdatedAt  string   `json:"updated_at"`
+	MobilePath string   `json:"mobile_path"`
+	TVPath     string   `json:"tv_path"`
+}
+
+// UpsertTickGenerateTask 将一个任务的「可持久化字段」写入 tick_generate_tasks。
+// status=终态 或 progress/logs/mobile_path/tv_path 变动时都应调用本函数。
+func (db *DB) UpsertTickGenerateTask(t *TickGenerateTaskSnapshot) error {
+	if t == nil || t.ID == "" {
+		return fmt.Errorf("empty task id")
+	}
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if t.Logs == nil {
+		t.Logs = []string{}
+	}
+	logsJSON, err := json.Marshal(t.Logs)
+	if err != nil {
+		return fmt.Errorf("marshal logs: %w", err)
+	}
+	_, err = db.db.Exec(
+		`INSERT OR REPLACE INTO tick_generate_tasks
+       (id, task_key, date, session, copy_mode, format, status, progress, logs_json, error_msg, created_at, updated_at, mobile_path, tv_path)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'), ?, ?)`,
+		t.ID, t.Key, t.Date, t.Session, t.CopyMode, t.Format,
+		t.Status, t.Progress, string(logsJSON), t.Error,
+		t.CreatedAt, t.MobilePath, t.TVPath,
+	)
+	return err
+}
+
+// LoadTickGenerateTask 根据 ID 从 DB 加载任务快照，不存在时返回 nil,nil。
+func (db *DB) LoadTickGenerateTask(id string) (*TickGenerateTaskSnapshot, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	var (
+		logsJSON string
+		created  string
+		updated  string
+		snap     TickGenerateTaskSnapshot
+	)
+	err := db.db.QueryRow(
+		`SELECT id, task_key, date, session, copy_mode, format, status, progress, logs_json, error_msg,
+              created_at, updated_at, mobile_path, tv_path
+         FROM tick_generate_tasks WHERE id = ?`, id,
+	).Scan(
+		&snap.ID, &snap.Key, &snap.Date, &snap.Session, &snap.CopyMode, &snap.Format,
+		&snap.Status, &snap.Progress, &logsJSON, &snap.Error,
+		&created, &updated, &snap.MobilePath, &snap.TVPath,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	snap.CreatedAt = created
+	snap.UpdatedAt = updated
+	snap.Logs = []string{}
+	if logsJSON != "" && logsJSON != "null" {
+		_ = json.Unmarshal([]byte(logsJSON), &snap.Logs)
+	}
+	return &snap, nil
+}
+
+// PruneTickGenerateTasksOlderThan 删除 finished_at（=updated_at 对终态任务）在 cutoff 之前的任务
+// 避免 DB 无限增长。通常 cutoff = 48 小时前。
+func (db *DB) PruneTickGenerateTasksOlderThan(cutoff time.Time) error {
+	cutoffStr := cutoff.Format("2006-01-02 15:04:05")
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	_, err := db.db.Exec(
+		`DELETE FROM tick_generate_tasks
+         WHERE status IN ('done','error','cancelled') AND updated_at < ?`,
+		cutoffStr,
+	)
+	return err
 }
 
 // ExportJSON 将数据库全部表导出为 JSON 文件到 data/ 目录。
