@@ -21,6 +21,9 @@ web/frontend/tsconfig.tsbuildinfo
 # Environment
 .env
 
+# Runtime user config
+.sector-watchlist.json
+
 # Sisyphus orchestration
 .sisyphus/
 
