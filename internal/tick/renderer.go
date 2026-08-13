@@ -1079,8 +1079,10 @@ func RenderTickVideo(ctx context.Context, dateStr, outputPath, format, session s
 			}
 		}
 
-		farewellOral, farewellBlessing, farewellSignoff := buildFarewellTexts(displayDate)
-		farewellText = farewellOral
+		_, farewellBlessing, farewellSignoff := buildFarewellTexts(displayDate)
+		// 口播与画面保持完全一致：直接朗读画面显示的最新祝福语 + 告别语，
+		// 不再使用独立的旧口播文案池（否则 MP3 与视频文字不一致）。
+		farewellText = farewellBlessing + " " + farewellSignoff
 		run(func() {
 			audioRel, audioAbs, err := tts.TextToSpeechCommentatorCached(farewellText)
 			if err != nil {
