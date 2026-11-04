@@ -7,30 +7,31 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/a-share-flow-video-go/internal/httpclient"
 	"github.com/a-share-flow-video-go/internal/logger"
 	"go.uber.org/zap"
 )
 
 // NorthboundDaily 北向资金逐日汇总。
 type NorthboundDaily struct {
-	Date       string  `json:"date"`
-	TotalBuy   float64 `json:"totalBuy"`   // 沪股通+深股通买入（亿）
-	TotalSell  float64 `json:"totalSell"`  // 沪股通+深股通卖出（亿）
-	TotalNet   float64 `json:"totalNet"`   // 净买入（亿）
-	ShNetBuy   float64 `json:"shNetBuy"`   // 沪股通净买入（亿）
-	SzNetBuy   float64 `json:"szNetBuy"`   // 深股通净买入（亿）
-	TotalHold  float64 `json:"totalHold"`  // 累计持仓（亿）
+	Date      string  `json:"date"`
+	TotalBuy  float64 `json:"totalBuy"`  // 沪股通+深股通买入（亿）
+	TotalSell float64 `json:"totalSell"` // 沪股通+深股通卖出（亿）
+	TotalNet  float64 `json:"totalNet"`  // 净买入（亿）
+	ShNetBuy  float64 `json:"shNetBuy"`  // 沪股通净买入（亿）
+	SzNetBuy  float64 `json:"szNetBuy"`  // 深股通净买入（亿）
+	TotalHold float64 `json:"totalHold"` // 累计持仓（亿）
 }
 
 // NorthboundStock 北向资金逐股持仓。
 type NorthboundStock struct {
-	Date        string  `json:"date"`
-	StockCode   string  `json:"stockCode"`
-	StockName   string  `json:"stockName"`
-	Market      string  `json:"market"`      // SH / SZ
-	HoldShares  float64 `json:"holdShares"`  // 持仓量（万股）
-	HoldValue   float64 `json:"holdValue"`   // 持仓市值（亿）
-	HoldRatio   float64 `json:"holdRatio"`   // 持股比例（%）
+	Date         string  `json:"date"`
+	StockCode    string  `json:"stockCode"`
+	StockName    string  `json:"stockName"`
+	Market       string  `json:"market"`       // SH / SZ
+	HoldShares   float64 `json:"holdShares"`   // 持仓量（万股）
+	HoldValue    float64 `json:"holdValue"`    // 持仓市值（亿）
+	HoldRatio    float64 `json:"holdRatio"`    // 持股比例（%）
 	ChangeShares float64 `json:"changeShares"` // 变动量（万股）
 	ChangeValue  float64 `json:"changeValue"`  // 变动市值（亿）
 }
@@ -68,7 +69,7 @@ func FetchNorthboundDaily(days int) ([]NorthboundDaily, error) {
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	req.Header.Set("Referer", "https://data.eastmoney.com/hsgt/index.html")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := httpclient.New(30 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request northbound daily: %w", err)
@@ -153,7 +154,7 @@ func fetchNorthboundByMarket(dateStr, market string) ([]NorthboundStock, error) 
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	req.Header.Set("Referer", "https://data.eastmoney.com/hsgt/index.html")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := httpclient.New(30 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request northbound stocks %s: %w", market, err)
@@ -175,7 +176,7 @@ func fetchNorthboundByMarket(dateStr, market string) ([]NorthboundStock, error) 
 		if code == "" || name == "" {
 			continue
 		}
-		holdShares := getNbFloat(d, "HOLD_SHARES", 1e4)   // 股→万股
+		holdShares := getNbFloat(d, "HOLD_SHARES", 1e4)    // 股→万股
 		holdValue := getNbFloat(d, "HOLD_MARKET_CAP", 1e8) // 元→亿
 		changeShares := getNbFloat(d, "CHANGE_SHARES", 1e4)
 		changeValue := getNbFloat(d, "CHANGE_MARKET_CAP", 1e8)

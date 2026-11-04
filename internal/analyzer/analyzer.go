@@ -391,7 +391,7 @@ func AIGenerate(sectors []fetcher.Sector, dateStr string, aiCfg config.AIConfig)
 		formatTop5(sectorsOut),
 	)
 
-	prompt := fmt.Sprintf(PromptDailyAnalysis, dataSummary)
+	prompt := fmt.Sprintf(PromptDailyAnalysis, fetcher.TradingDayContext(dateStr), dataSummary)
 
 	var data struct {
 		TimelineEvents []TimelineEvent `json:"timelineEvents"`
@@ -413,7 +413,32 @@ func AIGenerate(sectors []fetcher.Sector, dateStr string, aiCfg config.AIConfig)
 		zap.Int("events", len(data.Events)),
 		zap.Int("timeline", len(timeline)),
 		zap.Int("ticker", len(data.TickerItems)))
+	for i := range data.Events {
+		data.Events[i].Text = sanitizeRelativeTime(dateStr, data.Events[i].Text)
+		data.Events[i].Subtext = sanitizeRelativeTime(dateStr, data.Events[i].Subtext)
+	}
+	for i := range timeline {
+		timeline[i].Title = sanitizeRelativeTime(dateStr, timeline[i].Title)
+		timeline[i].Description = sanitizeRelativeTime(dateStr, timeline[i].Description)
+	}
+	for i := range data.TickerItems {
+		data.TickerItems[i].Text = sanitizeRelativeTime(dateStr, data.TickerItems[i].Text)
+	}
+
 	return data.Events, timeline, data.TickerItems, nil
+}
+
+// sanitizeRelativeTime 将 AI 生成文本中的相对时间词替换为具体日期，
+// 防止「今天/明天/今日/明日」漏网渲染进视频。
+func sanitizeRelativeTime(dateStr, text string) string {
+	nextDay := fetcher.NextTradingDayCN(dateStr)
+	replacer := strings.NewReplacer(
+		"今天", fetcher.FormatCNDate(dateStr),
+		"今日", fetcher.FormatCNDate(dateStr),
+		"明日", nextDay,
+		"明天", nextDay,
+	)
+	return replacer.Replace(text)
 }
 
 // AnalyzeAllContent 统一入口：优先尝试 AI 生成，失败时自动降级到数据驱动生成。
@@ -483,7 +508,7 @@ func GetFallbackEvents(totalFrames int) []MarketEvent {
 		{EventType: "aberration", Frame: totalFrames * 62 / 100, Text: "部分板块承压", Subtext: "资金流出观望", Importance: 2},
 		{EventType: "sentiment", Frame: totalFrames * 75 / 100, Text: "午后情绪回暖", Subtext: "资金回流", Importance: 2},
 		{EventType: "rotation", Frame: totalFrames * 85 / 100, Text: "尾盘资金动向", Subtext: "板块轮动加速", Importance: 1},
-		{EventType: "market", Frame: totalFrames * 95 / 100, Text: "收盘", Subtext: "今日板块情绪分化明显", Importance: 2},
+		{EventType: "market", Frame: totalFrames * 95 / 100, Text: "收盘", Subtext: "当日板块情绪分化明显", Importance: 2},
 	}
 }
 

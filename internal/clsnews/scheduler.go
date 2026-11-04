@@ -27,6 +27,7 @@ const numClassifyWorkers = 3
 // AI 标签分类通过队列+worker 异步处理：poll() 仅负责拉取和入队，
 // worker goroutine 逐条调用 AI 并保存结果。
 type NewsScheduler struct {
+	lifecycleMu      sync.Mutex
 	mu               sync.Mutex
 	running          bool
 	stopCh           chan struct{}
@@ -54,6 +55,13 @@ func NewNewsScheduler() *NewsScheduler {
 // 自动轮询间隔由 GetPollInterval 决定（交易时段 30s、非交易时段 5min）。
 // AI 分类 worker 从队列中逐条消费，单条调用大模型。
 func (s *NewsScheduler) Start() {
+	s.start(s.classifyWorker, s.retryPendingLoop, s.loop, s.pollOnce, s.retryPendingOnce)
+}
+
+// start 串行化整轮启停；后台任务全部退出前不允许替换通道。
+func (s *NewsScheduler) start(tasks ...func()) {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	s.mu.Lock()
 	if s.running {
 		s.mu.Unlock()
@@ -65,17 +73,21 @@ func (s *NewsScheduler) Start() {
 	s.queuedNewsIDs = make(map[int64]struct{})
 	s.mu.Unlock()
 
-	go s.classifyWorker()
-	go s.retryPendingLoop()
-	go s.loop()
-	go s.pollOnce()
-	go s.retryPendingOnce()
+	s.classifyWorkerWg.Add(len(tasks))
+	for _, task := range tasks {
+		go func() {
+			defer s.classifyWorkerWg.Done()
+			task()
+		}()
+	}
 	logger.Info("财联社新闻自动轮询已启动（交易时段30s/非交易时段5min），AI 分类队列", zap.Int("queueSize", classifyQueueSize))
 }
 
 // Stop 停止后台自动轮询和 AI 分类 worker。
 // 等待当前正在分类的新闻完成（队列中未处理的丢弃）。
 func (s *NewsScheduler) Stop() {
+	s.lifecycleMu.Lock()
+	defer s.lifecycleMu.Unlock()
 	s.mu.Lock()
 	if !s.running {
 		s.mu.Unlock()
@@ -250,6 +262,9 @@ func (s *NewsScheduler) enqueueNews(news []CLSNews) (queued, dropped int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if !s.running {
+		return 0, len(news)
+	}
 	for _, n := range news {
 		if len(n.Sectors) > 0 {
 			continue
@@ -271,7 +286,10 @@ func (s *NewsScheduler) enqueueNews(news []CLSNews) (queued, dropped int) {
 // poll 拉取最新新闻 → 原始入库 → 入队异步分类 → worker 回填标签。
 // 即使 AI 队列已满或分类失败，原始新闻也会保留，避免数据丢失。
 func (s *NewsScheduler) poll() int {
-	news, err := FetchTelegraphList(s.lastTime)
+	s.mu.Lock()
+	lastTime := s.lastTime
+	s.mu.Unlock()
+	news, err := FetchTelegraphList(lastTime)
 	if err != nil {
 		logger.Warn("财联社电报拉取失败", zap.Error(err))
 		return 0
@@ -286,14 +304,16 @@ func (s *NewsScheduler) poll() int {
 
 	logger.Info("财联社电报拉取",
 		zap.Int("total", len(news)),
-		zap.Int64("lastTime", s.lastTime),
+		zap.Int64("lastTime", lastTime),
 	)
 
 	// 更新最新时间戳
 	maxTime := ExtractMaxCTime(news)
+	s.mu.Lock()
 	if maxTime > s.lastTime {
 		s.lastTime = maxTime
 	}
+	s.mu.Unlock()
 
 	rawSaved := s.saveAllRaw(news)
 
@@ -332,17 +352,21 @@ func (s *NewsScheduler) classifyWorker() {
 		return
 	}
 
+	var workers sync.WaitGroup
 	for i := range numClassifyWorkers {
-		s.classifyWorkerWg.Add(1)
-		go s.classifyOneWorker(i)
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			s.classifyOneWorker(i)
+		}()
 	}
 
 	<-s.stopCh
+	workers.Wait()
 	logger.Info("AI 分类 worker 池退出", zap.Int64("processed", s.workerProcessed.Load()))
 }
 
 func (s *NewsScheduler) classifyOneWorker(id int) {
-	defer s.classifyWorkerWg.Done()
 	defer func() {
 		if r := recover(); r != nil {
 			logger.Error("AI 分类 worker panic",
@@ -359,6 +383,11 @@ func (s *NewsScheduler) classifyOneWorker(id int) {
 		select {
 		case <-s.stopCh:
 			return
+		default:
+		}
+		select {
+		case <-s.stopCh:
+			return
 		case first := <-s.classifyQueue:
 			batch := []CLSNews{first}
 		drain:
@@ -369,6 +398,11 @@ func (s *NewsScheduler) classifyOneWorker(id int) {
 				default:
 					break drain
 				}
+			}
+			select {
+			case <-s.stopCh:
+				return
+			default:
 			}
 			s.releaseQueued(batch)
 

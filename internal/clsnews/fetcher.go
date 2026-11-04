@@ -6,12 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/a-share-flow-video-go/internal/httpclient"
 	"github.com/a-share-flow-video-go/internal/logger"
 	"go.uber.org/zap"
 )
@@ -31,12 +31,12 @@ func DumpNews(news []CLSNews) {
 
 // API 请求参数
 const (
-	baseURL    = "https://www.cls.cn/v1/roll/get_roll_list"
-	appName    = "CailianpressWeb"
-	osName     = "web"
-	svVersion  = "8.4.6"
-	pageSize   = 50
-	userAgent  = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+	baseURL   = "https://www.cls.cn/v1/roll/get_roll_list"
+	appName   = "CailianpressWeb"
+	osName    = "web"
+	svVersion = "8.4.6"
+	pageSize  = 50
+	userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 
 func generateSign(params string) string {
@@ -66,16 +66,8 @@ type telegraphItem struct {
 	ShareURL   string      `json:"shareurl"`
 }
 
-var httpClient = &http.Client{
-	Timeout: 15 * time.Second,
-	Transport: &http.Transport{
-		DialContext: (&net.Dialer{
-			Timeout:   5 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		TLSHandshakeTimeout: 5 * time.Second,
-	},
-}
+// httpClient 复用全项目共享的连接池，避免高频拉取时堆积 TIME_WAIT 端口。
+var httpClient = httpclient.New(15 * time.Second)
 
 // FetchTelegraphList 拉取财联社电报列表。
 // lastTime: 上次最新时间戳（unix 秒），用于增量获取；0 = 获取最新。

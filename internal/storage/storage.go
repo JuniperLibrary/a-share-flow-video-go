@@ -3,6 +3,7 @@ package storage
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -98,15 +99,60 @@ type DebateHistory struct {
 	CreatedAt     string `json:"created_at"`
 }
 
+// sqliteConnPragmas 是必须对每一条连接生效的 PRAGMA。
+// busy_timeout / synchronous 都是连接级设置而非持久化状态，
+// 用 db.Exec 设置只会命中连接池里的某一条连接，
+// 因此必须通过 DSN 的 _pragma 参数下发，保证新建连接同样带上。
+var sqliteConnPragmas = []string{
+	// 默认 busy_timeout 为 0，并发读写时会立刻返回 SQLITE_BUSY(database is locked)
+	"busy_timeout(5000)",
+	"synchronous(NORMAL)",
+}
+
+// BuildSQLiteDSN 为 SQLite DSN 追加本项目统一的连接级 PRAGMA。
+// 供 storage 以及其它直连同一库文件的模块（如 debate memory）复用：
+// 多个连接池若对同一文件设置不一致的 busy_timeout，会互相触发 SQLITE_BUSY。
+func BuildSQLiteDSN(dbPath string) string {
+	if dbPath == "" {
+		return dbPath
+	}
+	sep := "?"
+	if strings.Contains(dbPath, "?") {
+		sep = "&"
+	}
+	var b strings.Builder
+	b.WriteString(dbPath)
+	b.WriteString(sep)
+	for i, p := range sqliteConnPragmas {
+		if i > 0 {
+			b.WriteString("&")
+		}
+		b.WriteString("_pragma=")
+		b.WriteString(p)
+	}
+	return b.String()
+}
+
 func New(dbPath string) (*DB, error) {
 	dir := filepath.Dir(dbPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create db directory: %w", err)
 	}
 
-	d, err := sql.Open("sqlite", dbPath)
+	d, err := sql.Open("sqlite", BuildSQLiteDSN(dbPath))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open sqlite: %w", err)
+	}
+	if dbPath == ":memory:" {
+		// A plain in-memory SQLite database is private to each connection.
+		d.SetMaxOpenConns(1)
+		d.SetMaxIdleConns(1)
+	} else {
+		// SQLite 同一时刻只允许一个写事务。限制连接数可降低锁竞争与文件描述符占用，
+		// 配合 busy_timeout 让并发读写排队等待，而不是直接报 database is locked。
+		d.SetMaxOpenConns(8)
+		d.SetMaxIdleConns(4)
+		d.SetConnMaxLifetime(time.Hour)
 	}
 
 	if _, err := d.Exec("PRAGMA journal_mode=WAL"); err != nil {
@@ -278,42 +324,66 @@ func (db *DB) initSchema() error {
 	}
 
 	// Migrations for existing databases (idempotent — ADD COLUMN with default)
-	_, _ = db.db.Exec("ALTER TABLE sectors ADD COLUMN input_date TEXT NOT NULL DEFAULT ''")
-	_, _ = db.db.Exec("ALTER TABLE sectors ADD COLUMN rate REAL NOT NULL DEFAULT 0")
-	_, _ = db.db.Exec("ALTER TABLE sectors ADD COLUMN change_pct REAL NOT NULL DEFAULT 0")
-	_, _ = db.db.Exec("ALTER TABLE sectors ADD COLUMN super_net REAL NOT NULL DEFAULT 0")
-	_, _ = db.db.Exec("ALTER TABLE sectors ADD COLUMN super_rate REAL NOT NULL DEFAULT 0")
-	_, _ = db.db.Exec("ALTER TABLE sectors ADD COLUMN big_net REAL NOT NULL DEFAULT 0")
-	_, _ = db.db.Exec("ALTER TABLE sectors ADD COLUMN big_rate REAL NOT NULL DEFAULT 0")
-	_, _ = db.db.Exec("ALTER TABLE sectors ADD COLUMN volume REAL NOT NULL DEFAULT 0")
-	_, _ = db.db.Exec("ALTER TABLE sectors ADD COLUMN turnover REAL NOT NULL DEFAULT 0")
-	_, _ = db.db.Exec("ALTER TABLE sectors ADD COLUMN bk_code TEXT NOT NULL DEFAULT ''")
-	_, _ = db.db.Exec("ALTER TABLE sectors ADD COLUMN turnover_rate REAL NOT NULL DEFAULT 0")
-	_, _ = db.db.Exec("ALTER TABLE sectors ADD COLUMN lead_stock_name TEXT NOT NULL DEFAULT ''")
-	_, _ = db.db.Exec("ALTER TABLE sectors ADD COLUMN lead_stock_change_pct REAL NOT NULL DEFAULT 0")
-	_, _ = db.db.Exec("ALTER TABLE sectors ADD COLUMN total_market_cap REAL NOT NULL DEFAULT 0")
-	_, _ = db.db.Exec("ALTER TABLE sectors ADD COLUMN circulating_market_cap REAL NOT NULL DEFAULT 0")
-	_, _ = db.db.Exec("ALTER TABLE sectors_all ADD COLUMN rate REAL NOT NULL DEFAULT 0")
-	_, _ = db.db.Exec("ALTER TABLE sectors_all ADD COLUMN category TEXT NOT NULL DEFAULT ''")
-	_, _ = db.db.Exec("ALTER TABLE sectors_all ADD COLUMN change_pct REAL NOT NULL DEFAULT 0")
-	_, _ = db.db.Exec("ALTER TABLE sectors_all ADD COLUMN super_net REAL NOT NULL DEFAULT 0")
-	_, _ = db.db.Exec("ALTER TABLE sectors_all ADD COLUMN super_rate REAL NOT NULL DEFAULT 0")
-	_, _ = db.db.Exec("ALTER TABLE sectors_all ADD COLUMN big_net REAL NOT NULL DEFAULT 0")
-	_, _ = db.db.Exec("ALTER TABLE sectors_all ADD COLUMN big_rate REAL NOT NULL DEFAULT 0")
-	_, _ = db.db.Exec("ALTER TABLE sectors_all ADD COLUMN volume REAL NOT NULL DEFAULT 0")
-	_, _ = db.db.Exec("ALTER TABLE sectors_all ADD COLUMN turnover REAL NOT NULL DEFAULT 0")
-	_, _ = db.db.Exec("ALTER TABLE sectors_all ADD COLUMN turnover_rate REAL NOT NULL DEFAULT 0")
-	_, _ = db.db.Exec("ALTER TABLE sectors_all ADD COLUMN lead_stock_name TEXT NOT NULL DEFAULT ''")
-	_, _ = db.db.Exec("ALTER TABLE sectors_all ADD COLUMN lead_stock_change_pct REAL NOT NULL DEFAULT 0")
-	_, _ = db.db.Exec("ALTER TABLE sectors_all ADD COLUMN total_market_cap REAL NOT NULL DEFAULT 0")
-	_, _ = db.db.Exec("ALTER TABLE sectors_all ADD COLUMN circulating_market_cap REAL NOT NULL DEFAULT 0")
-	_, _ = db.db.Exec("ALTER TABLE cls_news ADD COLUMN classify_status TEXT NOT NULL DEFAULT 'pending'")
-	_, _ = db.db.Exec("ALTER TABLE cls_news ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0")
-	_, _ = db.db.Exec("ALTER TABLE cls_news ADD COLUMN last_retry_at TEXT NOT NULL DEFAULT ''")
-	_, _ = db.db.Exec("ALTER TABLE cls_news ADD COLUMN last_error TEXT NOT NULL DEFAULT ''")
-	_, _ = db.db.Exec("CREATE TABLE IF NOT EXISTS ai_config (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')))")
+	db.migrate(
+		"ALTER TABLE sectors ADD COLUMN input_date TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE sectors ADD COLUMN rate REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE sectors ADD COLUMN change_pct REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE sectors ADD COLUMN super_net REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE sectors ADD COLUMN super_rate REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE sectors ADD COLUMN big_net REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE sectors ADD COLUMN big_rate REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE sectors ADD COLUMN volume REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE sectors ADD COLUMN turnover REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE sectors ADD COLUMN bk_code TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE sectors ADD COLUMN turnover_rate REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE sectors ADD COLUMN lead_stock_name TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE sectors ADD COLUMN lead_stock_change_pct REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE sectors ADD COLUMN total_market_cap REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE sectors ADD COLUMN circulating_market_cap REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE sectors_all ADD COLUMN rate REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE sectors_all ADD COLUMN category TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE sectors_all ADD COLUMN change_pct REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE sectors_all ADD COLUMN super_net REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE sectors_all ADD COLUMN super_rate REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE sectors_all ADD COLUMN big_net REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE sectors_all ADD COLUMN big_rate REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE sectors_all ADD COLUMN volume REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE sectors_all ADD COLUMN turnover REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE sectors_all ADD COLUMN turnover_rate REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE sectors_all ADD COLUMN lead_stock_name TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE sectors_all ADD COLUMN lead_stock_change_pct REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE sectors_all ADD COLUMN total_market_cap REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE sectors_all ADD COLUMN circulating_market_cap REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE cls_news ADD COLUMN classify_status TEXT NOT NULL DEFAULT 'pending'",
+		"ALTER TABLE cls_news ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE cls_news ADD COLUMN last_retry_at TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE cls_news ADD COLUMN last_error TEXT NOT NULL DEFAULT ''",
+		"CREATE TABLE IF NOT EXISTS ai_config (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')))",
+		// LoadPendingCLSNews 按 (classify_status IN (...) ) + (retry_count ASC, ctime DESC) 取待分类新闻，
+		// 缺这条索引会退化为全表扫描，新闻表越大越慢。
+		// 必须放在上面的 ADD COLUMN 之后：老库此时才有 classify_status 列。
+		"CREATE INDEX IF NOT EXISTS idx_cls_news_status_retry ON cls_news(classify_status, retry_count, ctime)",
+	)
 
 	return nil
+}
+
+// migrate 执行幂等迁移语句。
+// ADD COLUMN 在列已存在时会返回 "duplicate column name"，属于重复执行的预期结果；
+// 其余错误必须暴露出来，否则 schema 会静默漂移，后续查询报出难以定位的错误。
+func (db *DB) migrate(stmts ...string) {
+	for _, s := range stmts {
+		if _, err := db.db.Exec(s); err != nil && !isDuplicateColumnErr(err) {
+			logger.Warn("数据库迁移语句执行失败",
+				zap.String("stmt", s),
+				zap.Error(err),
+			)
+		}
+	}
+}
+
+func isDuplicateColumnErr(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "duplicate column name")
 }
 
 func (db *DB) SaveSectors(sectors []Sector) error {
@@ -1209,7 +1279,7 @@ func (db *DB) RawRows(query string, args ...any) ([]map[string]any, error) {
 		return nil, err
 	}
 
-	var results []map[string]any
+	results := make([]map[string]any, 0)
 	for rows.Next() {
 		vals := make([]any, len(cols))
 		valPtrs := make([]any, len(cols))
@@ -1347,13 +1417,14 @@ func (db *DB) ListDailyReportDates() ([]string, error) {
 
 var exportQueries = []struct {
 	File  string
+	Table string
 	Query string
 }{
-	{"sectors.json", "SELECT datetime, name, net, rate, change_pct, super_net, super_rate, big_net, big_rate, volume, turnover, bk_code, turnover_rate, lead_stock_name, lead_stock_change_pct, total_market_cap, circulating_market_cap, input_date FROM sectors ORDER BY datetime, name"},
-	{"sectors_all.json", "SELECT date, code, name, net, rate, change_pct, super_net, super_rate, big_net, big_rate, volume, turnover, turnover_rate, lead_stock_name, lead_stock_change_pct, total_market_cap, circulating_market_cap FROM sectors_all ORDER BY date, name"},
-	{"copywriting.json", "SELECT date, session, type, content FROM copywriting ORDER BY date, session, type"},
-	{"tick_events.json", "SELECT date, session, type, payload FROM tick_events ORDER BY date, session, type"},
-	{"cls_news.json", "SELECT id, title, content, brief, level, reading_num, ctime, shareurl, sectors, created_at FROM cls_news ORDER BY ctime DESC"},
+	{"sectors.json", "sectors", "SELECT datetime, name, net, rate, change_pct, super_net, super_rate, big_net, big_rate, volume, turnover, bk_code, turnover_rate, lead_stock_name, lead_stock_change_pct, total_market_cap, circulating_market_cap, input_date FROM sectors ORDER BY datetime, name"},
+	{"sectors_all.json", "sectors_all", "SELECT date, code, name, net, rate, change_pct, super_net, super_rate, big_net, big_rate, volume, turnover, turnover_rate, lead_stock_name, lead_stock_change_pct, total_market_cap, circulating_market_cap FROM sectors_all ORDER BY date, name"},
+	{"copywriting.json", "copywriting", "SELECT date, session, type, content FROM copywriting ORDER BY date, session, type"},
+	{"tick_events.json", "tick_events", "SELECT date, session, type, payload FROM tick_events ORDER BY date, session, type"},
+	{"cls_news.json", "cls_news", "SELECT id, title, content, brief, level, reading_num, ctime, shareurl, sectors, classify_status, retry_count, last_retry_at, last_error, created_at FROM cls_news ORDER BY ctime DESC"},
 }
 
 // ListNotes 列出所有笔记（按创建时间倒序）。
@@ -1613,25 +1684,31 @@ func (db *DB) PruneTickGenerateTasksOlderThan(cutoff time.Time) error {
 // 仅在 DATA_MODE=json 时有效，sqlite 模式不产生 JSON 文件。
 func (db *DB) ExportJSON() error {
 	dir := config.GetDataDir()
-	os.MkdirAll(dir, 0755)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("创建 JSON 导出目录失败: %w", err)
+	}
 
+	var exportErrors []error
 	for _, t := range exportQueries {
 		rows, err := db.RawRows(t.Query)
 		if err != nil {
 			logger.Warn("导出失败", zap.String("table", t.File), zap.Error(err))
+			exportErrors = append(exportErrors, fmt.Errorf("导出 %s: %w", t.File, err))
 			continue
 		}
 		path := filepath.Join(dir, t.File)
 		data, err := json.MarshalIndent(rows, "", "  ")
 		if err != nil {
 			logger.Warn("JSON 序列化失败", zap.String("table", t.File), zap.Error(err))
+			exportErrors = append(exportErrors, fmt.Errorf("序列化 %s: %w", t.File, err))
 			continue
 		}
-		if err := os.WriteFile(path, data, 0644); err != nil {
+		if err := writeFileAtomic(path, data, 0644); err != nil {
 			logger.Warn("写入失败", zap.String("path", path), zap.Error(err))
+			exportErrors = append(exportErrors, fmt.Errorf("写入 %s: %w", path, err))
 			continue
 		}
 		logger.Info("JSON 已导出", zap.String("table", t.File), zap.Int("rows", len(rows)))
 	}
-	return nil
+	return errors.Join(exportErrors...)
 }

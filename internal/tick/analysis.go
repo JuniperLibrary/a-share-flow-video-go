@@ -276,7 +276,8 @@ func TickDataDrivenGenerate(points []TickPoint, session string) ([]analyzer.Mark
 	}
 
 	var events []analyzer.MarketEvent
-	totalFrames := 900
+	// MarketEvent.Frame 使用 0-100 的进度坐标，渲染端再换算为实际帧数。
+	totalFrames := 100
 
 	if len(timeOrder) > 0 {
 		firstNets := make(map[string]float64)
@@ -316,7 +317,7 @@ func TickDataDrivenGenerate(points []TickPoint, session string) ([]analyzer.Mark
 		if len(events) >= 8 {
 			break
 		}
-		frame := timeMinutesToFrame(sp.Minutes, totalFrames)
+		frame := timeMinutesToFrame(sp.Minutes, totalFrames, session)
 		events = append(events, analyzer.MarketEvent{
 			EventType:  ifElse(sp.IsInflow, "sentiment", "aberration"),
 			Frame:      frame,
@@ -330,7 +331,7 @@ func TickDataDrivenGenerate(points []TickPoint, session string) ([]analyzer.Mark
 		if len(events) >= 10 {
 			break
 		}
-		frame := timeMinutesToFrame(rc.Minutes, totalFrames)
+		frame := timeMinutesToFrame(rc.Minutes, totalFrames, session)
 		events = append(events, analyzer.MarketEvent{
 			EventType:  "rotation",
 			Frame:      frame,
@@ -375,24 +376,25 @@ func uniqueTickTimes(points []TickPoint) []string {
 }
 
 func buildSectorTimeSeries(points []TickPoint, timeOrder []string) map[string][]float64 {
+	timeIndex := make(map[string]int, len(timeOrder))
+	for i, timeStr := range timeOrder {
+		timeIndex[timeStr] = i
+	}
+
 	sectorPrev := make(map[string]float64)
 	sectorDeltas := make(map[string][]float64)
-
 	for _, p := range points {
+		index, ok := timeIndex[p.Time]
+		if !ok {
+			continue
+		}
+		if _, ok := sectorDeltas[p.Name]; !ok {
+			sectorDeltas[p.Name] = make([]float64, len(timeOrder))
+		}
 		prev := sectorPrev[p.Name]
-		delta := p.Net - prev
-		sectorDeltas[p.Name] = append(sectorDeltas[p.Name], delta)
+		sectorDeltas[p.Name][index] += p.Net - prev
 		sectorPrev[p.Name] = p.Net
 	}
-
-	for _, times := range sectorDeltas {
-		if len(times) < len(timeOrder) {
-			padded := make([]float64, len(timeOrder))
-			copy(padded, times)
-			times = padded
-		}
-	}
-
 	return sectorDeltas
 }
 
@@ -410,12 +412,15 @@ func minutesOf(t string) int {
 	return val
 }
 
-func timeMinutesToFrame(minutes, totalFrames int) int {
-	if minutes < 0 {
+func timeMinutesToFrame(minutes, totalFrames int, session string) int {
+	if minutes < 0 || totalFrames <= 0 {
 		return 0
 	}
-	// 上午: 0-120分钟, 下午补90分钟午休偏移
-	fraction := float64(minutes) / 330.0
+	sessionCfg, ok := config.SessionConfigs[session]
+	if !ok || sessionCfg.TotalSpan <= 0 {
+		sessionCfg = config.SessionConfigs["full"]
+	}
+	fraction := float64(minutes) / float64(sessionCfg.TotalSpan)
 	frame := int(fraction * float64(totalFrames))
 	if frame >= totalFrames {
 		frame = totalFrames - 1

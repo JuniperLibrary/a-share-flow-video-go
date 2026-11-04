@@ -55,12 +55,14 @@ func handleTTSSynthesize(c *gin.Context) {
 
 	fileName := newTTSFileName()
 	outputPath := filepath.Join(audioDir, fileName)
-	if err := tts.TextToSpeech(body.Text, outputPath); err != nil {
+	result, err := tts.SynthesizeContext(c.Request.Context(), body.Text, outputPath, tts.Options{Preset: tts.DefaultPresetID})
+	if err != nil {
+		_ = os.Remove(outputPath)
 		logger.InternalError(c, "TTS 合成失败", err)
 		return
 	}
 
-	duration, _ := tts.GetAudioDuration(outputPath)
+	duration := result.DurationSec
 
 	logger.Info("TTS 合成完成",
 		zap.String("file", fileName),

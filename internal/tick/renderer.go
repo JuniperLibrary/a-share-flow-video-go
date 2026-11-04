@@ -16,6 +16,7 @@ import (
 
 	"github.com/a-share-flow-video-go/internal/analyzer"
 	"github.com/a-share-flow-video-go/internal/config"
+	"github.com/a-share-flow-video-go/internal/fetcher"
 	"github.com/a-share-flow-video-go/internal/hotnews"
 	"github.com/a-share-flow-video-go/internal/logger"
 	"github.com/a-share-flow-video-go/internal/storage"
@@ -38,7 +39,7 @@ var outroUILabelBannedReplacer = strings.NewReplacer(
 	"结构", "资金结构",
 	"风险", "风险点",
 	"动作", "应对",
-	"明日观察", "明天盯盘的点",
+	"明日观察", "下个交易日盯盘的点",
 	"信号", "信号提示",
 	"建议", "思路",
 	"：", "，",
@@ -47,20 +48,24 @@ var outroUILabelBannedReplacer = strings.NewReplacer(
 )
 
 var outroOralPrefixPool = []string{
-	"简单和大家说下今天的盘面，",
+	"简单和大家说下盘面，",
 	"收盘简单复盘一下，",
-	"最后再和大家一起过一遍今天的行情，",
-	"一句话给今天定个调，",
+	"最后再和大家一起过一遍行情，",
+	"一句话给盘面定个调，",
 }
 
 var outroOralEndingPool = []string{
-	"，明天我们盘中再看。",
-	"，明天开盘一起盯。",
+	"，下个交易日盘中再看。",
+	"，下个交易日开盘一起盯。",
 	"，节奏放慢，别急。",
 	"，按计划来。",
 }
 
-func buildMainStructureOutroText(r *MainStructureResult, sectorTicks []SectorTick) string {
+func buildMainStructureOutroText(dateStr string, r *MainStructureResult, sectorTicks []SectorTick) string {
+	cnDate := fetcher.FormatCNDate(dateStr)
+	if cnDate == "" {
+		cnDate = "盘面"
+	}
 	var leader, pressure *SectorTick
 	var totalIn, totalOut float64
 	for i := range sectorTicks {
@@ -143,8 +148,8 @@ func buildMainStructureOutroText(r *MainStructureResult, sectorTicks []SectorTic
 		if leader != nil {
 			high := fmt.Sprintf("盯%s能不能继续承接", leaderName)
 			medium := fmt.Sprintf("看%s流出能不能收敛", pressureName)
-			return fmt.Sprintf("%s今天就是%s撑住前排，%s还在被兑现。操作上先%s，再%s%s",
-				prefix, leaderName, pressureName, high, medium, ending)
+			return fmt.Sprintf("%s%s就是%s撑住前排，%s还在被兑现。操作上先%s，再%s%s",
+				prefix, cnDate, leaderName, pressureName, high, medium, ending)
 		}
 		cumulative := make(map[string][]float64)
 		for _, st := range sectorTicks {
@@ -184,7 +189,7 @@ func buildMainStructureOutroText(r *MainStructureResult, sectorTicks []SectorTic
 			buf.WriteString(conclusion)
 			buf.WriteString("。")
 		} else {
-			buf.WriteString(fmt.Sprintf("今天就是%s在前排撑着，%s还在失血。", leaderName, pressureName))
+			buf.WriteString(fmt.Sprintf("%s就是%s在前排撑着，%s还在失血。", cnDate, leaderName, pressureName))
 		}
 		if signal != "" {
 			buf.WriteString(signal)
@@ -212,14 +217,14 @@ func buildMainStructureOutroText(r *MainStructureResult, sectorTicks []SectorTic
 	planActions := cleanOralSentence(r.PlanActions)
 
 	var buf strings.Builder
-	if recap != "" && (strings.HasPrefix(recap, "今天") || strings.HasPrefix(recap, "收盘") || strings.HasPrefix(recap, "简单")) {
+	if recap != "" && (strings.HasPrefix(recap, "今天") || strings.HasPrefix(recap, "今日") || strings.HasPrefix(recap, "收盘") || strings.HasPrefix(recap, "简单")) {
 		buf.WriteString(recap)
 	} else {
 		buf.WriteString(prefix)
 		if recap != "" {
 			buf.WriteString(recap)
 		} else {
-			buf.WriteString(fmt.Sprintf("今天就是%s在前排撑着，%s还在失血", leaderName, pressureName))
+			buf.WriteString(fmt.Sprintf("%s就是%s在前排撑着，%s还在失血", cnDate, leaderName, pressureName))
 		}
 	}
 	if highlight != "" {
@@ -362,26 +367,31 @@ func removeChineseInnerSpaces(s string) string {
 	return string(out)
 }
 
+// relativeTimeWords 文案中禁止出现的相对时间词,统一改用具体日期。
+var relativeTimeWords = []string{"今天", "明天", "今日", "明日", "昨日"}
+
 var farewellBlessingPool = []string{
-	"愿你明天出手都踩在节奏上，持仓稳稳抬轿。",
+	"愿你出手都踩在节奏上，持仓稳稳抬轿。",
 	"祝愿持仓长阳，账户净值步步抬升。",
 	"祝你交易顺利，看准的方向都能走出延续。",
-	"愿你明天下单即逢低，卖飞不回头。",
+	"愿你下单即逢低，卖飞不回头。",
 	"愿你行情稳稳，账户新高，每天好心情。",
-	"愿你明天主升能拿住，分歧敢低吸，节奏踩得准。",
+	"愿你主升能拿住，分歧敢低吸，节奏踩得准。",
 	"祝账户长红，每一笔出手都有回报。",
-	"祝愿明早开盘有承接，尾盘有溢价，持仓皆主升。",
+	"愿节后开盘有承接，尾盘有溢价，持仓皆主升。",
 }
 
 var farewellSignoffPool = []string{
-	"明天开盘见！",
-	"明天我们盘中再见！",
-	"明天开盘，不见不散！",
-	"祝好，明天见！",
-	"明天再战，晚安！",
+	"下个交易日开盘见！",
+	"下个交易日盘中再见！",
+	"开盘见，不见不散！",
+	"祝好，下个交易日见！",
+	"节后再战！",
 }
 
-func buildFarewellTexts(displayDate string) (blessing string, signoff string) {
+// buildFarewellTexts 从静态祝福语池里按日期 hash 稳定挑选一条，
+// 告别语统一替换成具体的下一交易日日期。
+func buildFarewellTexts(dateStr, displayDate string) (blessing string, signoff string) {
 	seed := 0
 	for _, r := range displayDate {
 		seed = (seed*31 + int(r)) % 1000003
@@ -390,7 +400,13 @@ func buildFarewellTexts(displayDate string) (blessing string, signoff string) {
 		seed = -seed
 	}
 	blessing = farewellBlessingPool[(seed/7)%len(farewellBlessingPool)]
-	signoff = farewellSignoffPool[(seed/11)%len(farewellSignoffPool)]
+
+	next := fetcher.NextTradingDayCN(dateStr)
+	if next != "" {
+		signoff = fmt.Sprintf("%s开盘见！", next)
+	} else {
+		signoff = farewellSignoffPool[(seed/11)%len(farewellSignoffPool)]
+	}
 	return blessing, signoff
 }
 
@@ -824,13 +840,38 @@ func RenderTickVideo(ctx context.Context, dateStr, outputPath, format, session s
 		zap.String("session", session))
 
 	// LLM 资金催化分析
-	// NOTE: 在连续 LLM 调用之间轻量节流，避免 macOS TIME_WAIT 端口耗尽。
-	// throttleMs 可通过 AI_CALL_THROTTLE_MS 环境变量覆盖，默认 250ms。
+	// NOTE: 这里的节流默认已关闭（见 aiCallThrottle）。此前是为规避 macOS
+	// TIME_WAIT 端口耗尽而加的 250ms 间隔，而 LLM 调用现在统一走
+	// internal/ai 的共享 http.Client（带 keep-alive 连接池），已不再重复建连。
+	// 如遇端口耗尽可临时用 AI_CALL_THROTTLE_MS=250 打开。
+	//
+	// 催化分析与主线结构分析彼此独立、互不依赖对方产出，并行执行可把
+	// 两段串行的 LLM 耗时压缩为一段（约省下一次完整调用的时间）。
+	// 两者只读取只读的包级数据（交易日历、板块名单），各自写入自己的变量，
+	// 由 llmWG 建立 happens-before，无数据竞争。
 	throttle := aiCallThrottle()
-	if throttle > 0 {
-		time.Sleep(throttle)
-	}
-	catalysisResult := GenerateCatalysis(sectorTicks, tickTimes, newsPages)
+	var (
+		catalysisResult     *CatalysisResult
+		mainStructureResult *MainStructureResult
+		llmWG               sync.WaitGroup
+	)
+	llmWG.Add(2)
+	go func() {
+		defer llmWG.Done()
+		if throttle > 0 {
+			time.Sleep(throttle)
+		}
+		catalysisResult = GenerateCatalysis(dateStr, sectorTicks, tickTimes, newsPages)
+	}()
+	go func() {
+		defer llmWG.Done()
+		if throttle > 0 {
+			time.Sleep(throttle)
+		}
+		mainStructureResult = GenerateMainStructure(dateStr, sectorTicks)
+	}()
+	llmWG.Wait()
+
 	if catalysisResult != nil {
 		high := 0
 		med := 0
@@ -848,11 +889,7 @@ func RenderTickVideo(ctx context.Context, dateStr, outputPath, format, session s
 			zap.Int("mediumConfidence", med))
 	}
 
-	// LLM 主线结构收尾分析
-	if throttle > 0 {
-		time.Sleep(throttle)
-	}
-	mainStructureResult := GenerateMainStructure(sectorTicks)
+	// LLM 主线结构收尾分析（已在上面的并行分支中完成）
 	if mainStructureResult != nil {
 		logger.Info("主线结构收尾 LLM 分析完成",
 			zap.String("conclusion", mainStructureResult.Conclusion),
@@ -934,16 +971,40 @@ func RenderTickVideo(ctx context.Context, dateStr, outputPath, format, session s
 		var farewellAudio string
 		var farewellFrames int
 
+		var audioErr error
+		var audioMu sync.Mutex
+		loadAudio := func(text string) (rel string, duration float64, err error) {
+			defer func() {
+				if err != nil {
+					audioMu.Lock()
+					if audioErr == nil {
+						audioErr = err
+					}
+					audioMu.Unlock()
+				}
+			}()
+			var abs string
+			rel, abs, err = tts.TextToSpeechCommentatorCachedContext(ctx, text)
+			if err != nil {
+				return "", 0, err
+			}
+			duration, err = tts.GetAudioDurationContext(ctx, abs)
+			return rel, duration, err
+		}
 		limit := tts.TTSConcurrency()
 		sem := make(chan struct{}, limit)
 		var wg sync.WaitGroup
 		run := func(fn func()) {
 			wg.Add(1)
 			go func() {
-				sem <- struct{}{}
+				defer wg.Done()
+				select {
+				case sem <- struct{}{}:
+				case <-ctx.Done():
+					return
+				}
 				defer func() {
 					<-sem
-					wg.Done()
 				}()
 				fn()
 			}()
@@ -958,14 +1019,10 @@ func RenderTickVideo(ctx context.Context, dateStr, outputPath, format, session s
 					continue
 				}
 				run(func() {
-					audioRel, audioAbs, err := tts.TextToSpeechCommentatorCached(text)
+					audioRel, dur, err := loadAudio(text)
 					if err != nil {
 						logger.Warn("Tick 场景 TTS 合成失败", zap.Int("scene", idx+1), zap.Error(err))
 						return
-					}
-					dur := 0.0
-					if d, err := tts.GetAudioDuration(audioAbs); err == nil {
-						dur = d
 					}
 					frames := int(math.Ceil(dur * FPS))
 					const audioPadding = 6
@@ -976,7 +1033,7 @@ func RenderTickVideo(ctx context.Context, dateStr, outputPath, format, session s
 				})
 			}
 
-			logger.Info("Tick 文案语音合成完成",
+			logger.Info("Tick 文案语音任务已提交",
 				zap.Int("scenes", 5))
 		}
 
@@ -988,14 +1045,10 @@ func RenderTickVideo(ctx context.Context, dateStr, outputPath, format, session s
 					continue
 				}
 				run(func() {
-					audioRel, audioAbs, err := tts.TextToSpeechCommentatorCached(trimmed)
+					audioRel, dur, err := loadAudio(trimmed)
 					if err != nil {
-						logger.Warn("Tick 图表解说 TTS 合成失败，跳过", zap.Int("segment", idx), zap.Error(err))
+						logger.Warn("Tick 图表解说 TTS 合成失败", zap.Int("segment", idx), zap.Error(err))
 						return
-					}
-					dur := 0.0
-					if d, err := tts.GetAudioDuration(audioAbs); err == nil {
-						dur = d
 					}
 					frames := int(math.Ceil(dur * FPS))
 					const audioPadding = 6
@@ -1015,14 +1068,10 @@ func RenderTickVideo(ctx context.Context, dateStr, outputPath, format, session s
 					continue
 				}
 				run(func() {
-					audioRel, audioAbs, err := tts.TextToSpeechCommentatorCached(trimmed)
+					audioRel, dur, err := loadAudio(trimmed)
 					if err != nil {
-						logger.Warn("Tick 新闻 TTS 合成失败，跳过", zap.Int("page", idx), zap.Error(err))
+						logger.Warn("Tick 新闻 TTS 合成失败", zap.Int("page", idx), zap.Error(err))
 						return
-					}
-					dur := 0.0
-					if d, err := tts.GetAudioDuration(audioAbs); err == nil {
-						dur = d
 					}
 					frames := int(math.Ceil(dur * FPS))
 					const audioPadding = 4
@@ -1041,19 +1090,15 @@ func RenderTickVideo(ctx context.Context, dateStr, outputPath, format, session s
 		}
 
 		if len(sectorTicks) > 0 {
-			outroTextLocal := buildMainStructureOutroText(mainStructureResult, sectorTicks)
+			outroTextLocal := buildMainStructureOutroText(dateStr, mainStructureResult, sectorTicks)
 			outroTextLocal = strings.TrimSpace(outroTextLocal)
 			outroText = outroTextLocal
 			if outroTextLocal != "" {
 				run(func() {
-					audioRel, audioAbs, err := tts.TextToSpeechCommentatorCached(outroTextLocal)
+					audioRel, dur, err := loadAudio(outroTextLocal)
 					if err != nil {
-						logger.Warn("Tick 主线收尾 TTS 合成失败，跳过", zap.Error(err))
+						logger.Warn("Tick 主线收尾 TTS 合成失败", zap.Error(err))
 						return
-					}
-					dur := 0.0
-					if d, err := tts.GetAudioDuration(audioAbs); err == nil {
-						dur = d
 					}
 					frames := int(math.Ceil(dur * FPS))
 					const audioPadding = 10
@@ -1070,19 +1115,15 @@ func RenderTickVideo(ctx context.Context, dateStr, outputPath, format, session s
 			}
 		}
 
-		farewellBlessing, farewellSignoff := BuildFarewellTexts(displayDate, sectorTicks)
+		farewellBlessing, farewellSignoff := BuildFarewellTexts(dateStr, displayDate, sectorTicks)
 		// 口播与画面保持完全一致：直接朗读画面显示的最新祝福语 + 告别语，
 		// 不再使用独立的旧口播文案池（否则 MP3 与视频文字不一致）。
 		farewellText = farewellBlessing + " " + farewellSignoff
 		run(func() {
-			audioRel, audioAbs, err := tts.TextToSpeechCommentatorCached(farewellText)
+			audioRel, dur, err := loadAudio(farewellText)
 			if err != nil {
-				logger.Warn("Tick 告别祝福 TTS 合成失败，跳过", zap.Error(err))
+				logger.Warn("Tick 告别祝福 TTS 合成失败", zap.Error(err))
 				return
-			}
-			dur := 0.0
-			if d, err := tts.GetAudioDuration(audioAbs); err == nil {
-				dur = d
 			}
 			frames := int(math.Ceil(dur * FPS))
 			const audioPadding = 12
@@ -1098,6 +1139,12 @@ func RenderTickVideo(ctx context.Context, dateStr, outputPath, format, session s
 		})
 
 		wg.Wait()
+		if err := ctx.Err(); err != nil {
+			return "", fmt.Errorf("Tick 语音合成已取消: %w", err)
+		}
+		if audioErr != nil {
+			return "", fmt.Errorf("Tick 口播音频不完整，停止渲染: %w", audioErr)
+		}
 
 		if sceneResults[0].ok {
 			props.Scene1Text = sceneResults[0].text
@@ -1210,13 +1257,11 @@ func RenderTickVideo(ctx context.Context, dateStr, outputPath, format, session s
 			props.FarewellAudio = farewellAudio
 			props.FarewellFrames = farewellFrames
 			props.FarewellText = farewellText
-			b, s := buildFarewellTexts(displayDate)
-			props.FarewellBlessing = b
-			props.FarewellSignoff = s
+			props.FarewellBlessing = farewellBlessing
+			props.FarewellSignoff = farewellSignoff
 		} else {
-			b, s := buildFarewellTexts(displayDate)
-			props.FarewellBlessing = b
-			props.FarewellSignoff = s
+			props.FarewellBlessing = farewellBlessing
+			props.FarewellSignoff = farewellSignoff
 			props.FarewellText = farewellText
 			if props.FarewellFrames <= 0 {
 				props.FarewellFrames = 180
@@ -1335,25 +1380,15 @@ func newTickVoiceoverWorkspace(rendererDir string) (string, string, error) {
 func buildSectorTicks(points []TickPoint) ([]SectorTick, []string) {
 	timeOrder := uniqueTimes(points)
 
-	sectorData := make(map[string][]float64)
-	sectorPrev := make(map[string]float64)
+	sectorData := buildSectorTimeSeries(points, timeOrder)
 	sectorLatest := make(map[string]TickPoint)
 
 	for _, p := range points {
-		prev := sectorPrev[p.Name]
-		delta := p.Net - prev
-		sectorData[p.Name] = append(sectorData[p.Name], delta)
-		sectorPrev[p.Name] = p.Net
 		sectorLatest[p.Name] = p
 	}
 
 	var result []SectorTick
 	for name, data := range sectorData {
-		if len(data) < len(timeOrder) {
-			padded := make([]float64, len(timeOrder))
-			copy(padded, data)
-			data = padded
-		}
 		latest := sectorLatest[name]
 		result = append(result, SectorTick{
 			Name:                 name,
@@ -1572,11 +1607,15 @@ func structToMap(v interface{}) map[string]interface{} {
 	return m
 }
 
-// aiCallThrottle LLM 连续调用的间隔节流，默认 250ms；可通过 AI_CALL_THROTTLE_MS 环境变量覆盖。
-// macOS 在短时间大量 443 connect 时容易触发 TIME_WAIT 端口耗尽（can't assign requested address），
-// 节流可以把并发连接压下来。设置为 0 则关闭节流。
+// aiCallThrottle LLM 连续调用的间隔节流，默认 0（关闭）；可通过 AI_CALL_THROTTLE_MS 环境变量覆盖。
+//
+// 该节流最初是为规避 macOS 在短时间大量 443 connect 时触发的 TIME_WAIT 端口耗尽
+// （can't assign requested address）。现在所有 LLM 调用都走 internal/ai 中带
+// keep-alive 连接池的共享 http.Client，不会再为每次调用新建 TCP/TLS 连接，
+// 因此默认值改为 0，避免白白给每次视频生成增加 250ms 延迟。
+// 若在某些环境下仍出现端口耗尽，把 AI_CALL_THROTTLE_MS 设为 250 即可恢复原行为。
 func aiCallThrottle() time.Duration {
-	const defaultMs = 250
+	const defaultMs = 0
 	if v := os.Getenv("AI_CALL_THROTTLE_MS"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err == nil {

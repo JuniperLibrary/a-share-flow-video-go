@@ -7,23 +7,25 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/a-share-flow-video-go/internal/httpclient"
 )
 
 type FinanceReport struct {
-	Code       string  `json:"code"`
-	Name       string  `json:"name"`
-	ReportDate string  `json:"reportDate"`
-	ReportType string  `json:"reportType"`
+	Code       string `json:"code"`
+	Name       string `json:"name"`
+	ReportDate string `json:"reportDate"`
+	ReportType string `json:"reportType"`
 
-	Revenue        float64 `json:"revenue"`
-	RevenuePrev    float64 `json:"revenuePrev"`
-	RevenueYoY     float64 `json:"revenueYoY"`
-	NetProfit      float64 `json:"netProfit"`
-	NetProfitPrev  float64 `json:"netProfitPrev"`
-	NetProfitYoY   float64 `json:"netProfitYoY"`
-	DeductedProfit float64 `json:"deductedProfit"`
+	Revenue         float64 `json:"revenue"`
+	RevenuePrev     float64 `json:"revenuePrev"`
+	RevenueYoY      float64 `json:"revenueYoY"`
+	NetProfit       float64 `json:"netProfit"`
+	NetProfitPrev   float64 `json:"netProfitPrev"`
+	NetProfitYoY    float64 `json:"netProfitYoY"`
+	DeductedProfit  float64 `json:"deductedProfit"`
 	OperatingProfit float64 `json:"operatingProfit"`
-	TotalProfit    float64 `json:"totalProfit"`
+	TotalProfit     float64 `json:"totalProfit"`
 
 	GrossMargin float64 `json:"grossMargin"`
 	NetMargin   float64 `json:"netMargin"`
@@ -97,7 +99,7 @@ func fetchIncomeStatement(code string) ([]map[string]any, error) {
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	req.Header.Set("Referer", "https://data.eastmoney.com/")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := httpclient.New(30 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -130,7 +132,7 @@ func fetchBalanceSheet(code string) (map[string]any, error) {
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	req.Header.Set("Referer", "https://data.eastmoney.com/")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := httpclient.New(30 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -242,7 +244,7 @@ func SearchStock(keyword string) ([]StockSearchResult, error) {
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	req.Header.Set("Referer", "https://www.eastmoney.com/")
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := httpclient.New(10 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -252,9 +254,9 @@ func SearchStock(keyword string) ([]StockSearchResult, error) {
 	var result struct {
 		QuotationCodeTable struct {
 			Data []struct {
-				Code   string `json:"Code"`
-				Name   string `json:"Name"`
-				JYS    string `json:"JYS"`
+				Code string `json:"Code"`
+				Name string `json:"Name"`
+				JYS  string `json:"JYS"`
 			} `json:"Data"`
 			Message string `json:"Message"`
 		} `json:"QuotationCodeTable"`

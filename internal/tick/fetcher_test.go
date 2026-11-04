@@ -2,6 +2,7 @@ package tick
 
 import (
 	"testing"
+	"time"
 )
 
 // ---- minutesToTime ----
@@ -273,30 +274,83 @@ func TestTickSchedule_FullDayWith1130(t *testing.T) {
 	}
 }
 
-func TestTickSchedule_1130AfternoonDedup(t *testing.T) {
-	// Start at 13:00 (minute 120) with extended morning range {0,120}
-	// Morning {0,120}: 120 <= 120 → NOT skipped. Minute 120 mapped to "11:30".
-	// Afternoon {120,240}: 120 <= 240 → processed. Minute 120 mapped to "13:00".
-	schedule := tickSchedule(120, 10, []tradingRange{{0, 120}, {120, 240}})
-
-	// Morning produces 1 tick: minute 120 → "11:30"
-	// Afternoon: 120,130,...,240 = 13 ticks starting with 120 → "13:00"
-	// Total = 1 + 13 = 14
-	expected := 14
-	if len(schedule) != expected {
-		t.Errorf("expected %d ticks (1 morning 11:30 + 13 afternoon), got %d", expected, len(schedule))
+func TestWallTickSchedule_AfternoonExcludesMorningClose(t *testing.T) {
+	// At 13:00 the 11:30 point is already in the past. Current afternoon
+	// prices must never be backfilled into that morning snapshot.
+	now := time.Date(2026, 5, 11, 13, 0, 0, 0, shanghaiTZ)
+	schedule, err := wallTickSchedule("2026-05-11", now, 10, []tradingRange{{0, 120}, {120, 240}})
+	if err != nil {
+		t.Fatalf("wallTickSchedule returned error: %v", err)
 	}
 
-	// First tick = 11:30 (morning range handles minute 120 first)
-	first := schedule[0]
-	if first.Time != "11:30" || first.Minute != 120 {
-		t.Errorf("first tick should be 11:30 (120), got %s (%d)", first.Time, first.Minute)
+	if len(schedule) != 13 {
+		t.Errorf("expected 13 afternoon ticks, got %d", len(schedule))
+	}
+	if len(schedule) == 0 {
+		t.Fatal("expected non-empty schedule")
+	}
+	if schedule[0].Time != "13:00" {
+		t.Errorf("first tick should be 13:00, got %s", schedule[0].Time)
+	}
+	for _, point := range schedule {
+		if point.Time == "11:30" {
+			t.Fatal("afternoon schedule must not include the past 11:30 snapshot")
+		}
+		if point.At.Hour() < 13 {
+			t.Errorf("unexpected pre-afternoon collection at %s", point.At)
+		}
+	}
+}
+
+func TestRunWaitsForAfternoonOpen(t *testing.T) {
+	const dateStr = "2026-05-11"
+	current := time.Date(2026, 5, 11, 11, 30, 0, 0, shanghaiTZ)
+	tf := &TickFetcher{
+		running:         true,
+		stopCh:          make(chan struct{}),
+		dateStr:         dateStr,
+		intervalMinutes: 5,
+		nowFn:           func() time.Time { return current },
 	}
 
-	// Second tick = 13:00 (afternoon range handles minute 120 with original mapping)
-	second := schedule[1]
-	if second.Time != "13:00" || second.Minute != 120 {
-		t.Errorf("second tick should be 13:00 (120), got %s (%d)", second.Time, second.Minute)
+	var waits []time.Duration
+	tf.afterFn = func(delay time.Duration) <-chan time.Time {
+		waits = append(waits, delay)
+		current = current.Add(delay)
+		ch := make(chan time.Time, 1)
+		ch <- current
+		return ch
+	}
+
+	type collection struct {
+		timeStr string
+		at      time.Time
+	}
+	var collections []collection
+	tf.collectFn = func(_ string, timeStr string) {
+		collections = append(collections, collection{timeStr: timeStr, at: current})
+	}
+
+	tf.run()
+
+	if len(collections) < 2 {
+		t.Fatalf("expected at least two collections, got %d", len(collections))
+	}
+	if collections[0].timeStr != "11:30" {
+		t.Errorf("first collection should be 11:30, got %s", collections[0].timeStr)
+	}
+	if collections[1].timeStr != "13:00" {
+		t.Errorf("second collection should be 13:00, got %s", collections[1].timeStr)
+	}
+	afternoonOpen := time.Date(2026, 5, 11, 13, 0, 0, 0, shanghaiTZ)
+	if collections[1].at.Before(afternoonOpen) {
+		t.Errorf("13:00 snapshot collected early at %s", collections[1].at)
+	}
+	if len(waits) == 0 || waits[0] != 90*time.Minute {
+		t.Errorf("first wait should cross the 90-minute lunch break, got %v", waits)
+	}
+	if tf.running {
+		t.Error("fetcher should stop after completing the schedule")
 	}
 }
 

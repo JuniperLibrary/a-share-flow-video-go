@@ -53,9 +53,9 @@ func GetTradingDays(endDate string, n int) ([]string, error) {
 
 	var days []string
 	current := end
-	// 最多往前找 30 天（足够覆盖节假日）
-	for i := 0; i < 30 && len(days) < n; i++ {
-		if IsTradingDay(current) {
+	// 最多往前找 45 天（足够覆盖春节/国庆连休）
+	for i := 0; i < 45 && len(days) < n; i++ {
+		if IsTradingDayCN(current) {
 			days = append(days, current.Format("2006-01-02"))
 		}
 		current = current.AddDate(0, 0, -1)

@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/a-share-flow-video-go/internal/httpclient"
 )
 
 type Tool interface {
@@ -55,7 +57,7 @@ func eastmoneyGet(ctx context.Context, apiURL string) ([]byte, error) {
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	req.Header.Set("Referer", "https://quote.eastmoney.com/")
 
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := httpclient.New(15 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -94,8 +96,10 @@ func jsonNumber(s string) float64 {
 
 type fetchMetricTool struct{}
 
-func (s *fetchMetricTool) Name() string        { return "fetch_metric" }
-func (s *fetchMetricTool) Description() string { return "拉取股票实时指标 (PE/PE-TTM/PB/PEG/PS/总市值)" }
+func (s *fetchMetricTool) Name() string { return "fetch_metric" }
+func (s *fetchMetricTool) Description() string {
+	return "拉取股票实时指标 (PE/PE-TTM/PB/PEG/PS/总市值)"
+}
 func (s *fetchMetricTool) Execute(ctx context.Context, args map[string]any) (any, error) {
 	code, _ := args["stock"].(string)
 	if code == "" {
@@ -160,8 +164,10 @@ func (s *fetchMetricTool) Execute(ctx context.Context, args map[string]any) (any
 
 type comparePeersTool struct{}
 
-func (s *comparePeersTool) Name() string        { return "compare_peers" }
-func (s *comparePeersTool) Description() string { return "拉取行业头部 PE/PB 排序,用于行业对比" }
+func (s *comparePeersTool) Name() string { return "compare_peers" }
+func (s *comparePeersTool) Description() string {
+	return "拉取行业头部 PE/PB 排序,用于行业对比"
+}
 func (s *comparePeersTool) Execute(ctx context.Context, args map[string]any) (any, error) {
 	sector, _ := args["sector"].(string)
 	if sector == "" {
@@ -283,8 +289,10 @@ func (s *searchNewsTool) Execute(ctx context.Context, args map[string]any) (any,
 
 type riskAlertsTool struct{}
 
-func (s *riskAlertsTool) Name() string        { return "risk_alerts" }
-func (s *riskAlertsTool) Description() string { return "拉取财报风险指标 (应收/商誉/担保/关联交易占比)" }
+func (s *riskAlertsTool) Name() string { return "risk_alerts" }
+func (s *riskAlertsTool) Description() string {
+	return "拉取财报风险指标 (应收/商誉/担保/关联交易占比)"
+}
 func (s *riskAlertsTool) Execute(ctx context.Context, args map[string]any) (any, error) {
 	code, _ := args["stock"].(string)
 	if code == "" {

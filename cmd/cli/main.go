@@ -32,6 +32,10 @@ func main() {
 	}
 	defer logger.Sync()
 
+	if err := config.LoadEnv(); err != nil {
+		logger.Warn("failed to load .env", zap.Error(err))
+	}
+
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -128,6 +132,7 @@ func main() {
 			successCount++
 		}
 		logger.Info("sectors_all 抓取完成", zap.Int("success", successCount), zap.Int("total", len(dates)))
+		exitIfIncomplete(successCount, len(dates))
 		return
 	}
 
@@ -135,7 +140,9 @@ func main() {
 		if len(dates) == 0 {
 			dates = []string{time.Now().Format("2006-01-02")}
 		}
-		generateMultiDayVideo(dates[0], days, useAI)
+		if !generateMultiDayVideo(dates[0], days, useAI) {
+			exitIfIncomplete(0, 1)
+		}
 		return
 	}
 
@@ -159,6 +166,7 @@ func main() {
 			}
 		}
 		logger.Info("Tick 视频生成完成", zap.Int("success", successCount), zap.Int("total", len(dates)))
+		exitIfIncomplete(successCount, len(dates))
 		return
 	}
 
@@ -198,6 +206,19 @@ func main() {
 		zap.String("output", "output/YYYY-MM-DD/"),
 		zap.String("data", "data/YYYY-MM-DD/"),
 	)
+	exitIfIncomplete(successCount, len(dates))
+}
+
+func exitIfIncomplete(successCount, totalCount int) {
+	if successCount == totalCount {
+		return
+	}
+	logger.Error("任务未全部成功",
+		zap.Int("success", successCount),
+		zap.Int("total", totalCount),
+	)
+	_ = logger.Sync()
+	os.Exit(1)
 }
 
 func processDate(ctx context.Context, dateStr string, useAI bool, sessionOverride string, collectOnly bool) bool {
@@ -241,9 +262,12 @@ func processDate(ctx context.Context, dateStr string, useAI bool, sessionOverrid
 		}
 	}
 
+	allSucceeded := true
+	completedSessions := 0
 	for _, session := range sessions {
 		if ctx != nil && ctx.Err() != nil {
 			l.Info("已取消，跳过剩余 session")
+			allSucceeded = false
 			break
 		}
 		sessCfg := config.SessionConfigs[session]
@@ -262,9 +286,14 @@ func processDate(ctx context.Context, dateStr string, useAI bool, sessionOverrid
 			sectors, err = fetcher.FetchTop21HotSectors()
 			if err != nil || len(sectors) == 0 {
 				sl.Error("无法获取热门板块数据", zap.Error(err))
+				allSucceeded = false
 				continue
 			}
-			fetcher.SaveDailyData(sectors, dateStr)
+			if err := fetcher.SaveDailyData(sectors, dateStr); err != nil {
+				sl.Error("保存热门板块数据失败", zap.Error(err))
+				allSucceeded = false
+				continue
+			}
 			sl.Info("热门板块匹配", zap.Int("count", len(sectors)))
 			printSectorsTable(sectors)
 		} else {
@@ -275,38 +304,62 @@ func processDate(ctx context.Context, dateStr string, useAI bool, sessionOverrid
 				sl.Warn("历史数据获取失败，请检查网络或手动保存数据",
 					zap.String("hint", "data/"+dateStr+"/sectors.csv"),
 				)
+				allSucceeded = false
 				continue
 			}
-			fetcher.SaveDailyData(sectors, dateStr)
+			if err := fetcher.SaveDailyData(sectors, dateStr); err != nil {
+				sl.Error("保存历史板块数据失败", zap.Error(err))
+				allSucceeded = false
+				continue
+			}
 			sl.Info("历史热门匹配", zap.Int("count", len(sectors)))
 			printSectorsTable(sectors)
 		}
 
 		if !collectOnly {
-			generateSession(sectors, dateStr, dateDir, useAI, session)
+			if err := generateSession(sectors, dateStr, dateDir, useAI, session); err != nil {
+				sl.Error("生成 session 失败", zap.Error(err))
+				allSucceeded = false
+				continue
+			}
 		}
+		completedSessions++
 	}
 
 	if config.DataMode() == "json" {
-		if db, err := storage.Get(); err == nil {
-			db.ExportJSON()
+		db, err := storage.Get()
+		if err != nil {
+			l.Error("JSON 模式数据库初始化失败", zap.Error(err))
+			allSucceeded = false
+		} else if err := db.ExportJSON(); err != nil {
+			l.Error("JSON 导出失败", zap.Error(err))
+			allSucceeded = false
 		}
 	}
-	return true
+	return allSucceeded && completedSessions > 0
 }
 
-func generateSession(sectors []fetcher.Sector, dateStr, dateDir string, useAI bool, session string) {
-	os.MkdirAll(dateDir, 0755)
+func generateSession(sectors []fetcher.Sector, dateStr, dateDir string, useAI bool, session string) error {
+	if err := os.MkdirAll(dateDir, 0755); err != nil {
+		return fmt.Errorf("创建数据目录失败: %w", err)
+	}
 
 	sessCfg := config.SessionConfigs[session]
-	allSectors, _ := fetcher.FetchAllRaw()
+	allSectors := sectors
+	if dateStr == time.Now().Format("2006-01-02") {
+		if current, err := fetcher.FetchAllRaw(); err == nil && len(current) > 0 {
+			allSectors = current
+		}
+	}
 	events, timeline, ticker := analyzer.AnalyzeAllContent(allSectors, dateStr, session)
 	if len(events) == 0 {
 		events = analyzer.GetFallbackEvents(config.TotalFrames)
 	}
 
 	outputDir := config.GetOutputDir()
-	os.MkdirAll(filepath.Join(outputDir, dateStr), 0755)
+	if err := os.MkdirAll(filepath.Join(outputDir, dateStr), 0755); err != nil {
+		return fmt.Errorf("创建输出目录失败: %w", err)
+	}
 	l := logger.With(zap.String("date", dateStr), zap.String("session", sessCfg.TitleSuffix))
 
 	outPath := filepath.Join(outputDir, dateStr, fmt.Sprintf("%s.mp4", sessCfg.FilenameSuffix))
@@ -326,10 +379,9 @@ func generateSession(sectors []fetcher.Sector, dateStr, dateDir string, useAI bo
 	}
 
 	if _, err := renderer.RenderVideo(sectors, dateStr, outPath, events, timeline, ticker, "tv", session, copywriteText); err != nil {
-		l.Error("Remotion 渲染失败", zap.Error(err))
-	} else {
-		l.Info("视频已保存", zap.String("output", outPath))
+		return fmt.Errorf("Remotion 渲染失败: %w", err)
 	}
+	l.Info("视频已保存", zap.String("output", outPath))
 
 	var cwType string
 	if useAI {
@@ -338,15 +390,20 @@ func generateSession(sectors []fetcher.Sector, dateStr, dateDir string, useAI bo
 		cwType = "template"
 	}
 
-	if db, err := storage.Get(); err == nil {
-		_ = db.SaveCopywriting(storage.Copywriting{
-			Date:    dateStr,
-			Session: session,
-			Type:    cwType,
-			Content: copywriteText,
-		})
+	db, err := storage.Get()
+	if err != nil {
+		return fmt.Errorf("获取数据库实例失败: %w", err)
+	}
+	if err := db.SaveCopywriting(storage.Copywriting{
+		Date:    dateStr,
+		Session: session,
+		Type:    cwType,
+		Content: copywriteText,
+	}); err != nil {
+		return fmt.Errorf("保存文案失败: %w", err)
 	}
 	l.Info("文案已保存")
+	return nil
 }
 
 func processTickDate(ctx context.Context, dateStr string, sessionOverride string, useAI bool, format string) bool {
@@ -369,7 +426,8 @@ func processTickDate(ctx context.Context, dateStr string, sessionOverride string
 	}
 
 	outputDir := config.GetOutputDir()
-	success := false
+	allSucceeded := true
+	completedRenders := 0
 	for _, sess := range sessions {
 		if ctx.Err() != nil {
 			l.Warn("收到取消信号，停止 Tick 渲染")
@@ -451,9 +509,10 @@ func processTickDate(ctx context.Context, dateStr string, sessionOverride string
 					return false
 				}
 				sl.Error("Tick Mobile Remotion 渲染失败", zap.Error(rErr))
+				allSucceeded = false
 			} else {
 				sl.Info("Tick Mobile 视频已保存", zap.String("output", outMobile))
-				success = true
+				completedRenders++
 			}
 		}
 
@@ -469,9 +528,10 @@ func processTickDate(ctx context.Context, dateStr string, sessionOverride string
 					return false
 				}
 				sl.Error("Tick TV Remotion 渲染失败", zap.Error(rErr))
+				allSucceeded = false
 			} else {
 				sl.Info("Tick TV 视频已保存", zap.String("output", outTV))
-				success = true
+				completedRenders++
 			}
 		}
 
@@ -491,11 +551,16 @@ func processTickDate(ctx context.Context, dateStr string, sessionOverride string
 	}
 
 	if config.DataMode() == "json" {
-		if db, err := storage.Get(); err == nil {
-			db.ExportJSON()
+		db, err := storage.Get()
+		if err != nil {
+			l.Error("JSON 模式数据库初始化失败", zap.Error(err))
+			allSucceeded = false
+		} else if err := db.ExportJSON(); err != nil {
+			l.Error("JSON 导出失败", zap.Error(err))
+			allSucceeded = false
 		}
 	}
-	return success
+	return allSucceeded && completedRenders > 0
 }
 
 func printSectorsTable(sectors []fetcher.Sector) {
@@ -515,21 +580,21 @@ func printSectorsTable(sectors []fetcher.Sector) {
 	fmt.Println()
 }
 
-func generateMultiDayVideo(endDate string, days int, useAI bool) {
+func generateMultiDayVideo(endDate string, days int, useAI bool) bool {
 	l := logger.With(zap.String("date", endDate), zap.Int("days", days))
 	l.Info("Bar Chart Race 视频生成")
 
 	tradingDays, err := fetcher.GetTradingDays(endDate, days)
 	if err != nil {
 		l.Error("无法获取交易日", zap.Error(err))
-		return
+		return false
 	}
 	l.Info("交易日", zap.Strings("days", tradingDays))
 
 	dayData, err := fetcher.LoadMultiDaySectors(tradingDays)
 	if err != nil {
 		l.Error("加载多日数据失败", zap.Error(err))
-		return
+		return false
 	}
 
 	l.Info("成功加载数据", zap.Int("days", len(dayData)))
@@ -545,7 +610,7 @@ func generateMultiDayVideo(endDate string, days int, useAI bool) {
 	tickData, err := fetcher.LoadMultiDayTicks(tradingDays)
 	if err != nil {
 		l.Error("加载 tick 数据失败", zap.Error(err))
-		return
+		return false
 	}
 	totalTicks := 0
 	for _, snaps := range tickData {
@@ -556,25 +621,29 @@ func generateMultiDayVideo(endDate string, days int, useAI bool) {
 	outputDir := config.GetOutputDir()
 	if len(tradingDays) == 0 {
 		l.Error("无交易日数据，无法生成多日视频")
-		return
+		return false
 	}
 	dateLabel := tradingDays[0]
 	if len(tradingDays) > 1 {
 		dateLabel = tradingDays[0] + "_to_" + tradingDays[len(tradingDays)-1]
 	}
 
-	os.MkdirAll(filepath.Join(outputDir, dateLabel), 0755)
+	if err := os.MkdirAll(filepath.Join(outputDir, dateLabel), 0755); err != nil {
+		l.Error("创建输出目录失败", zap.Error(err))
+		return false
+	}
 
 	outPath := filepath.Join(outputDir, dateLabel, "三日资金流向.mp4")
 	if _, err := renderer.RenderMultiDayVideo(tickData, tradingDays, outPath, analysis, "tv"); err != nil {
 		l.Error("Remotion 渲染失败", zap.Error(err))
-	} else {
-		l.Info("视频已保存", zap.String("output", outPath))
+		return false
 	}
+	l.Info("视频已保存", zap.String("output", outPath))
 
 	l.Info("Bar Chart Race 视频生成完成",
 		zap.String("output", "output/"+dateLabel+"/"),
 	)
+	return true
 }
 
 // loadPrevPrediction 加载上一交易日的文案作为今日 AI 生成的上下文。

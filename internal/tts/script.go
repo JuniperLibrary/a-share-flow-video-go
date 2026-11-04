@@ -221,13 +221,13 @@ func formatMarketDataForTTS(ctx *MarketContext) string {
 		sb.WriteString(fmt.Sprintf("  大单净流向：%+.0f 亿\n\n", s.BigNet))
 	}
 
-	sb.WriteString("【今日资金流入 TOP 5】\n")
+	sb.WriteString("【当日资金流入 TOP 5】\n")
 	for i, s := range ctx.TopInflows {
 		sb.WriteString(fmt.Sprintf("  %d. %s：涨跌幅 %+.1f%%，净流入 %+.0f 亿\n",
 			i+1, s.Name, s.ChangePct, s.Net))
 	}
 
-	sb.WriteString("\n【今日资金流出 TOP 3】\n")
+	sb.WriteString("\n【当日资金流出 TOP 3】\n")
 	for i, s := range ctx.TopOutflows {
 		sb.WriteString(fmt.Sprintf("  %d. %s：涨跌幅 %+.1f%%，净流出 %+.0f 亿\n",
 			i+1, s.Name, s.ChangePct, absF(s.Net)))

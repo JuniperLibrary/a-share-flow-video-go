@@ -1,7 +1,9 @@
 package tts
 
 import (
+	"context"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +14,7 @@ import (
 	"unicode"
 
 	"github.com/a-share-flow-video-go/internal/logger"
+	"github.com/a-share-flow-video-go/internal/oral"
 	"go.uber.org/zap"
 )
 
@@ -98,6 +101,16 @@ func TextToSpeech(text, outputPath string) error {
 }
 
 func Synthesize(text, outputPath string, opts Options) (Result, error) {
+	return SynthesizeContext(context.Background(), text, outputPath, opts)
+}
+
+// SynthesizeContext 将合成、重试和音频处理限制在同一个总时限内。
+func SynthesizeContext(ctx context.Context, text, outputPath string, opts Options) (Result, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
 	text = CleanForTTS(text)
 	if text == "" {
 		return Result{}, fmt.Errorf("清洗后文本为空，跳过 TTS")
@@ -125,13 +138,18 @@ func Synthesize(text, outputPath string, opts Options) (Result, error) {
 	const maxRetries = 3
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return Result{}, err
+		}
 		if attempt > 0 {
 			logger.Warn("TTS 合成重试",
 				zap.Int("attempt", attempt),
 				zap.Error(lastErr),
 			)
 			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
-			time.Sleep(backoff)
+			if err := waitContext(ctx, backoff); err != nil {
+				return Result{}, err
+			}
 		}
 
 		args := []string{
@@ -143,9 +161,11 @@ func Synthesize(text, outputPath string, opts Options) (Result, error) {
 			"--volume", volume,
 		}
 
-		cmd := exec.Command("edge-tts", args...)
-		output, err := cmd.CombinedOutput()
+		output, err := runCommand(ctx, 2*time.Minute, "edge-tts", args...)
 		if err != nil {
+			if ctx.Err() != nil {
+				return Result{}, ctx.Err()
+			}
 			lastErr = fmt.Errorf("edge-tts 合成失败: %w\n输出: %s", err, string(output))
 			continue
 		}
@@ -154,13 +174,19 @@ func Synthesize(text, outputPath string, opts Options) (Result, error) {
 			lastErr = fmt.Errorf("TTS 输出文件未找到: %w", err)
 			continue
 		}
-		if err := trimAudioSilence(outputPath); err != nil {
+		if err := trimAudioSilenceContext(ctx, outputPath); err != nil {
+			if ctx.Err() != nil {
+				return Result{}, ctx.Err()
+			}
 			logger.Debug("TTS 去静音失败，跳过",
 				zap.String("output", outputPath),
 				zap.Error(err),
 			)
 		}
-		duration, _ := GetAudioDuration(outputPath)
+		duration, err := GetAudioDurationContext(ctx, outputPath)
+		if err != nil {
+			return Result{}, fmt.Errorf("校验 TTS 音频时长: %w", err)
+		}
 		preset.Voice = voice
 		preset.Rate = rate
 		preset.Pitch = pitch
@@ -191,12 +217,15 @@ func TextToSpeechCommentator(text, outputPath string) error {
 	return TextToSpeech(text, outputPath)
 }
 
-func trimAudioSilence(audioPath string) error {
+func trimAudioSilenceContext(ctx context.Context, audioPath string) error {
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		return err
 	}
 
-	origDur, _ := GetAudioDuration(audioPath)
+	origDur, err := GetAudioDurationContext(ctx, audioPath)
+	if err != nil {
+		return err
+	}
 
 	ext := filepath.Ext(audioPath)
 	if ext == "" {
@@ -207,6 +236,7 @@ func trimAudioSilence(audioPath string) error {
 
 	_ = os.Remove(tmpPath)
 	_ = os.Remove(origPath)
+	defer os.Remove(tmpPath)
 
 	args := []string{
 		"-y",
@@ -216,8 +246,7 @@ func trimAudioSilence(audioPath string) error {
 		"-q:a", "4",
 		tmpPath,
 	}
-	cmd := exec.Command("ffmpeg", args...)
-	out, err := cmd.CombinedOutput()
+	out, err := runCommand(ctx, time.Minute, "ffmpeg", args...)
 	if err != nil {
 		return fmt.Errorf("ffmpeg 去静音失败: %w 输出:%s", err, string(out))
 	}
@@ -227,7 +256,10 @@ func trimAudioSilence(audioPath string) error {
 		return fmt.Errorf("ffmpeg 去静音输出无效: %s", tmpPath)
 	}
 
-	newDur, _ := GetAudioDuration(tmpPath)
+	newDur, err := GetAudioDurationContext(ctx, tmpPath)
+	if err != nil {
+		return err
+	}
 	if origDur > 0 && (newDur < 0.5 || newDur < origDur*0.6) {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("ffmpeg 去静音结果异常: %.3fs -> %.3fs", origDur, newDur)
@@ -305,13 +337,16 @@ func CleanForTTS(text string) string {
 }
 
 func GetAudioDuration(audioPath string) (float64, error) {
-	cmd := exec.Command("ffprobe",
+	return GetAudioDurationContext(context.Background(), audioPath)
+}
+
+func GetAudioDurationContext(ctx context.Context, audioPath string) (float64, error) {
+	output, err := runCommand(ctx, 15*time.Second, "ffprobe",
 		"-v", "error",
 		"-show_entries", "format=duration",
 		"-of", "csv=p=0",
 		audioPath,
 	)
-	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return 0, fmt.Errorf("ffprobe 获取时长失败: %w", err)
 	}
@@ -319,7 +354,34 @@ func GetAudioDuration(audioPath string) (float64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("解析音频时长失败: %w", err)
 	}
+	if duration <= 0 || math.IsNaN(duration) || math.IsInf(duration, 0) {
+		return 0, fmt.Errorf("音频时长无效: %q", strings.TrimSpace(string(output)))
+	}
 	return duration, nil
+}
+
+func waitContext(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return ctx.Err()
+	}
+}
+
+func runCommand(ctx context.Context, timeout time.Duration, name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	// 子进程继承输出管道时，避免主进程退出后仍无限等待管道关闭。
+	cmd.WaitDelay = time.Second
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		return output, ctx.Err()
+	}
+	return output, err
 }
 
 var copyBodyCleanReplacer = strings.NewReplacer(
@@ -333,39 +395,6 @@ var copyBodyCleanReplacer = strings.NewReplacer(
 	"反转", "",
 	"答案", "",
 	"收尾", "",
-)
-
-var businessBuzzwordReplacer = strings.NewReplacer(
-	"闭环", "完整流程",
-	"抓手", "切入点",
-	"颗粒度", "细致程度",
-	"对齐", "同步",
-	"拉齐", "同步",
-	"赋能", "帮助",
-	"赛道", "领域",
-	"弯道超车", "后发追上",
-	"占领心智", "形成印象",
-	"心智", "印象",
-)
-
-var writtenToOralReplacer = strings.NewReplacer(
-	"综上所述", "说白了",
-	"不难看出", "你再往深看",
-	"显而易见", "关键",
-	"值得注意的是", "更关键的来了",
-	"整体而言", "今天盘面",
-	"整体来看", "今天盘面",
-	"综合来看", "今天盘面",
-	"客观来说", "说句实在话",
-	"坦率地讲", "说句实在话",
-	"达到了", "到了",
-	"取得了", "干到了",
-	"占比达到了", "占到了",
-	"的一个", "的",
-	"非常明显的", "明显的",
-	"进行了", "做了",
-	"实现了", "做到了",
-	"；", "，",
 )
 
 func ParseCopywriting(text string) (scenes []string) {
@@ -411,8 +440,8 @@ func ParseCopywriting(text string) (scenes []string) {
 
 func cleanCopyBody(s string) string {
 	cleaned := copyBodyCleanReplacer.Replace(s)
-	cleaned = writtenToOralReplacer.Replace(cleaned)
-	cleaned = businessBuzzwordReplacer.Replace(cleaned)
+	cleaned = oral.WrittenToOral.Replace(cleaned)
+	cleaned = oral.Buzzwords.Replace(cleaned)
 	for strings.Contains(cleaned, "[") {
 		start := strings.Index(cleaned, "[")
 		end := strings.Index(cleaned[start:], "]")

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"net"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/a-share-flow-video-go/internal/config"
+	"github.com/a-share-flow-video-go/internal/httpclient"
 	"github.com/a-share-flow-video-go/internal/logger"
 	"github.com/a-share-flow-video-go/internal/storage"
 	"go.uber.org/zap"
@@ -63,16 +64,18 @@ type emResponse struct {
 	} `json:"data"`
 }
 
-var httpClient = &http.Client{
-	Timeout: 30 * time.Second,
-	Transport: &http.Transport{
-		DialContext: (&net.Dialer{
-			Timeout:   10 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 20 * time.Second,
-	},
+// httpClient 复用全项目共享的连接池，避免每次请求都重新建连。
+var httpClient = httpclient.New(30 * time.Second)
+
+// emMaxAttempts 是东财接口单页请求的最大尝试次数。
+const emMaxAttempts = 3
+
+// sleepBeforeRetry 在两次尝试之间退避等待。
+// 在线性退避基础上叠加随机抖动：并发调用若在同一时刻齐步重试（惊群），
+// 会把刚刚恢复的上游再次打满。
+func sleepBeforeRetry(attempt int) {
+	base := time.Duration(attempt) * 2 * time.Second
+	time.Sleep(base + rand.N(500*time.Millisecond))
 }
 
 func newRequest(method, url string) (*http.Request, error) {
@@ -91,8 +94,7 @@ func fetchEMPaginate(fs, fid, po string, pageSize int) ([]map[string]any, error)
 	seen := make(map[string]bool)
 	for pn := 1; ; pn++ {
 		var result emResponse
-		var err error
-		for attempt := 1; attempt <= 3; attempt++ {
+		for attempt := 1; attempt <= emMaxAttempts; attempt++ {
 			url := fmt.Sprintf("https://emdatah5.eastmoney.com/dc/ZJLX/getZDYLBData?fields=f12,f14,f3,f5,f6,f7,f20,f21,f62,f66,f69,f72,f75,f127,f140,f184&pn=%d&pz=%d&fid=%s&po=%s&fs=%s&ut=b2884a393a59ad64002292a3e90d46a5",
 				pn, pageSize, fid, po, fs)
 
@@ -102,33 +104,30 @@ func fetchEMPaginate(fs, fid, po string, pageSize int) ([]map[string]any, error)
 			}
 			resp, reqErr := httpClient.Do(req)
 			if reqErr != nil {
-				if attempt < 3 {
-					time.Sleep(time.Duration(attempt) * 2 * time.Second)
+				if attempt < emMaxAttempts {
+					sleepBeforeRetry(attempt)
 					continue
 				}
 				return nil, reqErr
 			}
 			if resp.StatusCode != http.StatusOK {
 				resp.Body.Close()
-				if attempt < 3 {
-					time.Sleep(time.Duration(attempt) * 2 * time.Second)
+				if attempt < emMaxAttempts {
+					sleepBeforeRetry(attempt)
 					continue
 				}
 				return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 			}
 			if reqErr = decodeJSON(resp.Body, &result); reqErr != nil {
 				resp.Body.Close()
-				if attempt < 3 {
-					time.Sleep(time.Duration(attempt) * 2 * time.Second)
+				if attempt < emMaxAttempts {
+					sleepBeforeRetry(attempt)
 					continue
 				}
 				return nil, reqErr
 			}
 			resp.Body.Close()
 			break
-		}
-		if err != nil {
-			return nil, err
 		}
 		if result.Data.Diff == nil || len(result.Data.Diff) == 0 {
 			break
@@ -875,8 +874,14 @@ func FetchAllRaw() ([]Sector, error) {
 // 排序采用东方财富 ZJLX 接口标准模式：fid=f62（主力净流）× po=1（净流入 DESC，Top 500/页）+ po=0（净流出 ASC，流出最大在前，Top500/页）双向翻页 + code 去重；
 // 说明：ZJLX getZDYLBData 仅在按 f62 净流排序时才返回**全量有资金动作的行业+概念**；若按非净流字段（如 f12 代码升序）排序会触发接口数据截断（仅返回 <10% 板块），不可使用。
 // 产品含义：全量板块 = 所有当日有主力资金净流入或净流出（非零/非无数据）的行业 + 概念；无净流数据的冷门板块/空概念无分析价值自动过滤。
-// dateStr: 业务日期，仅写入结构体，不依赖东方财富接口时间（东方财富返回最新）。
+// dateStr: 业务日期。东方财富只返回最新快照，因此历史日期必须从 sectors_all 读取，
+// 不能把实时行情改写成历史数据。
 func FetchSectorsAllDaily(dateStr string) ([]storage.SectorAll, error) {
+	today := time.Now().In(time.FixedZone("CST", 8*60*60)).Format("2006-01-02")
+	if dateStr != today {
+		return nil, fmt.Errorf("实时全量行情仅支持当前日期 %s，不能写入 %s；历史日期请从 sectors_all 读取", today, dateStr)
+	}
+
 	targets := []struct {
 		fs       string
 		category string

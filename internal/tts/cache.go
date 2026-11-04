@@ -1,6 +1,7 @@
 package tts
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -35,6 +36,13 @@ func TTSConcurrency() int {
 }
 
 func TextToSpeechCommentatorCached(text string) (publicPath string, absPath string, err error) {
+	return TextToSpeechCommentatorCachedContext(context.Background(), text)
+}
+
+func TextToSpeechCommentatorCachedContext(ctx context.Context, text string) (publicPath string, absPath string, err error) {
+	if err := ctx.Err(); err != nil {
+		return "", "", err
+	}
 	cleaned := CleanForTTS(text)
 	if cleaned == "" {
 		return "", "", fmt.Errorf("清洗后文本为空，跳过 TTS")
@@ -72,6 +80,9 @@ func TextToSpeechCommentatorCached(text string) (publicPath string, absPath stri
 	lock := abs + ".lock"
 	acquired := false
 	for attempt := 0; attempt < 40; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return "", "", err
+		}
 		f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
 		if err == nil {
 			_, _ = f.WriteString(time.Now().Format(time.RFC3339Nano))
@@ -88,7 +99,9 @@ func TextToSpeechCommentatorCached(text string) (publicPath string, absPath stri
 		if _, okErr := os.Stat(abs); okErr == nil {
 			return rel, abs, nil
 		}
-		time.Sleep(200 * time.Millisecond)
+		if err := waitContext(ctx, 200*time.Millisecond); err != nil {
+			return "", "", err
+		}
 	}
 
 	if !acquired {
@@ -111,11 +124,15 @@ func TextToSpeechCommentatorCached(text string) (publicPath string, absPath stri
 		zap.String("output", abs),
 	)
 
-	if err := TextToSpeechCommentator(cleaned, tmp); err != nil {
+	if _, err := SynthesizeContext(ctx, cleaned, tmp, Options{Preset: DefaultPresetID}); err != nil {
 		_ = os.Remove(tmp)
 		return "", "", err
 	}
 
+	if err := ctx.Err(); err != nil {
+		_ = os.Remove(tmp)
+		return "", "", err
+	}
 	if err := os.Rename(tmp, abs); err != nil {
 		_ = os.Remove(tmp)
 		if _, statErr := os.Stat(abs); statErr == nil {

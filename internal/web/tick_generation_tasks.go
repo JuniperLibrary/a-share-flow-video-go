@@ -475,12 +475,31 @@ func runTickGenerateTask(task *tickGenerateTask) {
 			task.appendLog("🤖 AI 文案生成中...")
 			prevPrediction := loadPrevCopywriting(task.Date, task.Session)
 			var aiErr error
-			copywriteText, aiErr = copy.GenerateCopywritingAI(sectors, task.Date, task.Session, prevPrediction)
+			copyStart := time.Now()
+			var meta *copy.AIGenerationMeta
+			copywriteText, meta, aiErr = copy.GenerateCopywritingAIWithMeta(sectors, task.Date, task.Session, prevPrediction)
 			if aiErr != nil {
 				task.appendLog(fmt.Sprintf("⚠️ AI 生成失败，降级模板: %v", aiErr))
 				copywriteText = copy.GenerateCopywriting(sectors, task.Date, task.Session)
 			} else {
 				cwType = "ai_tick"
+				if meta != nil {
+					task.appendLog(fmt.Sprintf("⏱️ AI文案耗时: 总计=%s, brief=%s(%dB), draft=%s, fix=%s(trigger=%t/applied=%t), humanize=%s(applied=%t)",
+						meta.TotalDuration.Round(time.Millisecond),
+						meta.BriefDuration.Round(time.Millisecond), meta.BriefBytes,
+						meta.DraftDuration.Round(time.Millisecond),
+						meta.FixDuration.Round(time.Millisecond), meta.FixTriggered, meta.FixApplied,
+						meta.HumanizeDuration.Round(time.Millisecond), meta.HumanizeApplied,
+					))
+					if len(meta.BlockingIssues) > 0 {
+						task.appendLog(fmt.Sprintf("🧪 文案阻断问题: %s", strings.Join(meta.BlockingIssues, " | ")))
+					}
+					for _, note := range meta.Notes {
+						task.appendLog("ℹ️ " + note)
+					}
+				} else {
+					task.appendLog(fmt.Sprintf("⏱️ AI文案耗时: %s", time.Since(copyStart).Round(time.Millisecond)))
+				}
 			}
 		} else {
 			task.appendLog("📝 模板文案生成中...")

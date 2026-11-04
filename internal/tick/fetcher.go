@@ -62,6 +62,11 @@ type TickFetcher struct {
 	lastTick        string
 	intervalMinutes int
 
+	// Optional hooks keep the wall-clock scheduling loop deterministic in tests.
+	nowFn     func() time.Time
+	afterFn   func(time.Duration) <-chan time.Time
+	collectFn func(dateStr, timeStr string)
+
 	// SSE observer: subscribers receive TickSnapshot on each successful tick.
 	subsMu      sync.RWMutex
 	subscribers map[chan TickSnapshot]bool
@@ -199,13 +204,26 @@ func (tf *TickFetcher) run() {
 	dateStr := tf.dateStr
 	stopCh := tf.stopCh
 	interval := tf.intervalMinutes
+	nowFn := tf.nowFn
+	afterFn := tf.afterFn
+	collectFn := tf.collectFn
 	if interval <= 0 {
 		interval = 10
 	}
 	tf.mu.Unlock()
 
-	currentMinute := nowTradingMinute()
-	if currentMinute < 0 {
+	if nowFn == nil {
+		nowFn = time.Now
+	}
+	if afterFn == nil {
+		afterFn = time.After
+	}
+	if collectFn == nil {
+		collectFn = tf.collectTick
+	}
+
+	now := nowFn().In(shanghaiTZ)
+	if tradingMinuteAt(now) < 0 {
 		tf.mu.Lock()
 		tf.running = false
 		tf.mu.Unlock()
@@ -213,38 +231,38 @@ func (tf *TickFetcher) run() {
 	}
 
 	allRanges := []tradingRange{{0, 120}, {120, 240}}
+	schedule, err := wallTickSchedule(dateStr, now, interval, allRanges)
+	if err != nil {
+		logger.Error("tick 排程失败", zap.String("date", dateStr), zap.Error(err))
+		tf.mu.Lock()
+		tf.running = false
+		tf.mu.Unlock()
+		return
+	}
 
-	for _, rng := range allRanges {
-		if rng.end < currentMinute {
-			continue
+	for _, point := range schedule {
+		select {
+		case <-stopCh:
+			return
+		default:
 		}
 
-		startMinute, ok := nextScheduledMinute(currentMinute, interval, rng)
-		if !ok {
-			continue
-		}
-
-		for minute := startMinute; minute <= rng.end; minute += interval {
+		// Always wait until the planned wall-clock time. In particular, do not
+		// collect the 13:00 snapshot immediately after the 11:30 snapshot.
+		if delay := point.At.Sub(nowFn().In(shanghaiTZ)); delay > 0 {
 			select {
 			case <-stopCh:
 				return
-			default:
-			}
-
-			timeStr := minutesToTime(minute)
-			if minute == 120 && rng.start == 0 {
-				timeStr = "11:30"
-			}
-			tf.collectTick(dateStr, timeStr)
-
-			if minute < rng.end {
-				select {
-				case <-stopCh:
-					return
-				case <-time.After(time.Duration(interval) * time.Minute):
-				}
+			case <-afterFn(delay):
 			}
 		}
+
+		select {
+		case <-stopCh:
+			return
+		default:
+		}
+		collectFn(dateStr, point.Time)
 	}
 
 	tf.mu.Lock()
@@ -252,8 +270,8 @@ func (tf *TickFetcher) run() {
 	tf.mu.Unlock()
 }
 
-func nowTradingMinute() int {
-	now := time.Now().In(shanghaiTZ)
+func tradingMinuteAt(now time.Time) int {
+	now = now.In(shanghaiTZ)
 	wallMin := now.Hour()*60 + now.Minute()
 
 	morningStart := 9*60 + 30
@@ -362,6 +380,12 @@ type tradingRange struct {
 	start, end int
 }
 
+type scheduledTick struct {
+	Minute int
+	Time   string
+	At     time.Time
+}
+
 func nextScheduledMinute(currentMinute, interval int, rng tradingRange) (int, bool) {
 	if interval <= 0 {
 		return 0, false
@@ -385,14 +409,8 @@ func nextScheduledMinute(currentMinute, interval int, rng tradingRange) (int, bo
 // tickSchedule 计算从 currentMinute 开始，以 interval 为步长，
 // 在 allRanges 范围内所有待采集的 (tradingMinute, timeStr) 列表。
 // 纯数学计算，不依赖时钟或 IO，用于测试验证调度逻辑。
-func tickSchedule(currentMinute, interval int, allRanges []tradingRange) []struct {
-	Minute int
-	Time   string
-} {
-	var result []struct {
-		Minute int
-		Time   string
-	}
+func tickSchedule(currentMinute, interval int, allRanges []tradingRange) []scheduledTick {
+	var result []scheduledTick
 	for _, rng := range allRanges {
 		if rng.end < currentMinute {
 			continue
@@ -406,13 +424,38 @@ func tickSchedule(currentMinute, interval int, allRanges []tradingRange) []struc
 			if minute == 120 && rng.start == 0 {
 				timeStr = "11:30"
 			}
-			result = append(result, struct {
-				Minute int
-				Time   string
-			}{Minute: minute, Time: timeStr})
+			result = append(result, scheduledTick{Minute: minute, Time: timeStr})
 		}
 	}
 	return result
+}
+
+// wallTickSchedule attaches real wall-clock times to the compressed trading
+// schedule and removes points that have already passed on the current day.
+func wallTickSchedule(dateStr string, now time.Time, interval int, allRanges []tradingRange) ([]scheduledTick, error) {
+	day, err := time.ParseInLocation("2006-01-02", dateStr, shanghaiTZ)
+	if err != nil {
+		return nil, fmt.Errorf("parse tick date: %w", err)
+	}
+
+	nowMinute := now.In(shanghaiTZ).Truncate(time.Minute)
+	points := tickSchedule(0, interval, allRanges)
+	result := make([]scheduledTick, 0, len(points))
+	for _, point := range points {
+		clock, err := time.ParseInLocation("15:04", point.Time, shanghaiTZ)
+		if err != nil {
+			return nil, fmt.Errorf("parse tick time %q: %w", point.Time, err)
+		}
+		point.At = time.Date(
+			day.Year(), day.Month(), day.Day(),
+			clock.Hour(), clock.Minute(), 0, 0, shanghaiTZ,
+		)
+		if point.At.Before(nowMinute) {
+			continue
+		}
+		result = append(result, point)
+	}
+	return result, nil
 }
 
 func minutesToTime(minutes int) string {

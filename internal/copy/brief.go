@@ -10,6 +10,8 @@ import (
 	"github.com/a-share-flow-video-go/internal/storage"
 )
 
+const llmPrevPredictionMaxRunes = 140
+
 // NarrativeBrief 是多源数据聚合后的叙事素材包，供 LLM 二次写作。
 type NarrativeBrief struct {
 	Date           string
@@ -24,6 +26,43 @@ type NarrativeBrief struct {
 	KeyMoments     string
 	Angles         []string
 	PrevPrediction string
+}
+
+// CompactForLLM 在不改变事实的前提下压缩素材包长度，
+// 避免把过长的资讯/关键节点/连续性上下文一股脑塞给模型。
+func (b *NarrativeBrief) CompactForLLM() {
+	if b == nil {
+		return
+	}
+	b.IntradayPath = limitBlock(b.IntradayPath, 2, 120)
+	b.Continuity = limitBlock(b.Continuity, 2, 140)
+	b.NewsContext = limitBlock(b.NewsContext, 2, 120)
+	b.KeyMoments = limitBlock(b.KeyMoments, 3, 140)
+	if len(b.Angles) > 3 {
+		b.Angles = append([]string(nil), b.Angles[:3]...)
+	}
+	for i := range b.Angles {
+		b.Angles[i] = truncateRunes(b.Angles[i], 42)
+	}
+	b.PrevPrediction = truncateRunes(strings.TrimSpace(b.PrevPrediction), llmPrevPredictionMaxRunes)
+}
+
+func limitBlock(block string, maxLines, maxRunes int) string {
+	if maxLines <= 0 || maxRunes <= 0 {
+		return ""
+	}
+	var out []string
+	for _, line := range strings.Split(strings.TrimSpace(block), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		out = append(out, truncateRunes(line, maxRunes))
+		if len(out) >= maxLines {
+			break
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 func (b *NarrativeBrief) Format() string {
@@ -61,7 +100,7 @@ func (b *NarrativeBrief) Format() string {
 		sb.WriteString("\n")
 	}
 	if b.PrevPrediction != "" {
-		sb.WriteString("### 昨日预判\n")
+		sb.WriteString("### 上一交易日预判\n")
 		sb.WriteString(b.PrevPrediction + "\n")
 	}
 	return sb.String()
@@ -342,6 +381,46 @@ func deriveAngles(inflows, outflows []sectorFlow, netTotal, totalSuper float64) 
 	}
 	if techN >= 2 && techNet >= 200 {
 		angles = append(angles, fmt.Sprintf("科技链共振（TOP 合计 %.0f 亿）", techNet))
+	}
+
+	// 立场角度：重仓科技的博主视角——主线确认 / 回调不改 / 非科技轮动 / 科技内部分歧
+	// 与 buildStanceLine 同优先级：科技流出强度 ≥ 流入强度时写分歧/回调，避免小量吸金误判为「主线确认」。
+	techInTop := 0
+	techNetIn := 0.0
+	for i, v := range inflows {
+		if i >= 3 {
+			break
+		}
+		if techSectorNames[v.Name] {
+			techInTop++
+			techNetIn += v.Net
+		}
+	}
+	techOutTop := 0
+	techNetOut := 0.0
+	for i, v := range outflows {
+		if i >= 3 {
+			break
+		}
+		if techSectorNames[v.Name] {
+			techOutTop++
+			techNetOut += absF(v.Net)
+		}
+	}
+
+	if techOutTop >= 2 && techNetOut >= techNetIn {
+		angles = append(angles, "科技主线内部分歧/承压：高位在兑现、低位在承接，回调不改主线，重点盯高低切")
+	} else if techInTop >= 2 {
+		angles = append(angles, "科技主线确认：主力用真金白银投票，回踩即是分歧而非转向")
+	} else if techOutTop >= 2 {
+		angles = append(angles, "科技回调不改主线：定性为获利兑现/高低切，而非主线终结")
+	} else if len(inflows) > 0 && !techSectorNames[inflows[0].Name] {
+		if techInTop >= 1 || techOutTop >= 1 {
+			angles = append(angles, fmt.Sprintf("非科技吸金（%s）只是轮动/避险，盯科技主线承接是否回来", inflows[0].Name))
+		}
+	}
+	if techInTop >= 1 && techOutTop >= 1 {
+		angles = append(angles, "科技内部分歧加大：高切低是主旋律，龙头与补涨方向要分开看")
 	}
 
 	if len(inflows) > 0 && absF(inflows[0].SuperNet) >= 80 {

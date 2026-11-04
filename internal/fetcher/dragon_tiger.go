@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/a-share-flow-video-go/internal/httpclient"
 	"github.com/a-share-flow-video-go/internal/logger"
 	"go.uber.org/zap"
 )
@@ -27,7 +28,7 @@ type DragonTigerStock struct {
 	DealerNetBuy float64 `json:"dealerNetBuy"` // 营业部净买入（亿）
 	Reason       string  `json:"reason"`       // 上榜原因
 	DealerName   string  `json:"dealerName"`   // 营业部/席位名称
-	IsOrg        bool    `json:"isOrg"`         // 是否为机构席位
+	IsOrg        bool    `json:"isOrg"`        // 是否为机构席位
 }
 
 type billboardResponse struct {
@@ -52,7 +53,7 @@ func FetchDragonTiger(dateStr string) ([]DragonTigerStock, error) {
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	req.Header.Set("Referer", "https://data.eastmoney.com/stock/tradedetail.html")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := httpclient.New(30 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request dragon tiger: %w", err)

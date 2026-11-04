@@ -72,6 +72,29 @@ func registerTickRoutes(r *gin.Engine, tickSched *tick.TickScheduler) {
 	})
 }
 
+func validateForceCollectTime(dateStr, timeStr string, now time.Time) error {
+	localNow := now.In(webShanghaiTZ)
+	today := localNow.Format("2006-01-02")
+	if dateStr != today {
+		return fmt.Errorf("实时强制采集仅支持当前日期 %s，不能写入 %s", today, dateStr)
+	}
+	if _, err := time.ParseInLocation("15:04", timeStr, webShanghaiTZ); err != nil {
+		return fmt.Errorf("time 必须为 HH:MM 格式")
+	}
+	currentTime := localNow.Format("15:04")
+	if timeStr != currentTime {
+		return fmt.Errorf("实时强制采集必须使用服务器当前时间 %s，不能补写或预写 %s", currentTime, timeStr)
+	}
+
+	wallMinute := localNow.Hour()*60 + localNow.Minute()
+	inMorning := wallMinute >= 9*60+30 && wallMinute <= 11*60+30
+	inAfternoon := wallMinute >= 13*60 && wallMinute <= 15*60
+	if !inMorning && !inAfternoon {
+		return fmt.Errorf("当前不在 A 股连续竞价采集时段")
+	}
+	return nil
+}
+
 func handleTickForceCollect(c *gin.Context) {
 	var body struct {
 		Time string `json:"time"`
@@ -86,9 +109,14 @@ func handleTickForceCollect(c *gin.Context) {
 		return
 	}
 
+	now := time.Now().In(webShanghaiTZ)
 	dateStr := body.Date
 	if dateStr == "" {
-		dateStr = time.Now().In(time.FixedZone("CST", 8*60*60)).Format("2006-01-02")
+		dateStr = now.Format("2006-01-02")
+	}
+	if err := validateForceCollectTime(dateStr, body.Time, now); err != nil {
+		logger.BadRequest(c, err.Error())
+		return
 	}
 	datetime := storage.DateToDatetimeTick(dateStr, body.Time)
 
@@ -97,7 +125,11 @@ func handleTickForceCollect(c *gin.Context) {
 		logger.InternalError(c, "数据库初始化失败", err)
 		return
 	}
-	exists, _ := db.HasTickData(datetime)
+	exists, err := db.HasTickData(datetime)
+	if err != nil {
+		logger.InternalError(c, "检查 tick 数据失败", err)
+		return
+	}
 	if exists {
 		c.JSON(200, gin.H{"ok": true, "message": fmt.Sprintf("%s %s 的 tick 数据已存在", dateStr, body.Time)})
 		return
@@ -109,7 +141,7 @@ func handleTickForceCollect(c *gin.Context) {
 		return
 	}
 
-	inputDate := time.Now().In(time.FixedZone("CST", 8*60*60)).Format("2006-01-02 15:04:05")
+	inputDate := now.Format("2006-01-02 15:04:05")
 	records := make([]storage.Sector, 0, len(sectors))
 	for _, s := range sectors {
 		records = append(records, storage.Sector{

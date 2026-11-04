@@ -26,8 +26,21 @@ var bannedPhrases = []string{
 }
 
 var hookGreetingPhrases = []string{
-	"各位好", "朋友们", "老粉都知道", "今天盘面", "收盘了", "收盘聊两句",
+	"各位好", "朋友们", "老粉都知道", "收盘了", "收盘聊两句",
 	"说句实在话", "我是阿川", "阿川聊盘", "大家好", "收盘复盘",
+}
+
+// stanceAnchorPhrases [答案] 段的立场锚点：重仓科技博主的观点必须落在这些表达上，
+// 防止 AI 退回“纯数据播报”的中立腔。
+var stanceAnchorPhrases = []string{
+	"主线", "承接", "分歧", "高低切", "高低切换", "回调不改",
+	"兑现", "洗盘", "重仓", "我一直", "低位", "共振", "切换",
+}
+
+// stanceBannedPhrases 与「重仓科技博主」立场直接矛盾的表达，出现即判失败。
+var stanceBannedPhrases = []string{
+	"科技完了", "科技已死", "科技到头了", "科技没戏了", "科技不行了",
+	"科技结束了", "科技不是主线", "放弃科技", "别碰科技", "永远不碰科技",
 }
 
 var bannedCasualBroPhrases = []string{
@@ -38,12 +51,12 @@ var bannedCasualBroPhrases = []string{
 var transitionPhrases = []string{
 	"很多人没看懂", "你想过没有", "问题来了", "更奇怪的是", "这里面有个细节",
 	"更关键的来了", "真正的问题在这", "你再往深看", "你再往深看一层", "我盯了一天",
-	"所以今天的真相是", "说白了", "核心逻辑只有一个", "一句话讲清楚", "真相是",
+	"所以盘面的真相是", "说白了", "核心逻辑只有一个", "一句话讲清楚", "真相是",
 	"你再仔细看", "真正有意思的是", "更重要的是",
 }
 
 var closingInteractionPhrases = []string{
-	"明天开盘见", "明天见", "盘中再跟踪", "盘中再说", "点个赞",
+	"开盘见", "盘中再跟踪", "盘中再说", "点个赞",
 	"评论区", "收藏一下", "关注不迷路", "关注我", "收藏好",
 	"盯着", "盯紧", "记住", "记好", "别忘了",
 	"我再提醒你", "我会提醒你",
@@ -80,12 +93,18 @@ func countChinesePunctuatedSentences(s string) int {
 	return cnt
 }
 
-// ValidateCopy 校验成稿是否踩禁词、是否与简报关键事实矛盾、以及是否具备博主语气锚点。
-func ValidateCopy(text string, brief *NarrativeBrief, inflows []sectorFlow) []string {
+// ValidateCopy 校验成稿是否踩禁词、是否与简报关键事实矛盾、以及是否具备博主语气锚点与科技立场。
+func ValidateCopy(text string, brief *NarrativeBrief, inflows, outflows []sectorFlow) []string {
 	var issues []string
 	for _, p := range bannedPhrases {
 		if strings.Contains(text, p) {
 			issues = append(issues, fmt.Sprintf("含禁用套话：%s", p))
+		}
+	}
+
+	for _, p := range stanceBannedPhrases {
+		if strings.Contains(text, p) {
+			issues = append(issues, fmt.Sprintf("含与「重仓科技博主」立场矛盾的表达：%s（科技回调只能写分歧/兑现/高低切，非科技吸金只能写轮动/避险）", p))
 		}
 	}
 
@@ -114,7 +133,7 @@ func ValidateCopy(text string, brief *NarrativeBrief, inflows []sectorFlow) []st
 		scenes := extractSceneContents(text)
 		if hook := scenes["钩子"]; hook != "" {
 			if !containsAny(hook, hookGreetingPhrases) {
-				issues = append(issues, "[钩子] 缺少博主开场招呼词（建议加「各位好 / 收盘聊两句 / 朋友们 / 老粉都知道 / 今天盘面 / 收盘了说句实在话」等）")
+				issues = append(issues, "[钩子] 缺少博主开场招呼词（建议加「各位好 / 收盘聊两句 / 朋友们 / 老粉都知道 / 收盘了说句实在话」等）")
 			}
 		}
 		for _, sceneKey := range []string{"悬念", "反转", "答案"} {
@@ -124,9 +143,14 @@ func ValidateCopy(text string, brief *NarrativeBrief, inflows []sectorFlow) []st
 				}
 			}
 		}
+		if techPresentInFlows(inflows, outflows) {
+			if answer := scenes["答案"]; answer != "" && !containsAny(answer, stanceAnchorPhrases) {
+				issues = append(issues, "[答案] 缺少立场锚点，重仓科技博主必须有观点（建议落点：「主线确认 / 承接 / 分歧 / 高低切 / 回调不改 / 我一直盯的方向」），不能写成纯数据播报")
+			}
+		}
 		if tail := scenes["收尾"]; tail != "" {
 			if !containsAny(tail, closingInteractionPhrases) {
-				issues = append(issues, "[收尾] 缺少收束互动锚点（建议加「明天开盘见 / 盯着 / 点个赞 / 我再提醒你」等）")
+				issues = append(issues, "[收尾] 缺少收束互动锚点（建议加「8月17日开盘见 / 盯着 / 点个赞 / 我再提醒你」等）")
 			}
 			sentences := countChinesePunctuatedSentences(tail)
 			if sentences < 3 {
@@ -159,7 +183,7 @@ func ValidateCopy(text string, brief *NarrativeBrief, inflows []sectorFlow) []st
 			}
 			for _, w := range bannedCasualBroPhrases {
 				if strings.Contains(body, w) {
-					issues = append(issues, fmt.Sprintf("[%s] 正文中出现过于社群化/喊单口语「%s」，不符合阿川 80 万粉专业财经博主语气，请替换成更克制的表达（如「朋友们」「各位好」「今天盘面」等）", sceneKey, w))
+					issues = append(issues, fmt.Sprintf("[%s] 正文中出现过于社群化/喊单口语「%s」，不符合阿川 80 万粉专业财经博主语气，请替换成更克制的表达（如「朋友们」「各位好」「收盘了」等）", sceneKey, w))
 				}
 			}
 		}
@@ -168,9 +192,53 @@ func ValidateCopy(text string, brief *NarrativeBrief, inflows []sectorFlow) []st
 	return issues
 }
 
+// BlockingCopyIssues 只保留值得再发起一次 LLM 修复的严重问题。
+// 这类问题要么会影响事实正确性，要么会直接破坏口播结构。
+// 其余偏风格类建议不再强制触发 FixCopy，避免每次都走第二轮。
+func BlockingCopyIssues(issues []string) []string {
+	var out []string
+	for _, issue := range issues {
+		switch {
+		case strings.Contains(issue, "含禁用套话"),
+			strings.Contains(issue, "与「重仓科技博主」立场矛盾"),
+			strings.Contains(issue, "素材包不存在的板块名"),
+			strings.Contains(issue, "未提及流入龙头"),
+			strings.Contains(issue, "龙头超大单"),
+			strings.Contains(issue, "缺少或打乱 [钩子]/[悬念]/[反转]/[答案]/[收尾]"),
+			strings.Contains(issue, "正文中出现结构锚点词"),
+			strings.Contains(issue, "正文中残留方括号"),
+			strings.Contains(issue, "过于社群化/喊单口语"):
+			out = append(out, issue)
+		}
+	}
+	return out
+}
+
 func containsAny(s string, needles []string) bool {
 	for _, n := range needles {
 		if strings.Contains(s, n) {
+			return true
+		}
+	}
+	return false
+}
+
+// techPresentInFlows 判断当日资金榜（流入/流出 TOP3）是否出现科技主线板块。
+// 仅当科技在场时才启用立场校验，避免非科技主导行情下误报。
+func techPresentInFlows(inflows, outflows []sectorFlow) bool {
+	for i, v := range inflows {
+		if i >= 3 {
+			break
+		}
+		if techSectorNames[v.Name] {
+			return true
+		}
+	}
+	for i, v := range outflows {
+		if i >= 3 {
+			break
+		}
+		if techSectorNames[v.Name] {
 			return true
 		}
 	}

@@ -352,7 +352,7 @@ func buildOralScriptFromEvidence(sector string, flow float64, newsScores []hotne
 			runes := []rune(shortTitle)
 			shortTitle = string(runes[:22]) + "…"
 		}
-		line := fmt.Sprintf("催化%d：%s，%s，%s今日%s。", i+1, shortTitle, phrase, sector, action)
+		line := fmt.Sprintf("催化%d：%s，%s，%s当日%s。", i+1, shortTitle, phrase, sector, action)
 		out = append(out, line)
 	}
 	return out
@@ -608,7 +608,7 @@ func buildFallbackFromEvidence(ev []hotnews.CatalysisSectorEvidence) *CatalysisR
 		an := ""
 		switch e.Confidence {
 		case confidenceHigh:
-			an = fmt.Sprintf("%s今日净流向%+.1f亿，核心新闻与资金行为在时点上高度吻合。", e.Sector, e.Flow)
+			an = fmt.Sprintf("%s当日净流向%+.1f亿，核心新闻与资金行为在时点上高度吻合。", e.Sector, e.Flow)
 		case confidenceMedium:
 			an = fmt.Sprintf("%s净流向%+.1f亿，相关新闻与资金方向基本同向。", e.Sector, e.Flow)
 		default:
@@ -641,7 +641,7 @@ func truncateTo(s string, n int) string {
 
 // GenerateCatalysis B 方案落地：先规则打分证据，再 LLM 润色成专业克制文案，失败或校验打回则走"证据结构化 fallback"。
 // tickTimes 用于做新闻时点 vs 资金曲线的 15/30/60 min 对齐。
-func GenerateCatalysis(sectorTicks []SectorTick, tickTimes []string, newsPages []hotnews.NewsPage) *CatalysisResult {
+func GenerateCatalysis(dateStr string, sectorTicks []SectorTick, tickTimes []string, newsPages []hotnews.NewsPage) *CatalysisResult {
 	if len(newsPages) == 0 {
 		return nil
 	}
@@ -657,7 +657,7 @@ func GenerateCatalysis(sectorTicks []SectorTick, tickTimes []string, newsPages [
 	}
 
 	summary := buildEvidenceSummary(sectorTicks, ev)
-	prompt := fmt.Sprintf(PromptCatalysis, summary)
+	prompt := fmt.Sprintf(PromptCatalysis, fetcher.TradingDayContext(dateStr), summary)
 
 	var result CatalysisResult
 	if err := llmChatCompletionJSON(prompt, 0.6, 2200, &result); err != nil {

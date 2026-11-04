@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/a-share-flow-video-go/internal/fetcher"
 	"github.com/a-share-flow-video-go/internal/logger"
 	"go.uber.org/zap"
 )
@@ -109,13 +110,13 @@ func buildMainStructureSummary(sectorTicks []SectorTick) string {
 
 // GenerateMainStructure 调用 LLM 生成主线结构收尾分析。
 // 失败时返回 nil，调用方 fallback 到原始逻辑。
-func GenerateMainStructure(sectorTicks []SectorTick) *MainStructureResult {
+func GenerateMainStructure(dateStr string, sectorTicks []SectorTick) *MainStructureResult {
 	if len(sectorTicks) == 0 {
 		return nil
 	}
 
 	summary := buildMainStructureSummary(sectorTicks)
-	prompt := fmt.Sprintf(PromptMainStructure, summary)
+	prompt := fmt.Sprintf(PromptMainStructure, fetcher.TradingDayContext(dateStr), summary)
 
 	var result MainStructureResult
 	if err := llmChatCompletionJSON(prompt, 0.7, 1000, &result); err != nil {

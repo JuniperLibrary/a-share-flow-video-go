@@ -64,7 +64,7 @@ func TestValidateCopy_RejectsBannedPhrase(t *testing.T) {
 [反转] 你再往深看，全是游资在里面折腾。
 [答案] 说白了，今天真正的主线就一个：科技主线。
 [收尾] 明天盯着承接能不能延续，不行我再提醒你，明天开盘见。`
-	issues := ValidateCopy(text, brief, inflows)
+	issues := ValidateCopy(text, brief, inflows, nil)
 	if len(issues) == 0 {
 		t.Fatal("expected validation issues")
 	}
@@ -96,7 +96,7 @@ func TestValidateCopy_RejectsMissingGreeting(t *testing.T) {
 [反转] 你再往深看一层，其实是半导体内部在分歧。
 [答案] 说白了，今天真正的主线就一个：国产芯片承接。
 [收尾] 明天盯着承接行不行，不行我再提醒你，明天开盘见。`
-	issues := ValidateCopy(text, brief, inflows)
+	issues := ValidateCopy(text, brief, inflows, nil)
 	found := false
 	for _, it := range issues {
 		if strings.Contains(it, "[钩子] 缺少博主开场招呼词") {
@@ -117,7 +117,7 @@ func TestValidateCopy_RejectsMissingTransitions(t *testing.T) {
 [反转] 半导体内部在分歧，大资金在高低切。
 [答案] 今天真正的主线是国产芯片承接。
 [收尾] 明天盯着承接行不行，不行我再提醒你，明天开盘见。`
-	issues := ValidateCopy(text, brief, inflows)
+	issues := ValidateCopy(text, brief, inflows, nil)
 	hits := 0
 	for _, it := range issues {
 		if strings.Contains(it, "缺少人话过渡词") {
@@ -137,7 +137,7 @@ func TestValidateCopy_RejectsMissingClosing(t *testing.T) {
 [反转] 你再往深看一层，其实是半导体内部在分歧。
 [答案] 说白了，今天真正的主线就一个：国产芯片承接。
 [收尾] 明天看承接。`
-	issues := ValidateCopy(text, brief, inflows)
+	issues := ValidateCopy(text, brief, inflows, nil)
 	found := false
 	for _, it := range issues {
 		if strings.Contains(it, "[收尾] 缺少收束互动锚点") {
@@ -158,7 +158,7 @@ func TestValidateCopy_PassesFullBloggerTone(t *testing.T) {
 [反转] 你再往深看一层，其实是半导体内部在高低切换。
 [答案] 说白了，今天真正的主线就一个：国产芯片承接。
 [收尾] 明天盯着承接能不能延续，不行我再提醒你，明天开盘见。`
-	issues := ValidateCopy(text, brief, inflows)
+	issues := ValidateCopy(text, brief, inflows, nil)
 	var toneIssues []string
 	for _, it := range issues {
 		if strings.Contains(it, "招呼词") || strings.Contains(it, "过渡词") || strings.Contains(it, "收束") {
@@ -191,11 +191,11 @@ func TestBuildBloggerToneCopy_FromBrief(t *testing.T) {
 
 	inflows, _, _, _, _ := splitSectorFlows(sectors)
 
-	hook := "各位好，今天最反常的一件事，资金只盯着国产芯片承接，其他方向基本没动。"
+	hook := "各位好，8月7日最反常的一件事，资金只盯着国产芯片承接，其他方向基本没动。"
 	suspense := "很多人没看懂，为什么指数红着，手里一半的票却还在水下。"
 	twist := "更关键的来了，半导体内部已经出现分歧，大资金正在从高位往低位切。"
-	answer := "说白了，今天真正的定价核心就一个：国产芯片的承接强度。"
-	closing := "今天资金就是国产芯片和半导体做高低切，AI应用还在失血别乱接。先盯国产芯片能不能继续承接，再看 AI 应用流出能否收敛。别乱追，守住仓位，点个赞，明天开盘见。"
+	answer := "说白了，8月7日真正的定价核心就一个：国产芯片的承接强度。"
+	closing := "8月7日资金就是国产芯片和半导体做高低切，AI应用还在失血别乱接。先盯国产芯片能不能继续承接，再看 AI 应用流出能否收敛。别乱追，守住仓位，点个赞，8月10日开盘见。"
 
 	candidate := fmt.Sprintf("[钩子] %s\n[悬念] %s\n[反转] %s\n[答案] %s\n[收尾] %s",
 		hook, suspense, twist, answer, closing)
@@ -203,7 +203,7 @@ func TestBuildBloggerToneCopy_FromBrief(t *testing.T) {
 	candidate = normalizeHallucinatedSectorNames(candidate, sectors, inflows)
 	candidate = normalizeTaggedCopy(candidate)
 
-	issues := ValidateCopy(candidate, brief, inflows)
+	issues := ValidateCopy(candidate, brief, inflows, nil)
 	if len(issues) > 0 {
 		t.Fatalf("unexpected validation issues on blogger-tone copy:\n%s\n\nissues=%v", candidate, issues)
 	}
@@ -236,7 +236,7 @@ func TestValidateCopy_RejectsStructureWordsInBody(t *testing.T) {
 [反转] 更关键的来了，反转发生在半导体内部。
 [答案] 说白了，答案就是国产芯片和元件的高低切换。
 [收尾] 明天盯着承接行不行，收尾就一句话，明天开盘见。`
-	issues := ValidateCopy(text, brief, inflows)
+	issues := ValidateCopy(text, brief, inflows, nil)
 	hits := 0
 	for _, it := range issues {
 		if strings.Contains(it, "结构锚点词") {
@@ -256,7 +256,7 @@ func TestValidateCopy_RejectsBracketsInBody(t *testing.T) {
 [反转] 你再往深看一层，其实是半导体内部在 [高切低] 切换。
 [答案] 说白了，今天真正的主线就一个：[国产芯片] 承接。
 [收尾] 明天盯着承接行不行，[关注我] 明天开盘见。`
-	issues := ValidateCopy(text, brief, inflows)
+	issues := ValidateCopy(text, brief, inflows, nil)
 	hits := 0
 	for _, it := range issues {
 		if strings.Contains(it, "残留方括号") {
@@ -300,7 +300,7 @@ func TestValidateCopy_RejectsClosingShort(t *testing.T) {
 [反转] 你再往深看一层，其实是半导体内部在高低切换。
 [答案] 说白了，今天真正的主线就一个：国产芯片承接。
 [收尾] 明天看承接。`
-	issues := ValidateCopy(text, brief, inflows)
+	issues := ValidateCopy(text, brief, inflows, nil)
 	found := false
 	for _, it := range issues {
 		if strings.Contains(it, "信息量不够") || strings.Contains(it, "至少要包含 3 句") {
@@ -321,7 +321,7 @@ func TestValidateCopy_RejectsMissingOperations(t *testing.T) {
 [反转] 你再往深看一层，其实是半导体内部在高低切换。
 [答案] 说白了，今天真正的主线就一个：国产芯片承接。
 [收尾] 今天行情就是国产芯片强，半导体分歧。点个赞，明天开盘见。`
-	issues := ValidateCopy(text, brief, inflows)
+	issues := ValidateCopy(text, brief, inflows, nil)
 	found := false
 	for _, it := range issues {
 		if strings.Contains(it, "操作建议不够具体") || strings.Contains(it, "动作锚点词") {
@@ -342,7 +342,7 @@ func TestValidateCopy_RejectsSkillMergedBannedPhrases(t *testing.T) {
 [反转] 更关键的来了，这不是散户推的，是主力级的承接，至关重要。
 [答案] 说白了，今天真正的主线就一个：国产芯片抓手在承接，闭环跑通了。
 [收尾] 明天先讲结论，国产芯片盯承接，AI 应用看收敛，点个赞，明天见。`
-	issues := ValidateCopy(text, brief, inflows)
+	issues := ValidateCopy(text, brief, inflows, nil)
 	hits := 0
 	for _, it := range issues {
 		if strings.Contains(it, "含禁用套话") ||

@@ -188,7 +188,10 @@ func buildStructureBlock(netTotal, totalSuper, totalBig float64, inflows []secto
 	return strings.Join(lines, "\n")
 }
 
+// techSectorNames 博主重仓立场覆盖的科技主线板块池（含 Top21 中全部科技属性方向）。
 var techSectorNames = map[string]bool{
 	"半导体": true, "国产芯片": true, "CPO概念": true, "AI应用": true,
 	"人工智能": true, "云计算": true, "机器人": true, "元件": true,
+	"消费电子": true, "通信设备": true, "通信服务": true, "低空经济": true,
+	"商业航天": true, "电网设备": true,
 }

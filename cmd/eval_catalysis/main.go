@@ -57,7 +57,7 @@ func main() {
 		zap.Int("tickTimes", len(tickTimes)),
 		zap.Int("newsPages", len(newsPages)))
 
-	result := tick.GenerateCatalysis(sectorTicks, tickTimes, newsPages)
+	result := tick.GenerateCatalysis(dateStr, sectorTicks, tickTimes, newsPages)
 	allowed := make(map[string]bool, len(fetcher.Top21HotSectors))
 	for _, s := range fetcher.Top21HotSectors {
 		allowed[s] = true

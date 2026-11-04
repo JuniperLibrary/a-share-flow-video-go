@@ -78,15 +78,15 @@ var SessionConfigs = map[string]SessionConfig{
 
 // AIConfig holds LLM API configuration.
 type AIConfig struct {
-	APIKey              string
-	BaseURL             string
-	Model               string
-	Models              map[string]string // per-module model 覆盖，key 为模块名
-	TimeoutSec          int               // 单次请求超时（秒），<=0 表示走 env/默认 60s
-	MaxRetries          int               // 重试次数（总尝试=1+MaxRetries），<=0 表示走 env/默认 3
-	RetryBaseDelayMs    int               // 指数退避基础延迟（毫秒），<=0 表示走 env/默认 500ms
-	CopyTotalDeadlineSec int              // 文案 AI 总 deadline（秒），超过直接降级模板；<=0 走 env/默认 180s
-	CopyHumanizeEnabled  bool             // 是否启用第 3 轮「人味润色」LLM（true 多 1 次 round-trip 30s+）；默认 false 省耗时
+	APIKey               string
+	BaseURL              string
+	Model                string
+	Models               map[string]string // per-module model 覆盖，key 为模块名
+	TimeoutSec           int               // 单次请求超时（秒），<=0 表示走 env/默认 60s
+	MaxRetries           int               // 重试次数（总尝试=1+MaxRetries），<=0 表示走 env/默认 3
+	RetryBaseDelayMs     int               // 指数退避基础延迟（毫秒），<=0 表示走 env/默认 500ms
+	CopyTotalDeadlineSec int               // 文案 AI 总 deadline（秒），超过直接降级模板；<=0 走 env/默认 180s
+	CopyHumanizeEnabled  bool              // 是否启用第 3 轮「人味润色」LLM（true 多 1 次 round-trip 30s+）；默认 false 省耗时
 }
 
 // aiTunablesKeys 数据库 KV key 名 与 env 名 对齐，方便 UI/CLI/后端三处一致。
@@ -263,6 +263,7 @@ func parseAITunablesFromEnv() (timeoutSec, maxRetries, retryBaseDelayMs int, has
 // GetAIConfig reads AI configuration from database (primary) or .env (fallback).
 func GetAIConfig() AIConfig {
 	cfg := AIConfig{Models: make(map[string]string)}
+	copyHumanizeConfigured := false
 	if aiConfigDBReader != nil {
 		if all, ok := aiConfigDBReader(); ok && len(all) > 0 {
 			cfg.APIKey = all["api_key"]
@@ -300,9 +301,8 @@ func GetAIConfig() AIConfig {
 					cfg.CopyTotalDeadlineSec = n
 				}
 			}
-			dbSetHumanize := false
 			if v := all[AITunableKeyCopyHumanizeEnabled]; v != "" {
-				dbSetHumanize = true
+				copyHumanizeConfigured = true
 				switch strings.ToLower(v) {
 				case "1", "true", "yes", "on":
 					cfg.CopyHumanizeEnabled = true
@@ -310,15 +310,17 @@ func GetAIConfig() AIConfig {
 					cfg.CopyHumanizeEnabled = false
 				}
 			}
-			if cfg.APIKey != "" {
-				_ = dbSetHumanize
-				return cfg
-			}
 		}
 	}
-	cfg.APIKey = os.Getenv("OPENAI_API_KEY")
-	cfg.BaseURL = os.Getenv("OPENAI_BASE_URL")
-	cfg.Model = os.Getenv("AI_MODEL")
+	if cfg.APIKey == "" {
+		cfg.APIKey = os.Getenv("OPENAI_API_KEY")
+	}
+	if cfg.BaseURL == "" {
+		cfg.BaseURL = os.Getenv("OPENAI_BASE_URL")
+	}
+	if cfg.Model == "" {
+		cfg.Model = os.Getenv("AI_MODEL")
+	}
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = "https://api.openai.com/v1"
 	}
@@ -349,14 +351,14 @@ func GetAIConfig() AIConfig {
 			}
 		}
 	}
-	// Humanize: 默认 false（省 1 次 round-trip 30s+），除非 DB 显式设置或 env 显式打开
-	dbSetHumanize := false // env fallback 分支本来就是默认 false，这里无需再读 DB
-	_ = dbSetHumanize
-	switch strings.ToLower(os.Getenv("COPY_HUMANIZE_ENABLED")) {
-	case "1", "true", "yes", "on":
-		cfg.CopyHumanizeEnabled = true
-	case "0", "false", "no", "off":
-		cfg.CopyHumanizeEnabled = false
+	// Humanize 默认 false；仅当 DB 或 env 显式开启时才打开。
+	if !copyHumanizeConfigured {
+		switch strings.ToLower(os.Getenv("COPY_HUMANIZE_ENABLED")) {
+		case "1", "true", "yes", "on":
+			cfg.CopyHumanizeEnabled = true
+		case "0", "false", "no", "off":
+			cfg.CopyHumanizeEnabled = false
+		}
 	}
 	return cfg
 }
@@ -398,6 +400,10 @@ func SaveAIConfig(cfg AIConfig) error {
 			if len(parts) == 2 {
 				existing[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
 			}
+		}
+		if scanErr := scanner.Err(); scanErr != nil {
+			f.Close()
+			return fmt.Errorf("scan .env: %w", scanErr)
 		}
 		f.Close()
 	}

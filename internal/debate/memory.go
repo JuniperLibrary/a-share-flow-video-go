@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/a-share-flow-video-go/internal/logger"
+	"github.com/a-share-flow-video-go/internal/storage"
 	"go.uber.org/zap"
 	_ "modernc.org/sqlite"
 )
@@ -49,7 +50,9 @@ type DebateMemorySQLite struct {
 }
 
 func NewDebateMemorySQLite(dbPath string) (*DebateMemorySQLite, error) {
-	db, err := sql.Open("sqlite", dbPath)
+	// 与主存储共用同一份 DSN 构造：双方指向同一个库文件，
+	// busy_timeout 若不一致会让并发读写互相触发 SQLITE_BUSY。
+	db, err := sql.Open("sqlite", storage.BuildSQLiteDSN(dbPath))
 	if err != nil {
 		return nil, fmt.Errorf("打开 SQLite 失败: %w", err)
 	}
@@ -148,7 +151,7 @@ func (m *DebateMemorySQLite) GetRecentSessions(ctx context.Context, stockCode st
 
 type DebateMemoryAutoDate struct {
 	delegate DebateMemory
-	now     func() time.Time
+	now      func() time.Time
 }
 
 func NewDebateMemoryAutoDate(d DebateMemory) *DebateMemoryAutoDate {

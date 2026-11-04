@@ -9,36 +9,37 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/a-share-flow-video-go/internal/httpclient"
 	"github.com/a-share-flow-video-go/internal/logger"
 	"go.uber.org/zap"
 )
 
 // MarginSummary 两市融资融券余额汇总。
 type MarginSummary struct {
-	Date      string  `json:"date"`      // 交易日
-	RZYE      float64 `json:"rzye"`      // 融资余额（亿）
-	RQYE      float64 `json:"rqye"`      // 融券余额（亿）
-	RZMRE     float64 `json:"rzmre"`     // 融资买入额（亿）
-	RZCHE     float64 `json:"rzche"`     // 融资偿还额（亿）
-	RZNetBuy  float64 `json:"rzNetBuy"`  // 融资净买入（亿）= RZMRE - RZCHE
-	RQYL      float64 `json:"rqyl"`      // 融券余量（万股）
-	RQMCL     float64 `json:"rqmcl"`     // 融券卖出量（万股）
-	RQCHL     float64 `json:"rqchl"`     // 融券偿还量（万股）
+	Date     string  `json:"date"`     // 交易日
+	RZYE     float64 `json:"rzye"`     // 融资余额（亿）
+	RQYE     float64 `json:"rqye"`     // 融券余额（亿）
+	RZMRE    float64 `json:"rzmre"`    // 融资买入额（亿）
+	RZCHE    float64 `json:"rzche"`    // 融资偿还额（亿）
+	RZNetBuy float64 `json:"rzNetBuy"` // 融资净买入（亿）= RZMRE - RZCHE
+	RQYL     float64 `json:"rqyl"`     // 融券余量（万股）
+	RQMCL    float64 `json:"rqmcl"`    // 融券卖出量（万股）
+	RQCHL    float64 `json:"rqchl"`    // 融券偿还量（万股）
 }
 
 // MarginStock 个股融资融券明细。
 type MarginStock struct {
-	Date       string  `json:"date"`
-	StockCode  string  `json:"stockCode"`
-	StockName  string  `json:"stockName"`
-	RZYE       float64 `json:"rzye"`       // 融资余额（亿）
-	RZMRE      float64 `json:"rzmre"`      // 融资买入（亿）
-	RZCHE      float64 `json:"rzche"`      // 融资偿还（亿）
-	RZNet      float64 `json:"rzNet"`      // 融资净买入（亿）
-	RQYL       float64 `json:"rqyl"`       // 融券余量（万股）
-	RQYE       float64 `json:"rqye"`       // 融券余额（亿）
-	RQMCL      float64 `json:"rqmcl"`      // 融券卖出（万股）
-	RQCHL      float64 `json:"rqchl"`      // 融券偿还（万股）
+	Date      string  `json:"date"`
+	StockCode string  `json:"stockCode"`
+	StockName string  `json:"stockName"`
+	RZYE      float64 `json:"rzye"`  // 融资余额（亿）
+	RZMRE     float64 `json:"rzmre"` // 融资买入（亿）
+	RZCHE     float64 `json:"rzche"` // 融资偿还（亿）
+	RZNet     float64 `json:"rzNet"` // 融资净买入（亿）
+	RQYL      float64 `json:"rqyl"`  // 融券余量（万股）
+	RQYE      float64 `json:"rqye"`  // 融券余额（亿）
+	RQMCL     float64 `json:"rqmcl"` // 融券卖出（万股）
+	RQCHL     float64 `json:"rqchl"` // 融券偿还（万股）
 }
 
 type marginResponse struct {
@@ -62,7 +63,7 @@ func FetchMarginSummary(days int) ([]MarginSummary, error) {
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	req.Header.Set("Referer", "https://data.eastmoney.com/rzrq/total.html")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := httpclient.New(30 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request margin summary: %w", err)
@@ -115,7 +116,7 @@ func FetchMarginStocks(dateStr string) ([]MarginStock, error) {
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	req.Header.Set("Referer", "https://data.eastmoney.com/rzrq/detail.html")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := httpclient.New(30 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request margin stocks: %w", err)
@@ -182,7 +183,7 @@ func FetchMarginStockHistory(code string, days int) ([]MarginStock, error) {
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	req.Header.Set("Referer", "https://data.eastmoney.com/rzrq/detail.html")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := httpclient.New(30 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("request margin stock history: %w", err)

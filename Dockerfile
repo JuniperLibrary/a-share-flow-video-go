@@ -22,7 +22,6 @@ ENV TZ=Asia/Shanghai
 WORKDIR /app
 
 COPY --from=builder /app/web-server .
-COPY --from=builder /app/.env.example .env 2>/dev/null || true
 
 RUN mkdir -p /app/data /app/output
 

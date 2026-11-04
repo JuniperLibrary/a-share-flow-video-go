@@ -28,7 +28,7 @@ func TestComputeChartNarrationScheduleEnd_QueuesWhenSegmentsOverlap(t *testing.T
 }
 
 func TestPolishOutroText_Fix4DetailPatched(t *testing.T) {
-	raw := "明天  你就盯  两件事：先优先看国产芯片放量承接，再 看 AI 应用流出减仓观望，再回避  高位接力飞刀。先盯承接。再看流出收敛。再回避接力飞刀。明天开盘见。"
+	raw := "下一交易 日  你就盯  两件事：先优先看国产芯片放量承接，再 看 AI 应用流出减仓观望，再回避  高位接力飞刀。先盯承接。再看流出收敛。再回避接力飞刀。8月17日开盘见。"
 	got := polishOutroText(raw)
 
 	if strings.Contains(got, "先优先") {

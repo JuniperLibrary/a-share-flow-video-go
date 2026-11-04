@@ -40,8 +40,13 @@ func registerSectorsAllRoutes(r *gin.Engine) {
 
 func handleSaveAllSectors(c *gin.Context) {
 	dateStr := c.Param("date")
+	today := time.Now().In(webShanghaiTZ).Format("2006-01-02")
 	if dateStr == "" {
-		dateStr = time.Now().Format("2006-01-02")
+		dateStr = today
+	}
+	if dateStr != today {
+		logger.BadRequest(c, "实时全量采集仅支持当前日期，历史数据不会被当前行情覆盖")
+		return
 	}
 
 	saveAllTasksMu.Lock()
