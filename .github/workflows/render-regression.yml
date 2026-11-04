@@ -1,0 +1,118 @@
+name: 渲染回归门禁
+
+# 目的：把「视频正确性」变成机器可判的绿灯，而不是肉眼看片。
+# 两条防线：
+#   1. 不变量测试（时间轴排布、静音预算）——纯函数，无需渲染
+#   2. 注入式证伪——故意造出黑屏/静音/缺音轨/错分辨率的样片，
+#      rendercheck 必须报红；一条没跑或跑失败都判门禁失败
+on:
+  push:
+    paths:
+      - 'internal/tick/**'
+      - 'internal/rendercheck/**'
+      - 'internal/tts/**'
+      - 'internal/config/**'
+      - 'cmd/rendercheck/**'
+      - '.github/workflows/render-regression.yml'
+  pull_request:
+    paths:
+      - 'internal/tick/**'
+      - 'internal/rendercheck/**'
+      - 'internal/tts/**'
+      - 'internal/config/**'
+      - 'cmd/rendercheck/**'
+      - '.github/workflows/render-regression.yml'
+  workflow_dispatch:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # ffprobe / ffmpeg 是体检与注入式用例的前置依赖。
+      - name: 安装 ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          ffmpeg -version | head -1
+
+      # 只检查本门禁负责的包：仓库其余位置存在历史遗留的未格式化文件，
+      # 全量 gofmt 会长期红着，反而让门禁失去意义。
+      - name: 格式与静态检查
+        run: |
+          unformatted=$(gofmt -l internal/tick internal/rendercheck internal/config internal/tts cmd/rendercheck)
+          if [ -n "$unformatted" ]; then
+            echo "以下文件未 gofmt："
+            echo "$unformatted"
+            exit 1
+          fi
+          go vet ./...
+
+      # -race 用于覆盖 TTS 并发合成与口播时长收集：这两处共享结果切片，
+      # 数据竞争会让帧数算错，进而产生口播被切或时间轴错位。
+      - name: 时间轴与 TTS 竞态测试
+        run: go test -race -count=1 ./internal/tick ./internal/tts
+
+      # RENDERCHECK_REQUIRE_FFMPEG=1 把「缺 ffmpeg → t.Skip」变成「直接失败」，
+      # 否则注入式用例全部跳过时门禁仍然会显示绿灯。
+      - name: 注入式证伪（不允许跳过）
+        env:
+          RENDERCHECK_REQUIRE_FFMPEG: '1'
+        run: |
+          set -o pipefail
+          go test -count=1 -v ./internal/rendercheck | tee /tmp/rendercheck.log
+          for name in \
+            TestCheckFile_CleanClipPasses \
+            TestCheckFile_InjectedBlackFrameFails \
+            TestCheckFile_InjectedSilenceFails \
+            TestCheckFile_NoAudioFails \
+            TestCheckFile_WrongResolutionFails
+          do
+            grep -q -- "--- PASS: $name" /tmp/rendercheck.log \
+              || { echo "❌ 注入式用例未执行或未通过：$name"; exit 1; }
+          done
+          echo "✅ 五种注入缺陷全部被抓到"
+
+      # 防「测试被悄悄删掉」：时间轴修复的锁必须还在跑。
+      - name: 时间轴不变量测试存在性
+        run: |
+          set -o pipefail
+          go test -count=1 -v -run 'TestScheduleChartNarration|TestFitChartFrames|TestScheduleSequentialNarration|TestNarrationClip' \
+            ./internal/tick | tee /tmp/timeline.log
+          for name in \
+            TestScheduleChartNarration_ReproducesTVDeadAir \
+            TestFitChartFrames_SparseAnchorsFallBackToSequential \
+            TestFitChartFrames_DenseAnchorsKeepProportional \
+            TestFitChartFrames_ExtendsWhenNarrationOverflows \
+            TestScheduleSequentialNarration_TailSilenceIsNotCounted \
+            TestFitChartFrames_RealTVShapeHasNoDeadAir \
+            TestFitChartFrames_ExtendsWithAbsoluteAnchors
+          do
+            grep -q -- "--- PASS: $name" /tmp/timeline.log \
+              || { echo "❌ 时间轴不变量测试缺失：$name"; exit 1; }
+          done
+          echo "✅ 时间轴不变量仍被锁定"
+
+      # 首尾静音测量是时间轴排布的前提；量不准，停顿预算就是假的。
+      - name: TTS 首尾静音测量
+        run: |
+          set -o pipefail
+          go test -count=1 -v -run 'TestParseAudioSilence|TestMeasureAudioSilence|TestSilenceToFrames' \
+            ./internal/tts | tee /tmp/silence.log
+          for name in \
+            TestParseAudioSilence_ReadsHeadAndTail \
+            TestParseAudioSilence_IgnoresMidSentencePauses \
+            TestMeasureAudioSilence_RealFile
+          do
+            grep -q -- "--- PASS: $name" /tmp/silence.log \
+              || { echo "❌ 首尾静音测量未执行或未通过：$name"; exit 1; }
+          done
+          echo "✅ 首尾静音测量可用"

@@ -486,15 +486,18 @@ type TickRenderProps struct {
 	ChartNarrationAudios   []string                 `json:"chartNarrationAudios,omitempty"`
 	ChartNarrationFrames   []int                    `json:"chartNarrationFrames,omitempty"`
 	ChartNarrationSegments []int                    `json:"chartNarrationSegments,omitempty"`
-	ChartNarrationTexts    []string                 `json:"chartNarrationTexts,omitempty"`
-	MainStructureAudio     string                   `json:"mainStructureAudio,omitempty"`
-	MainStructureFrames    int                      `json:"mainStructureFrames,omitempty"`
-	MainStructureText      string                   `json:"mainStructureText,omitempty"`
-	FarewellText           string                   `json:"farewellText,omitempty"`
-	FarewellAudio          string                   `json:"farewellAudio,omitempty"`
-	FarewellFrames         int                      `json:"farewellFrames,omitempty"`
-	FarewellBlessing       string                   `json:"farewellBlessing,omitempty"`
-	FarewellSignoff        string                   `json:"farewellSignoff,omitempty"`
+	// ChartNarrationTails 每段音频结尾自带静音的帧数。
+	// 前端推进游标时要从片段时长里扣掉，否则这段静音会叠加成额外停顿。
+	ChartNarrationTails []int    `json:"chartNarrationTails,omitempty"`
+	ChartNarrationTexts []string `json:"chartNarrationTexts,omitempty"`
+	MainStructureAudio  string   `json:"mainStructureAudio,omitempty"`
+	MainStructureFrames int      `json:"mainStructureFrames,omitempty"`
+	MainStructureText   string   `json:"mainStructureText,omitempty"`
+	FarewellText        string   `json:"farewellText,omitempty"`
+	FarewellAudio       string   `json:"farewellAudio,omitempty"`
+	FarewellFrames      int      `json:"farewellFrames,omitempty"`
+	FarewellBlessing    string   `json:"farewellBlessing,omitempty"`
+	FarewellSignoff     string   `json:"farewellSignoff,omitempty"`
 
 	// LLM 增强字段（可选，为空时前端 fallback 到模板逻辑）
 	CatalysisResult     *CatalysisResult     `json:"catalysisResult,omitempty"`
@@ -731,31 +734,6 @@ func generateChartNarrationSegments(sectorTicks []SectorTick, totalFrames int) (
 	return texts, startFrames
 }
 
-func computeChartNarrationScheduleEnd(startFrames, audioFrames []int) int {
-	cursor := 0
-	scheduleEnd := 0
-	n := len(audioFrames)
-	if len(startFrames) < n {
-		n = len(startFrames)
-	}
-	for i := 0; i < n; i++ {
-		frames := audioFrames[i]
-		if frames <= 0 {
-			continue
-		}
-		from := startFrames[i]
-		if from < cursor {
-			from = cursor
-		}
-		end := from + frames
-		if end > scheduleEnd {
-			scheduleEnd = end
-		}
-		cursor = end
-	}
-	return scheduleEnd
-}
-
 func RenderTickVideo(ctx context.Context, dateStr, outputPath, format, session string, events []analyzer.MarketEvent, timeline []analyzer.TimelineEvent, ticker []analyzer.TickerItem, copywriteText string, newsPages []hotnews.NewsPage) (string, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -950,6 +928,9 @@ func RenderTickVideo(ctx context.Context, dateStr, outputPath, format, session s
 			text   string
 			audio  string
 			frames int
+			// lead/tail 是音频首尾自带静音，排布时要从可听语音里扣掉。
+			lead int
+			tail int
 		}
 		chartResults := make([]segRes, len(chartNarrationTexts))
 
@@ -973,7 +954,7 @@ func RenderTickVideo(ctx context.Context, dateStr, outputPath, format, session s
 
 		var audioErr error
 		var audioMu sync.Mutex
-		loadAudio := func(text string) (rel string, duration float64, err error) {
+		loadAudio := func(text string) (rel, abs string, duration float64, err error) {
 			defer func() {
 				if err != nil {
 					audioMu.Lock()
@@ -983,13 +964,12 @@ func RenderTickVideo(ctx context.Context, dateStr, outputPath, format, session s
 					audioMu.Unlock()
 				}
 			}()
-			var abs string
 			rel, abs, err = tts.TextToSpeechCommentatorCachedContext(ctx, text)
 			if err != nil {
-				return "", 0, err
+				return "", "", 0, err
 			}
 			duration, err = tts.GetAudioDurationContext(ctx, abs)
-			return rel, duration, err
+			return rel, abs, duration, err
 		}
 		limit := tts.TTSConcurrency()
 		sem := make(chan struct{}, limit)
@@ -1019,7 +999,7 @@ func RenderTickVideo(ctx context.Context, dateStr, outputPath, format, session s
 					continue
 				}
 				run(func() {
-					audioRel, dur, err := loadAudio(text)
+					audioRel, _, dur, err := loadAudio(text)
 					if err != nil {
 						logger.Warn("Tick 场景 TTS 合成失败", zap.Int("scene", idx+1), zap.Error(err))
 						return
@@ -1045,17 +1025,25 @@ func RenderTickVideo(ctx context.Context, dateStr, outputPath, format, session s
 					continue
 				}
 				run(func() {
-					audioRel, dur, err := loadAudio(trimmed)
+					audioRel, abs, dur, err := loadAudio(trimmed)
 					if err != nil {
 						logger.Warn("Tick 图表解说 TTS 合成失败", zap.Int("segment", idx), zap.Error(err))
 						return
 					}
+					// 不再给图表解说补白：排布按“可听语音”计算，
+					// 补白会和 TTS 自带的首尾静音一起被算成停顿。
 					frames := int(math.Ceil(dur * FPS))
-					const audioPadding = 6
-					if frames > 0 {
-						frames += audioPadding
+					silence, sErr := tts.MeasureAudioSilence(ctx, abs)
+					if sErr != nil {
+						// 量不到静音时退化为按文件时长排布，宁可停顿偏长也不要切掉语音。
+						logger.Warn("Tick 图表解说静音测量失败，按文件时长排布",
+							zap.Int("segment", idx), zap.Error(sErr))
 					}
-					chartResults[idx] = segRes{ok: true, text: trimmed, audio: audioRel, frames: frames}
+					lead, tail := tts.SilenceToFrames(silence, FPS)
+					chartResults[idx] = segRes{
+						ok: true, text: trimmed, audio: audioRel,
+						frames: frames, lead: lead, tail: tail,
+					}
 				})
 			}
 		}
@@ -1068,7 +1056,7 @@ func RenderTickVideo(ctx context.Context, dateStr, outputPath, format, session s
 					continue
 				}
 				run(func() {
-					audioRel, dur, err := loadAudio(trimmed)
+					audioRel, _, dur, err := loadAudio(trimmed)
 					if err != nil {
 						logger.Warn("Tick 新闻 TTS 合成失败", zap.Int("page", idx), zap.Error(err))
 						return
@@ -1095,7 +1083,7 @@ func RenderTickVideo(ctx context.Context, dateStr, outputPath, format, session s
 			outroText = outroTextLocal
 			if outroTextLocal != "" {
 				run(func() {
-					audioRel, dur, err := loadAudio(outroTextLocal)
+					audioRel, _, dur, err := loadAudio(outroTextLocal)
 					if err != nil {
 						logger.Warn("Tick 主线收尾 TTS 合成失败", zap.Error(err))
 						return
@@ -1120,7 +1108,7 @@ func RenderTickVideo(ctx context.Context, dateStr, outputPath, format, session s
 		// 不再使用独立的旧口播文案池（否则 MP3 与视频文字不一致）。
 		farewellText = farewellBlessing + " " + farewellSignoff
 		run(func() {
-			audioRel, dur, err := loadAudio(farewellText)
+			audioRel, _, dur, err := loadAudio(farewellText)
 			if err != nil {
 				logger.Warn("Tick 告别祝福 TTS 合成失败", zap.Error(err))
 				return
@@ -1177,14 +1165,16 @@ func RenderTickVideo(ctx context.Context, dateStr, outputPath, format, session s
 			var okFrames []int
 			var okSegs []int
 			var okTexts []string
-			var okIdxs []int
+			var okTails []int
+			var okClips []NarrationClip
 			for i, r := range chartResults {
 				if !r.ok || r.frames <= 0 || r.audio == "" {
 					continue
 				}
 				okAudios = append(okAudios, r.audio)
 				okFrames = append(okFrames, r.frames)
-				okIdxs = append(okIdxs, i)
+				okTails = append(okTails, r.tail)
+				okClips = append(okClips, NarrationClip{Frames: r.frames, Lead: r.lead, Tail: r.tail})
 				if i < len(chartNarrationSegments) {
 					okSegs = append(okSegs, chartNarrationSegments[i])
 				} else {
@@ -1194,37 +1184,37 @@ func RenderTickVideo(ctx context.Context, dateStr, outputPath, format, session s
 			}
 			props.ChartNarrationAudios = okAudios
 			props.ChartNarrationFrames = okFrames
+			props.ChartNarrationTails = okTails
 			props.ChartNarrationTexts = okTexts
 
 			narrationTotalFrames := 0
-			for _, f := range okFrames {
-				narrationTotalFrames += f
+			audibleTotalFrames := 0
+			for _, c := range okClips {
+				narrationTotalFrames += c.Frames
+				audibleTotalFrames += c.Audible()
 			}
-			requiredChartFrames := computeChartNarrationScheduleEnd(okSegs, okFrames)
-			if requiredChartFrames > 0 {
-				requiredChartFrames += 6
-			}
-			availableChartFrames := baseFrames + tickChartOverlapFrames
-			if requiredChartFrames > availableChartFrames {
-				oldBaseFrames := baseFrames
-				baseFrames = requiredChartFrames - tickChartOverlapFrames
-				_, updatedSegments := generateChartNarrationSegments(sectorTicks, baseFrames)
-				okSegs = okSegs[:0]
-				for _, idx := range okIdxs {
-					if idx < len(updatedSegments) {
-						okSegs = append(okSegs, updatedSegments[idx])
-					} else {
-						okSegs = append(okSegs, 0)
-					}
-				}
-				logger.Info("Tick 图表解说延长 baseFrames 以容纳尾段口播",
-					zap.Int("oldBaseFrames", oldBaseFrames),
-					zap.Int("newBaseFrames", baseFrames),
+			// 主图动画时长由口播反推：口播短于动画时压缩（不低于下限），
+			// 长于动画时按需延长，保证片内与片尾都不出现大段无声空转。
+			oldChartFrames := baseFrames + tickChartOverlapFrames
+			minChartFrames := config.GetMinBaseFrames(format) + tickChartOverlapFrames
+			timeline := FitChartFrames(okSegs, baseFrames, okClips,
+				minChartFrames, oldChartFrames,
+				config.ChartNarrationMaxGapFrames, config.ChartNarrationMaxTailFrames)
+			if timeline.ChartFrames != oldChartFrames {
+				logger.Info("Tick 主图动画按口播重排",
+					zap.Int("oldChartFrames", oldChartFrames),
+					zap.Int("newChartFrames", timeline.ChartFrames),
 					zap.Int("narrationFrames", narrationTotalFrames),
-					zap.Int("requiredChartFrames", requiredChartFrames),
-					zap.Int("availableChartFrames", availableChartFrames),
-				)
+					zap.Int("audibleFrames", audibleTotalFrames),
+					zap.Int("maxGapFrames", timeline.MaxGap),
+					zap.Int("tailGapFrames", timeline.TailGap),
+					zap.Bool("sequentialAnchors", timeline.Sequential))
 			}
+			baseFrames = timeline.ChartFrames - tickChartOverlapFrames
+			if baseFrames < 1 {
+				baseFrames = 1
+			}
+			okSegs = timeline.Starts
 			props.ChartNarrationSegments = okSegs
 			logger.Info("Tick 图表解说语音合成完成",
 				zap.Int("segments", len(props.ChartNarrationAudios)))

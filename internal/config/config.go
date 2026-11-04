@@ -32,6 +32,23 @@ const (
 
 	// MinSectorCount Minimum sectors to display
 	MinSectorCount = 20
+
+	// TVMinTotalFrames 主图动画的下限：再短就看不清走势了。
+	TVMinTotalFrames = 900
+	// MobileMinTotalFrames 抖音版主图动画下限。
+	MobileMinTotalFrames = 600
+	// ChartNarrationMaxGapFrames 相邻两段口播之间允许的最大无声空白（2.5s @30fps）。
+	// 超出说明动画比口播长太多，应压缩动画而不是让画面空转。
+	ChartNarrationMaxGapFrames = 75
+	// ChartNarrationMaxTailFrames 最后一段口播结束到动画结束允许的留白（5s @30fps）。
+	ChartNarrationMaxTailFrames = 150
+	// ChartNarrationSequentialGapFrames 顺播模式下相邻两段口播之间的停顿（0.5s @30fps）。
+	ChartNarrationSequentialGapFrames = 15
+	// ChartNarrationSequentialTailFrames 顺播模式下片尾留白（1s @30fps）。
+	ChartNarrationSequentialTailFrames = 30
+	// ChartNarrationExtendTailFrames 口播比动画长、需要延长动画时的收尾留白（0.2s @30fps）。
+	// 只留一瞬，避免延长本身又造出新的空白。
+	ChartNarrationExtendTailFrames = 6
 )
 
 // GetBaseFrames returns the main-animation frame count for the given format.
@@ -41,6 +58,14 @@ func GetBaseFrames(format string) int {
 		return TotalFrames
 	}
 	return MobileTotalFrames
+}
+
+// GetMinBaseFrames 返回主图动画的下限帧数，用于按口播长度压缩动画时兜底。
+func GetMinBaseFrames(format string) int {
+	if format == "tv" {
+		return TVMinTotalFrames
+	}
+	return MobileMinTotalFrames
 }
 
 // SessionConfig defines time-axis configuration for a trading session.
