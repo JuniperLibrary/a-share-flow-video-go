@@ -60,3 +60,18 @@ func TestFetchStatementRejectsUnknownStatement(t *testing.T) {
 		t.Error("缺 stock 应报错")
 	}
 }
+
+// 销售收现大于经营流入合计时必须有口径说明,否则模型会当成"数据矛盾"。
+func TestAnnotateCashflowScope(t *testing.T) {
+	periods := []map[string]any{
+		{"销售商品提供劳务收到的现金": 563.93, "经营活动现金流入合计": 561.81},
+		{"销售商品提供劳务收到的现金": 984.22, "经营活动现金流入合计": 1092.46},
+	}
+	annotateCashflowScope(periods)
+	if _, ok := periods[0]["口径说明"]; !ok {
+		t.Error("销售收现 > 流入合计时应补口径说明")
+	}
+	if _, ok := periods[1]["口径说明"]; ok {
+		t.Error("口径正常时不应加说明")
+	}
+}

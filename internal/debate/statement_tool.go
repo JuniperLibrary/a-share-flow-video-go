@@ -22,7 +22,11 @@ type fetchStatementTool struct{}
 func (s *fetchStatementTool) Name() string { return "fetch_statement" }
 
 func (s *fetchStatementTool) Description() string {
-	return "拉取三大报表原始科目(最近 1-4 期,金额单位亿元):statement=cashflow|balance|income"
+	return "拉取三大报表原始科目(最近 1-4 期,金额单位亿元):statement=cashflow|balance|income。" +
+		"口径提示:cashflow 的\"经营活动现金流入合计\"含财务公司等金融业务科目" +
+		"(客户存款和同业存放款项净增加额、向央行借款净增加额等,可为负数)," +
+		"因此它可以小于\"销售商品提供劳务收到的现金\"。两者之差不是数据矛盾," +
+		"也不能用来否定销售收现。"
 }
 
 type statementField struct {
@@ -122,11 +126,36 @@ func (s *fetchStatementTool) Execute(ctx context.Context, args map[string]any) (
 	if err != nil {
 		return nil, err
 	}
+	result := buildStatementResult(spec, rows)
+	if statement == "cashflow" {
+		annotateCashflowScope(result)
+	}
 	return map[string]any{
 		"statement": statement,
 		"unit":      "亿元",
-		"periods":   buildStatementResult(spec, rows),
+		"periods":   result,
 	}, nil
+}
+
+// annotateCashflowScope 在"销售收现 > 经营流入合计"的那一期补一条口径说明。
+//
+// 合并报表里带财务公司业务的(如茅台),经营流入合计包含"客户存款和同业存放
+// 款项净增加额""向中央银行借款净增加额"等可为负的金融科目,合计小于销售收现
+// 是正常现象。不加说明,模型会把它读成"数据自相矛盾"——第四场实跑里 Bear
+// 就是拿这个伪矛盾当最后一条反证,直接污染了 verdict。
+func annotateCashflowScope(periods []map[string]any) {
+	const (
+		salesKey  = "销售商品提供劳务收到的现金"
+		inflowKey = "经营活动现金流入合计"
+	)
+	for _, p := range periods {
+		sales, okSales := p[salesKey].(float64)
+		inflow, okInflow := p[inflowKey].(float64)
+		if !okSales || !okInflow || sales <= inflow {
+			continue
+		}
+		p["口径说明"] = "该期销售收现高于经营流入合计:流入合计含财务公司等金融业务科目(净额可为负),属正常口径,不是数据矛盾,不可据此否定销售收现"
+	}
 }
 
 // buildStatementResult 是纯函数,便于单测:输入原始行,输出按科目标签组织的亿元数。
