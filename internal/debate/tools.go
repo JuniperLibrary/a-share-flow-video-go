@@ -99,16 +99,16 @@ type fetchMetricTool struct{}
 
 func (s *fetchMetricTool) Name() string { return "fetch_metric" }
 func (s *fetchMetricTool) Description() string {
-	return "拉取股票实时指标 (PE/PE-TTM/PB/PEG/PS/总市值)"
+	return "拉取实时估值指标(PE-TTM/PB/换手率/涨跌幅/总市值/流通市值,市值单位亿元,带 as_of 快照时间)。" +
+		"只覆盖估值:取不到的字段会列在\"未取到\"里(公司亏损或接口无值),不存在就写缺,不要把缺失当 0。"
 }
 
 // fetchMetricSupported 是本工具真实能查的字段。args.metric 目前不参与取数,
 // 只做白名单校验:模型经常来查"经营现金流""销售收现"这类报表科目,
 // 若不拒绝,它会拿到 PE/PB 却以为核实过了——假核实比不核实更危险。
 var fetchMetricSupported = map[string]bool{
-	"": true, "price": true, "pe": true, "pe_ttm": true, "pe_lyr": true,
-	"pb": true, "peg": true, "ps": true, "ps_ttm": true,
-	"mkt_cap": true, "circ_cap": true, "valuation": true,
+	"": true, "valuation": true, "price": true, "pe": true, "pe_ttm": true,
+	"pb": true, "turnover": true, "mkt_cap": true, "circ_cap": true,
 }
 
 func (s *fetchMetricTool) Execute(ctx context.Context, args map[string]any) (any, error) {
@@ -118,14 +118,14 @@ func (s *fetchMetricTool) Execute(ctx context.Context, args map[string]any) (any
 	}
 	metric, _ := args["metric"].(string)
 	if !fetchMetricSupported[strings.ToLower(strings.TrimSpace(metric))] {
-		return nil, fmt.Errorf("fetch_metric 只支持估值指标(price/pe/pb/peg/ps/mkt_cap),无法查询 %q；报表科目请从财报原文或结构化字段取,查不到就写「缺 XX 科目」", metric)
+		return nil, fmt.Errorf("fetch_metric 只支持估值指标(price/pe/pb/turnover/mkt_cap/circ_cap),无法查询 %q；报表科目请用 fetch_statement,查不到就写「缺 XX 科目」", metric)
 	}
 	secID, err := normalizeStockCode(code)
 	if err != nil {
 		return nil, err
 	}
 	apiURL := fmt.Sprintf(
-		"https://push2.eastmoney.com/api/qt/stock/get?secid=%s&fields=f43,f57,f58,f60,f162,f167,f168,f169,f170,f191,f192",
+		"https://push2.eastmoney.com/api/qt/stock/get?secid=%s&fields=f43,f57,f58,f60,f116,f117,f162,f167,f168,f170",
 		url.QueryEscape(secID),
 	)
 	body, err := eastmoneyGet(ctx, apiURL)
@@ -141,8 +141,15 @@ func (s *fetchMetricTool) Execute(ctx context.Context, args map[string]any) (any
 	if len(resp.Data) == 0 {
 		return nil, fmt.Errorf("未拿到 %s 的指标", code)
 	}
+	return buildMetricResult(resp.Data, metric), nil
+}
+
+// buildMetricResult 把行情接口的裸字段整理成可引用的指标。
+// 抽成纯函数是为了能单测"缺失字段不进结果"这条规则——
+// 它和现金流那次是同一类错误:0 被模型读成事实。
+func buildMetricResult(data map[string]any, metric string) map[string]any {
 	getF := func(k string) float64 {
-		v, ok := resp.Data[k]
+		v, ok := data[k]
 		if !ok || v == nil {
 			return 0
 		}
@@ -155,26 +162,59 @@ func (s *fetchMetricTool) Execute(ctx context.Context, args map[string]any) (any
 		return 0
 	}
 	getS := func(k string) string {
-		v, ok := resp.Data[k]
+		v, ok := data[k]
 		if !ok || v == nil {
 			return ""
 		}
 		s, _ := v.(string)
 		return s
 	}
-	return map[string]any{
-		"code":     getS("f57"),
-		"name":     getS("f58"),
-		"price":    getF("f43") / 100,
-		"open":     getF("f60") / 100,
-		"pe_ttm":   getF("f162"),
-		"pe_lyr":   getF("f167"),
-		"pb":       getF("f168"),
-		"peg":      getF("f169"),
-		"ps_ttm":   getF("f170"),
-		"mkt_cap":  getF("f191"),
-		"circ_cap": getF("f192"),
-	}, nil
+	// 字段映射来自 2026-11-06 对 1.600519 的实测,不是猜的:
+	//   f43=145300 -> 1453.00 元(分);f60=145200 -> 昨收 1452.00
+	//   f116/f117 -> 总市值/流通市值(元);f162=2113 -> PE-TTM 21.13(×100)
+	//   f167=670  -> PB 6.70;f168=34 -> 换手率 0.34%;f170=7 -> 涨跌幅 0.07%
+	// 旧实现把 f167 当 PE-LYR、f168 当 PB、f191 当总市值,直接把 PB 6.70 说成
+	// "PB 34"、把 -1604 当市值,模型据此写的估值论据全是错的。
+	fields := []struct {
+		label string
+		code  string
+		scale float64
+	}{
+		{"price", "f43", 0.01},
+		{"prev_close", "f60", 0.01},
+		{"pe_ttm", "f162", 0.01},
+		{"pb", "f167", 0.01},
+		{"turnover_pct", "f168", 0.01},
+		{"change_pct", "f170", 0.01},
+		{"mkt_cap_亿", "f116", 1e-8},
+		{"circ_cap_亿", "f117", 1e-8},
+	}
+
+	out := map[string]any{
+		"code":  getS("f57"),
+		"name":  getS("f58"),
+		"as_of": time.Now().Format("2006-01-02 15:04"),
+		"口径":    "行情快照,与财报报告期无关;PE-TTM 为最近四个季度滚动,负值表示亏损;换手率/涨跌幅单位为%;市值为亿元",
+	}
+	if m := strings.ToLower(strings.TrimSpace(metric)); m != "" {
+		out["requested_metric"] = m
+	}
+
+	// 0 在行情接口里既可能是停牌/亏损,也可能是字段缺失,
+	// 一律不进结果——"没有"和"是 0"必须分开,否则模型会把缺失读成便宜。
+	missing := make([]string, 0, len(fields))
+	for _, f := range fields {
+		v := getF(f.code) * f.scale
+		if v == 0 {
+			missing = append(missing, f.label)
+			continue
+		}
+		out[f.label] = round2(v)
+	}
+	if len(missing) > 0 {
+		out["未取到"] = missing
+	}
+	return out
 }
 
 type comparePeersTool struct{}

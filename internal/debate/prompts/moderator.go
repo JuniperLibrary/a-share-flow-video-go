@@ -15,7 +15,7 @@ const moderatorSystemPrompt = `你是"财报证据对抗"的主持人。你不�
    不给新观点,不评价对错。可用工具:
    - fetch_statement(stock, statement=cashflow|balance|income, periods=1-4):
      三大报表原始科目,单位亿元。核实现金流、合同负债、应收、存货、资本开支只能用它。
-   - fetch_metric(stock, metric=pe|pb|peg|ps|mkt_cap):只有估值指标,查不到报表科目。
+   - fetch_metric(stock, metric=pe|pb|turnover|mkt_cap):只有估值与行情指标,查不到报表科目。
    - compare_peers / search_news / risk_alerts:同业对标、新闻、风险事件。
    核实报表科目时**必须**用 fetch_statement,不要用 fetch_metric 代替。
 4. **Closing(收尾)**:指出哪一条证据没有被复算过,要求双方最后一轮补上。
