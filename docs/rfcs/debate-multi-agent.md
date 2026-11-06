@@ -379,9 +379,8 @@ var phasePlan = []PhaseStep{
 
 ## 9. API 变化(internal/web/handlers.go)
 
-### 9.1 现有路由(保留 + 内部走新 Orchestrator)
+### 9.1 现有路由(保留)
 ```
-POST   /api/debate/generate           → handleDebateGenerate  (走 RunLegacy,2 角色)
 POST   /api/debate/audio              → handleDebateAudio
 POST   /api/debate/render             → handleDebateRender
 GET    /api/debate/render-status/:id  → handleDebateRenderStatus
@@ -468,10 +467,15 @@ const COLORS: Record<Speaker, { primary: string; deep: string }> = {
 
 ## 12. 向后兼容策略
 
-### 12.1 API 兼容
-- `POST /api/debate/generate` 保留,内部走 `Orchestrator.RunLegacy` — 仍然返回老 Script 格式
-- 前端 DebatePage 走老 API,新 `CouncilPage` 走 `council/start`
-- 旧 `parseScript` 规则保留为 `parseLegacyScript`,新 `parseTurn` 按 speaker + phase 单独校验
+### 12.1 API 兼容(2026-11 更新:双轨已合并)
+- `POST /api/debate/generate` **已删除**。历史上它走 `GenerateScript`,
+  单次调用吐 8-12 轮、只有 bull/bear、无 citations/verdict,与多智能体路径
+  是两套质量标准,已于 2026-11 合并为单链路。
+- 现在唯一入口是 `POST /api/debate/council/start`,用 `mode` 切换档位:
+  `deep`(默认,17 轮,FactCheck 调报表工具,成片约 7.4 分钟)、
+  `quick`(8 轮,不查表,成片约 3.5 分钟)。两者共用同一套证据纪律与解析器。
+- 早期设想的 `parseLegacyScript` 不再需要,`parseScript` 已随
+  `GenerateScript` 一起删除。
 
 ### 12.2 数据兼容
 - 老 SQLite `debate_history` 表不动(存储结构不变)

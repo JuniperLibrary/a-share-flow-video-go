@@ -33,7 +33,6 @@ var debateTaskMeta = make(map[string]*debateMeta)
 var debateMetaMu sync.RWMutex
 
 func registerDebateRoutes(r *gin.Engine) {
-	r.POST("/api/debate/generate", handleDebateGenerate)
 	r.POST("/api/debate/council/start", handleDebateCouncilStart)
 	r.POST("/api/debate/audio", handleDebateAudio)
 	r.POST("/api/debate/render", handleDebateRender)
@@ -72,61 +71,6 @@ func configureDebateCallbacks() {
 	}
 }
 
-func handleDebateGenerate(c *gin.Context) {
-	var body struct {
-		Report           string         `json:"report"`
-		StructuredReport map[string]any `json:"structuredReport,omitempty"`
-		StockCode        string         `json:"stockCode,omitempty"`
-		StockName        string         `json:"stockName,omitempty"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		logger.BadRequest(c, "请求体需为 JSON 且含 report 字段")
-		return
-	}
-	aiCfg := config.GetAIConfigFor("debate")
-	if aiCfg.APIKey == "" {
-		logger.BadRequest(c, "未配置 AI API Key，请先在 AI 配置页填写")
-		return
-	}
-
-	script, err := debate.GenerateScript(body.Report, aiCfg, body.StructuredReport)
-	if err != nil {
-		logger.InternalError(c, "LLM 编排失败", err)
-		return
-	}
-
-	script.StockCode = body.StockCode
-	script.StockName = body.StockName
-	if body.StructuredReport != nil {
-		if rd, ok := body.StructuredReport["reportDate"]; ok {
-			if s, ok := rd.(string); ok {
-				script.ReportPeriod = s
-			}
-		}
-	}
-
-	taskID := newDebateTaskID()
-
-	summary := body.Report
-	if len([]rune(summary)) > 200 {
-		summary = string([]rune(summary)[:200])
-	}
-
-	debateMetaMu.Lock()
-	debateTaskMeta[taskID] = &debateMeta{
-		StockCode:     body.StockCode,
-		StockName:     body.StockName,
-		ReportSummary: summary,
-		TurnCount:     len(script.Turns),
-	}
-	debateMetaMu.Unlock()
-
-	c.JSON(200, gin.H{
-		"taskId": taskID,
-		"script": script,
-	})
-}
-
 func handleDebateCouncilStart(c *gin.Context) {
 	var body struct {
 		Report           string         `json:"report"`
@@ -135,6 +79,8 @@ func handleDebateCouncilStart(c *gin.Context) {
 		StockName        string         `json:"stockName,omitempty"`
 		ReportPeriod     string         `json:"reportPeriod,omitempty"`
 		UseMemory        bool           `json:"useMemory"`
+		// Mode: deep(默认,17 轮查表核实) / quick(8 轮不查表,快速出稿)
+		Mode string `json:"mode,omitempty"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		logger.BadRequest(c, "请求体需为 JSON 且含 report 字段")
@@ -170,13 +116,13 @@ func handleDebateCouncilStart(c *gin.Context) {
 		}
 	}
 
-	orchestrator := debate.NewOrchestrator(aiCfg)
+	opts := []debate.OrchestratorOption{debate.WithProfile(debate.Profile(body.Mode))}
 	if body.UseMemory {
-		mem, err := debate.NewDebateMemorySQLite(config.GetDBPath())
-		if err == nil {
-			orchestrator = debate.NewOrchestratorWithOptions(aiCfg, debate.WithMemory(mem))
+		if mem, err := debate.NewDebateMemorySQLite(config.GetDBPath()); err == nil {
+			opts = append(opts, debate.WithMemory(mem))
 		}
 	}
+	orchestrator := debate.NewOrchestratorWithOptions(aiCfg, opts...)
 
 	script, err := orchestrator.Run(context.Background(), state)
 	if err != nil {

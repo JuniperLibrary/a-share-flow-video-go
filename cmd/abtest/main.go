@@ -13,15 +13,22 @@ import (
 	"github.com/a-share-flow-video-go/internal/debate"
 )
 
+// abtest 对比两档辩论(quick / deep)的产出口径。
+//
+// 合并"经典 vs 多智能体"双轨之后,这里保留为同一套链路的档位对照:
+// 轮次、角色覆盖、字数、折算成片时长、跑批耗时是否都落在预期区间。
 type abResult struct {
-	Label       string         `json:"label"`
-	TurnsCount  int            `json:"turnsCount"`
-	Speakers    map[string]int `json:"speakers"`
-	HasCitations bool          `json:"hasCitations"`
-	HasPhase    bool           `json:"hasPhase"`
-	TotalChars  int            `json:"totalChars"`
-	LatencyMS   int64          `json:"latencyMs"`
-	Error       string         `json:"error,omitempty"`
+	Label        string         `json:"label"`
+	TurnsCount   int            `json:"turnsCount"`
+	Speakers     map[string]int `json:"speakers"`
+	HasCitations bool           `json:"hasCitations"`
+	HasPhase     bool           `json:"hasPhase"`
+	HasVerdict   bool           `json:"hasVerdict"`
+	TotalChars   int            `json:"totalChars"`
+	// 按 4.5 字/秒估算的成片时长(秒),用于对照视频长度预期。
+	EstimatedVideoSec int    `json:"estimatedVideoSec"`
+	LatencyMS         int64  `json:"latencyMs"`
+	Error             string `json:"error,omitempty"`
 }
 
 func main() {
@@ -55,28 +62,29 @@ func main() {
 	}
 	cfg := config.GetAIConfig()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	// deep 档实测 8-9 分钟,留足余量;quick 档约 2 分钟。
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
-	legacy, err := runLegacy(ctx, cfg, reportText)
+	quick, err := run(ctx, cfg, debate.ProfileQuick, reportText, stockCode, stockName)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "legacy 失败: %v\n", err)
+		fmt.Fprintf(os.Stderr, "quick 失败: %v\n", err)
 	}
-	council, err := runCouncil(ctx, cfg, reportText, stockCode, stockName)
+	deep, err := run(ctx, cfg, debate.ProfileDeep, reportText, stockCode, stockName)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "council 失败: %v\n", err)
+		fmt.Fprintf(os.Stderr, "deep 失败: %v\n", err)
 	}
 
 	out := struct {
-		GeneratedAt string    `json:"generatedAt"`
-		ReportChars int       `json:"reportChars"`
-		Legacy      abResult  `json:"legacy"`
-		Council     abResult  `json:"council"`
+		GeneratedAt string   `json:"generatedAt"`
+		ReportChars int      `json:"reportChars"`
+		Quick       abResult `json:"quick"`
+		Deep        abResult `json:"deep"`
 	}{
 		GeneratedAt: time.Now().Format(time.RFC3339),
 		ReportChars: len(reportText),
-		Legacy:      legacy,
-		Council:     council,
+		Quick:       quick,
+		Deep:        deep,
 	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
@@ -86,19 +94,10 @@ func main() {
 	}
 }
 
-func runLegacy(ctx context.Context, cfg config.AIConfig, reportText string) (abResult, error) {
+func run(ctx context.Context, cfg config.AIConfig, profile debate.Profile, reportText, code, name string) (abResult, error) {
+	label := string(profile)
 	start := time.Now()
-	script, err := debate.GenerateScript(reportText, cfg)
-	latency := time.Since(start).Milliseconds()
-	if err != nil {
-		return abResult{Label: "legacy-2agent", LatencyMS: latency, Error: err.Error()}, err
-	}
-	return summarize("legacy-2agent", script, latency), nil
-}
-
-func runCouncil(ctx context.Context, cfg config.AIConfig, reportText, code, name string) (abResult, error) {
-	start := time.Now()
-	orch := debate.NewOrchestrator(cfg)
+	orch := debate.NewOrchestratorWithOptions(cfg, debate.WithProfile(profile))
 	state := debate.DebateState{
 		ReportText: reportText,
 		StockCode:  code,
@@ -107,9 +106,9 @@ func runCouncil(ctx context.Context, cfg config.AIConfig, reportText, code, name
 	script, err := orch.Run(ctx, state)
 	latency := time.Since(start).Milliseconds()
 	if err != nil {
-		return abResult{Label: "council-6agent-7phase", LatencyMS: latency, Error: err.Error()}, err
+		return abResult{Label: label, LatencyMS: latency, Error: err.Error()}, err
 	}
-	return summarize("council-6agent-7phase", script, latency), nil
+	return summarize(label, script, latency), nil
 }
 
 func summarize(label string, script debate.Script, latencyMS int64) abResult {
@@ -125,15 +124,17 @@ func summarize(label string, script debate.Script, latencyMS int64) abResult {
 		if t.Phase != "" {
 			hasPhase = true
 		}
-		totalChars += len(t.Text)
+		totalChars += len([]rune(t.Text))
 	}
 	return abResult{
-		Label:        label,
-		TurnsCount:   len(script.Turns),
-		Speakers:     speakers,
-		HasCitations: hasCitations,
-		HasPhase:     hasPhase,
-		TotalChars:   totalChars,
-		LatencyMS:    latencyMS,
+		Label:             label,
+		TurnsCount:        len(script.Turns),
+		Speakers:          speakers,
+		HasCitations:      hasCitations,
+		HasPhase:          hasPhase,
+		HasVerdict:        strings.TrimSpace(script.Verdict) != "",
+		TotalChars:        totalChars,
+		EstimatedVideoSec: int(float64(totalChars) / 4.5),
+		LatencyMS:         latencyMS,
 	}
 }

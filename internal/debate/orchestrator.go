@@ -15,17 +15,41 @@ import (
 	"go.uber.org/zap"
 )
 
+// Profile 决定辩论的深度档位。
+//
+// 两条路径合并成一条:同一套证据纪律、同一个解析器、同一份渲染契约,
+// 只切换轮次预算与是否开放工具。改之前是双轨——"经典"走单次大 prompt,
+// 8-12 轮、只有 bull/bear、没有 citations/verdict,同一份财报会给出
+// 两种完全不同质量标准的成片。
+type Profile string
+
+const (
+	// ProfileDeep 17 轮,FactCheck 调报表工具核实,成片约 7.4 分钟。
+	ProfileDeep Profile = "deep"
+	// ProfileQuick 8 轮,不查表,成片约 3.5 分钟,用于快速出稿。
+	ProfileQuick Profile = "quick"
+)
+
+func normalizeProfile(p Profile) Profile {
+	if p == ProfileQuick {
+		return ProfileQuick
+	}
+	return ProfileDeep
+}
+
 type Orchestrator struct {
-	cfg    config.AIConfig
-	memory DebateMemory
-	tools  *ToolRegistry
+	cfg     config.AIConfig
+	memory  DebateMemory
+	tools   *ToolRegistry
+	profile Profile
 }
 
 func NewOrchestrator(cfg config.AIConfig) *Orchestrator {
 	return &Orchestrator{
-		cfg:    cfg,
-		memory: NewDebateMemoryNoop(),
-		tools:  NewToolRegistry(),
+		cfg:     cfg,
+		memory:  NewDebateMemoryNoop(),
+		tools:   NewToolRegistry(),
+		profile: ProfileDeep,
 	}
 }
 
@@ -33,6 +57,10 @@ type OrchestratorOption func(*Orchestrator)
 
 func WithMemory(m DebateMemory) OrchestratorOption {
 	return func(o *Orchestrator) { o.memory = m }
+}
+
+func WithProfile(p Profile) OrchestratorOption {
+	return func(o *Orchestrator) { o.profile = normalizeProfile(p) }
 }
 
 func NewOrchestratorWithOptions(cfg config.AIConfig, opts ...OrchestratorOption) *Orchestrator {
@@ -106,6 +134,25 @@ var defaultPhasePlan = []PhaseStep{
 	{Phase: PhaseSynthesis, Speakers: []Speaker{Synthesizer}, AllowTools: false, Rounds: 1},
 }
 
+// quickPhasePlan 是同一套证据纪律的轻量版:8 轮,不查表。
+// 保留 open(命题)->opening(四角色)->cross_exam(多空互算)->synthesis(裁决)
+// 这条主链,去掉 FactCheck(它需要工具才有意义)与 rebuttal。
+// 实测 deep 档平均 116 字/轮,8 轮 ≈ 930 字 ≈ 3.5 分钟成片。
+var quickPhasePlan = []PhaseStep{
+	{Phase: PhaseOpen, Speakers: []Speaker{Moderator}, AllowTools: false, Rounds: 1},
+	{Phase: PhaseOpening, Speakers: []Speaker{Bull, Bear, Sector, Risk}, AllowTools: false, Rounds: 1},
+	{Phase: PhaseCrossExam, Speakers: []Speaker{Bull, Bear}, AllowTools: false, Rounds: 1},
+	{Phase: PhaseSynthesis, Speakers: []Speaker{Synthesizer}, AllowTools: false, Rounds: 1},
+}
+
+// PhasePlan 返回当前档位的阶段计划。
+func (o *Orchestrator) phasePlan() []PhaseStep {
+	if normalizeProfile(o.profile) == ProfileQuick {
+		return quickPhasePlan
+	}
+	return defaultPhasePlan
+}
+
 func (o *Orchestrator) Run(ctx context.Context, state DebateState) (Script, error) {
 	if strings.TrimSpace(state.ReportText) == "" {
 		return Script{}, fmt.Errorf("财报文本不能为空")
@@ -134,7 +181,13 @@ func (o *Orchestrator) Run(ctx context.Context, state DebateState) (Script, erro
 	}
 
 	totalTurns := 0
-	for _, step := range defaultPhasePlan {
+	plan := o.phasePlan()
+	logger.Info("辩论档位",
+		zap.String("sessionId", state.SessionID),
+		zap.String("profile", string(normalizeProfile(o.profile))),
+		zap.Int("plannedTurns", planTurnCount(plan)),
+	)
+	for _, step := range plan {
 		logger.Info("辩论阶段开始",
 			zap.String("sessionId", state.SessionID),
 			zap.String("phase", string(step.Phase)),
@@ -229,12 +282,13 @@ func (o *Orchestrator) Run(ctx context.Context, state DebateState) (Script, erro
 	return script, nil
 }
 
-func (o *Orchestrator) RunLegacy(ctx context.Context, reportText string, structuredData ...map[string]any) (Script, error) {
-	logger.Info("辩论(legacy 模式)",
-		zap.Int("reportLen", len(reportText)),
-		zap.Int("structuredCount", len(structuredData)),
-	)
-	return GenerateScript(reportText, o.cfg, structuredData...)
+// planTurnCount 统计一个阶段计划的总轮次,用于日志与护栏测试。
+func planTurnCount(plan []PhaseStep) int {
+	total := 0
+	for _, step := range plan {
+		total += step.Rounds * len(step.Speakers)
+	}
+	return total
 }
 
 func (o *Orchestrator) runTurn(ctx context.Context, state *DebateState, speaker Speaker, phase Phase, allowTools bool) (Turn, error) {

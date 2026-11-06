@@ -67,3 +67,39 @@ func TestTokenBudgetsByProtocol(t *testing.T) {
 		t.Errorf("anthropic/thinking 预算 = (%d,%d), 基线至少 3000 且重试更大", b, r)
 	}
 }
+
+// quick 档是同一套证据纪律的轻量版:不查表、8 轮、约 3.5 分钟成片。
+// 它必须保留 open -> opening -> cross_exam -> synthesis 主链,
+// 否则裁决轮拿不到命题和双方证据。
+func TestQuickPhasePlan(t *testing.T) {
+	o := NewOrchestratorWithOptions(config.AIConfig{}, WithProfile(ProfileQuick))
+	plan := o.phasePlan()
+
+	if got := planTurnCount(plan); got != 8 {
+		t.Errorf("quick 档总轮次 = %d, 期望 8", got)
+	}
+	wantOrder := []Phase{PhaseOpen, PhaseOpening, PhaseCrossExam, PhaseSynthesis}
+	for i, step := range plan {
+		if step.Phase != wantOrder[i] {
+			t.Fatalf("quick 第 %d 阶段 = %s, 期望 %s", i, step.Phase, wantOrder[i])
+		}
+		if step.AllowTools {
+			t.Errorf("quick 档不应开放工具(%s)", step.Phase)
+		}
+	}
+}
+
+// 未知档位必须回落到 deep,避免前端传空字符串时静默变成快速稿。
+func TestNormalizeProfile(t *testing.T) {
+	cases := map[Profile]Profile{
+		"":        ProfileDeep,
+		"deep":    ProfileDeep,
+		"quick":   ProfileQuick,
+		"CLASSIC": ProfileDeep,
+	}
+	for in, want := range cases {
+		if got := normalizeProfile(in); got != want {
+			t.Errorf("normalizeProfile(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
