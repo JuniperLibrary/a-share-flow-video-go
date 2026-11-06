@@ -137,30 +137,28 @@ type chatResponse struct {
 // NOTE: Darwin/macOS 会把源端口耗尽（EADDRNOTAVAIL）包装成 "can't assign requested address"。
 // 这种错误理论上是瞬态的（等 30s MSL 内核回收），我们仍标为 retryable，让 backoff 起作用。
 func isRetryable(err error, statusCode int) bool {
-	if err != nil {
-		msg := err.Error()
-		if strings.Contains(msg, "context deadline exceeded") ||
-			strings.Contains(msg, "Client.Timeout") ||
-			strings.Contains(msg, "connection reset") ||
-			strings.Contains(msg, "connection refused") ||
-			strings.Contains(msg, "EOF") ||
-			strings.Contains(msg, "i/o timeout") ||
-			strings.Contains(msg, "TLS handshake timeout") ||
-			strings.Contains(msg, "no such host") ||
-			strings.Contains(msg, "can't assign requested address") ||
-			strings.Contains(msg, "address already in use") {
-			return true
-		}
-		return false
-	}
+	// 状态码优先:429 与 5xx 与错误文本无关,一律可重试。
+	// (非 200 时 doAttempt 现在同时返回错误与状态码,不能再依赖 err==nil。)
 	switch {
 	case statusCode == http.StatusTooManyRequests:
 		return true
 	case statusCode >= 500 && statusCode <= 599:
 		return true
-	default:
+	}
+	if err == nil {
 		return false
 	}
+	msg := err.Error()
+	return strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "Client.Timeout") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "EOF") ||
+		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "TLS handshake timeout") ||
+		strings.Contains(msg, "no such host") ||
+		strings.Contains(msg, "can't assign requested address") ||
+		strings.Contains(msg, "address already in use")
 }
 
 // ChatCompletion calls the OpenAI-compatible chat/completions endpoint with a
@@ -273,7 +271,9 @@ func doAttempt(ctx context.Context, baseURL, apiKey string, reqBody chatRequest)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", resp.StatusCode, nil
+		// 带上响应体片段：4xx/5xx 的原因（余额、模型名、max_tokens 超限）都在 body 里，
+		// 只报状态码会让线上排查变成猜谜。
+		return "", resp.StatusCode, fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncate(string(b), 300))
 	}
 
 	var parsed chatResponse
