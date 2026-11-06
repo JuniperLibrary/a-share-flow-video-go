@@ -90,15 +90,19 @@ func (o *Orchestrator) tokenBudgets() (int, int) {
 //
 // 2026-11 改版:从"更大的版本"改成"更深的版本"。
 // 旧计划 opening/cross_exam/rebuttal 各 4 轮,共 63 轮,每轮 20-60 字,
-// 大部分是立场重申;现在每个角色每轮必须交付一个证据单元(科目->算式->判断->证伪),
-// 轮数压到 23 轮,同样的时长预算换成"算得更深"而不是"说得更多"。
+// 大部分是立场重申;现在每个角色每轮必须交付一个证据单元(科目->算式->判断->证伪)。
+//
+// 实跑校准(2026-11-06,茅台 2026Q3,Kimi k3):23 轮 × 平均 146 字 = 3374 字,
+// 折合 12.5 分钟成片,长度超标;而多出来的轮次内容与前面高度重复。
+// 现压到 17 轮:cross_exam 减到 1 轮(四个角色仍各自出场一次),
+// 取消 closing(closing 的"哪条证据没被复算"由 Synthesizer 四段式的检验卡接管,
+// 收尾内容实跑里与 synthesis 重复)。
 var defaultPhasePlan = []PhaseStep{
 	{Phase: PhaseOpen, Speakers: []Speaker{Moderator}, AllowTools: false, Rounds: 1},
 	{Phase: PhaseOpening, Speakers: []Speaker{Bull, Bear, Sector, Risk}, AllowTools: false, Rounds: 1},
-	{Phase: PhaseCrossExam, Speakers: []Speaker{Bull, Bear, Sector, Risk}, AllowTools: false, Rounds: 2},
+	{Phase: PhaseCrossExam, Speakers: []Speaker{Bull, Bear, Sector, Risk}, AllowTools: false, Rounds: 1},
 	{Phase: PhaseRebuttal, Speakers: []Speaker{Bull, Bear, Sector, Risk}, AllowTools: false, Rounds: 1},
 	{Phase: PhaseFactCheck, Speakers: []Speaker{Moderator, Bull, Bear}, AllowTools: true, Rounds: 1},
-	{Phase: PhaseClosing, Speakers: []Speaker{Bull, Bear}, AllowTools: false, Rounds: 1},
 	{Phase: PhaseSynthesis, Speakers: []Speaker{Synthesizer}, AllowTools: false, Rounds: 1},
 }
 

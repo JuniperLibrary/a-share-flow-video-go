@@ -6,12 +6,13 @@ import (
 	"github.com/a-share-flow-video-go/internal/config"
 )
 
-// 改版约束:轮数从 63 压到 23。深度靠每轮的证据单元,不靠堆轮数。
-// 如果有人为了"更热闹"把轮数加回去,这里会红,提醒先算时长与 TTS 成本。
+// 改版约束:轮数从 63 压到 23,再按实跑时长压到 17。深度靠每轮的证据单元,
+// 不靠堆轮数。如果有人为了"更热闹"把轮数加回去,这里会红,
+// 提醒先算时长与 TTS 成本(17 轮 × 平均 120 字 ≈ 8 分钟成片)。
 func TestDefaultPhasePlanTurnBudget(t *testing.T) {
 	wantOrder := []Phase{
 		PhaseOpen, PhaseOpening, PhaseCrossExam,
-		PhaseRebuttal, PhaseFactCheck, PhaseClosing, PhaseSynthesis,
+		PhaseRebuttal, PhaseFactCheck, PhaseSynthesis,
 	}
 	if len(defaultPhasePlan) != len(wantOrder) {
 		t.Fatalf("阶段数量 = %d, 期望 %d", len(defaultPhasePlan), len(wantOrder))
@@ -28,8 +29,8 @@ func TestDefaultPhasePlanTurnBudget(t *testing.T) {
 		total += step.Rounds * len(step.Speakers)
 	}
 
-	if total != 23 {
-		t.Errorf("总轮次 = %d, 期望 23(更深的版本:少轮次、每轮一个证据单元)", total)
+	if total != 17 {
+		t.Errorf("总轮次 = %d, 期望 17(更深的版本:少轮次、每轮一个证据单元)", total)
 	}
 }
 
