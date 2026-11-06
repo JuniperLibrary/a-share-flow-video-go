@@ -60,13 +60,27 @@ type PhaseStep struct {
 	Rounds     int
 }
 
+// 每轮 token 预算。证据型轮次(60-120 字 + citations)实测 250-420 token,
+// 500 会截断 JSON(max_tokens=500 时 finish_reason=length),故基线取 1500;
+// 截断重试时放宽到 3000。
+const (
+	turnMaxTokens      = 1500
+	turnMaxTokensRetry = 3000
+)
+
+// defaultPhasePlan 决定辩论的结构。
+//
+// 2026-11 改版:从"更大的版本"改成"更深的版本"。
+// 旧计划 opening/cross_exam/rebuttal 各 4 轮,共 63 轮,每轮 20-60 字,
+// 大部分是立场重申;现在每个角色每轮必须交付一个证据单元(科目->算式->判断->证伪),
+// 轮数压到 23 轮,同样的时长预算换成"算得更深"而不是"说得更多"。
 var defaultPhasePlan = []PhaseStep{
 	{Phase: PhaseOpen, Speakers: []Speaker{Moderator}, AllowTools: false, Rounds: 1},
-	{Phase: PhaseOpening, Speakers: []Speaker{Bull, Bear, Sector, Risk}, AllowTools: false, Rounds: 4},
-	{Phase: PhaseCrossExam, Speakers: []Speaker{Bull, Bear, Sector, Risk}, AllowTools: false, Rounds: 4},
-	{Phase: PhaseRebuttal, Speakers: []Speaker{Bull, Bear, Sector, Risk}, AllowTools: false, Rounds: 4},
-	{Phase: PhaseFactCheck, Speakers: []Speaker{Moderator, Bull, Bear}, AllowTools: true, Rounds: 3},
-	{Phase: PhaseClosing, Speakers: []Speaker{Bull, Bear}, AllowTools: false, Rounds: 2},
+	{Phase: PhaseOpening, Speakers: []Speaker{Bull, Bear, Sector, Risk}, AllowTools: false, Rounds: 1},
+	{Phase: PhaseCrossExam, Speakers: []Speaker{Bull, Bear, Sector, Risk}, AllowTools: false, Rounds: 2},
+	{Phase: PhaseRebuttal, Speakers: []Speaker{Bull, Bear, Sector, Risk}, AllowTools: false, Rounds: 1},
+	{Phase: PhaseFactCheck, Speakers: []Speaker{Moderator, Bull, Bear}, AllowTools: true, Rounds: 1},
+	{Phase: PhaseClosing, Speakers: []Speaker{Bull, Bear}, AllowTools: false, Rounds: 1},
 	{Phase: PhaseSynthesis, Speakers: []Speaker{Synthesizer}, AllowTools: false, Rounds: 1},
 }
 
@@ -210,8 +224,11 @@ func (o *Orchestrator) runTurn(ctx context.Context, state *DebateState, speaker 
 	userPrompt := prompts.BuildUserPrompt(string(speaker), string(phase), ctx2)
 	combined := systemPrompt + "\n\n" + userPrompt
 
+	// 证据型轮次要求 60-120 字正文 + citations(科目/算式/期间),500 token 会把 JSON 截断,
+	// 表现为 "unexpected end of JSON input"。实测(2026-11, qwen-plus/qwen-max 直连):
+	// max_tokens=500 时 finish_reason=length、JSON 不闭合;1500 时 stop、约 250-420 token。
 	llmStart := time.Now()
-	raw, err := callLLM(o.cfg, combined, 0.8, 500)
+	raw, err := callLLM(o.cfg, combined, 0.8, turnMaxTokens)
 	llmLatency := time.Since(llmStart)
 	if err != nil {
 		logger.Error("LLM 调用失败",
@@ -240,6 +257,20 @@ func (o *Orchestrator) runTurn(ctx context.Context, state *DebateState, speaker 
 			zap.String("rawPreview", truncateString(raw, 200)),
 			zap.Error(err),
 		)
+		// 最常见原因是输出被 max_tokens 截断。单轮失败会让整场作废,
+		// 所以用更大预算 + 更低温度重试一次,仍失败才放弃。
+		raw2, err2 := callLLM(o.cfg, combined, 0.4, turnMaxTokensRetry)
+		if err2 == nil {
+			if turn2, parseErr2 := parseTurn(raw2, speaker, phase); parseErr2 == nil {
+				logger.Info("解析失败后重试成功",
+					zap.String("sessionId", state.SessionID),
+					zap.String("speaker", string(speaker)),
+					zap.Int("rawLen2", len(raw2)),
+				)
+				turn2.Index = len(state.Turns)
+				return turn2, nil
+			}
+		}
 		return Turn{}, err
 	}
 	turn.Index = len(state.Turns)
