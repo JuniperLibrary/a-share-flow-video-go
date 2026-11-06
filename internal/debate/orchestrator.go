@@ -3,10 +3,12 @@ package debate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/a-share-flow-video-go/internal/ai"
 	"github.com/a-share-flow-video-go/internal/config"
 	"github.com/a-share-flow-video-go/internal/debate/prompts"
 	"github.com/a-share-flow-video-go/internal/logger"
@@ -63,10 +65,23 @@ type PhaseStep struct {
 // 每轮 token 预算。证据型轮次(60-120 字 + citations)实测 250-420 token,
 // 500 会截断 JSON(max_tokens=500 时 finish_reason=length),故基线取 1500;
 // 截断重试时放宽到 3000。
+//
+// Anthropic thinking 模型(Kimi k3 等)会先用 max_tokens 做推理,实测单轮
+// thinking 就要 1500+,预算必须单独抬高,否则只返回 thinking 块、没有正文。
 const (
-	turnMaxTokens      = 1500
-	turnMaxTokensRetry = 3000
+	turnMaxTokens              = 1500
+	turnMaxTokensRetry         = 3000
+	turnMaxTokensThinking      = 4000
+	turnMaxTokensThinkingRetry = 8000
 )
+
+// tokenBudgets 按协议返回 (基线, 重试) 预算。
+func (o *Orchestrator) tokenBudgets() (int, int) {
+	if ai.UsesAnthropicProtocol(o.cfg.BaseURL) {
+		return turnMaxTokensThinking, turnMaxTokensThinkingRetry
+	}
+	return turnMaxTokens, turnMaxTokensRetry
+}
 
 // defaultPhasePlan 决定辩论的结构。
 //
@@ -227,8 +242,19 @@ func (o *Orchestrator) runTurn(ctx context.Context, state *DebateState, speaker 
 	// 证据型轮次要求 60-120 字正文 + citations(科目/算式/期间),500 token 会把 JSON 截断,
 	// 表现为 "unexpected end of JSON input"。实测(2026-11, qwen-plus/qwen-max 直连):
 	// max_tokens=500 时 finish_reason=length、JSON 不闭合;1500 时 stop、约 250-420 token。
+	budget, retryBudget := o.tokenBudgets()
 	llmStart := time.Now()
-	raw, err := callLLM(o.cfg, combined, 0.8, turnMaxTokens)
+	raw, err := callLLM(o.cfg, combined, 0.8, budget)
+	if errors.Is(err, ai.ErrNoTextBlock) {
+		// thinking 把预算吃光:同预算重试没意义,直接用重试预算再来一次。
+		logger.Warn("thinking 占满预算,提高 max_tokens 重试",
+			zap.String("sessionId", state.SessionID),
+			zap.String("speaker", string(speaker)),
+			zap.Int("budget", budget),
+			zap.Int("retryBudget", retryBudget),
+		)
+		raw, err = callLLM(o.cfg, combined, 0.8, retryBudget)
+	}
 	llmLatency := time.Since(llmStart)
 	if err != nil {
 		logger.Error("LLM 调用失败",
@@ -259,7 +285,7 @@ func (o *Orchestrator) runTurn(ctx context.Context, state *DebateState, speaker 
 		)
 		// 最常见原因是输出被 max_tokens 截断。单轮失败会让整场作废,
 		// 所以用更大预算 + 更低温度重试一次,仍失败才放弃。
-		raw2, err2 := callLLM(o.cfg, combined, 0.4, turnMaxTokensRetry)
+		raw2, err2 := callLLM(o.cfg, combined, 0.4, retryBudget)
 		if err2 == nil {
 			if turn2, parseErr2 := parseTurn(raw2, speaker, phase); parseErr2 == nil {
 				logger.Info("解析失败后重试成功",

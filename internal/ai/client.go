@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -147,6 +148,10 @@ type anthropicResponse struct {
 	} `json:"content"`
 }
 
+// ErrNoTextBlock 表示响应里没有 text 块。Anthropic thinking 模型会先消耗
+// max_tokens 做推理,预算不足时只剩 thinking 块——调用方应调大预算重试。
+var ErrNoTextBlock = errors.New("AI 返回无 text 块")
+
 // useAnthropicProtocol 按 baseURL 判断走哪套协议。
 // Anthropic 官方(api.anthropic.com)与 Kimi coding 端点(api.kimi.com/coding)
 // 都是 Messages API,请求/响应格式与 OpenAI 不兼容,不能共用 /chat/completions。
@@ -154,6 +159,9 @@ func useAnthropicProtocol(baseURL string) bool {
 	u := strings.ToLower(strings.TrimRight(baseURL, "/"))
 	return strings.Contains(u, "anthropic") || strings.HasSuffix(u, "/coding")
 }
+
+// UsesAnthropicProtocol 供上层按协议选择参数(如 thinking 模型需要更大的 max_tokens)。
+func UsesAnthropicProtocol(baseURL string) bool { return useAnthropicProtocol(baseURL) }
 
 // parseAnthropicContent 抽取 Anthropic 响应里的 text 块。
 // thinking 块直接跳过——它是推理过程,不是给解析器的最终输出。
@@ -170,7 +178,7 @@ func parseAnthropicContent(b []byte) (string, error) {
 	}
 	out := strings.TrimSpace(sb.String())
 	if out == "" {
-		return "", fmt.Errorf("AI 返回无 text 块(max_tokens 可能被 thinking 用尽,请调大预算)")
+		return "", fmt.Errorf("%w(max_tokens 可能被 thinking 用尽)", ErrNoTextBlock)
 	}
 	return out, nil
 }

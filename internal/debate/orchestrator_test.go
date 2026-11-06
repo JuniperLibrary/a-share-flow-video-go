@@ -1,6 +1,10 @@
 package debate
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/a-share-flow-video-go/internal/config"
+)
 
 // 改版约束:轮数从 63 压到 23。深度靠每轮的证据单元,不靠堆轮数。
 // 如果有人为了"更热闹"把轮数加回去,这里会红,提醒先算时长与 TTS 成本。
@@ -47,5 +51,18 @@ func TestTurnTokenBudgetFitsEvidenceTurn(t *testing.T) {
 	}
 	if turnMaxTokensRetry <= turnMaxTokens {
 		t.Errorf("turnMaxTokensRetry = %d, 必须大于基线 %d, 否则截断重试没有意义", turnMaxTokensRetry, turnMaxTokens)
+	}
+}
+
+// thinking 模型会先用 max_tokens 推理,预算必须按协议区分,否则只返回 thinking 块。
+func TestTokenBudgetsByProtocol(t *testing.T) {
+	openai := NewOrchestrator(config.AIConfig{BaseURL: "https://api.openai.com/v1"})
+	if b, r := openai.tokenBudgets(); b != turnMaxTokens || r != turnMaxTokensRetry {
+		t.Errorf("openai 协议预算 = (%d,%d), 期望 (%d,%d)", b, r, turnMaxTokens, turnMaxTokensRetry)
+	}
+
+	kimi := NewOrchestrator(config.AIConfig{BaseURL: "https://api.kimi.com/coding"})
+	if b, r := kimi.tokenBudgets(); b < 3000 || r <= b {
+		t.Errorf("anthropic/thinking 预算 = (%d,%d), 基线至少 3000 且重试更大", b, r)
 	}
 }
