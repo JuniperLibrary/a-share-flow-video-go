@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/a-share-flow-video-go/internal/httpclient"
+	"github.com/a-share-flow-video-go/internal/logger"
+	"go.uber.org/zap"
 )
 
 type FinanceReport struct {
@@ -49,7 +51,10 @@ type FinanceReport struct {
 	DebtAssetRatio float64 `json:"debtAssetRatio"`
 	CurrentRatio   float64 `json:"currentRatio"`
 
-	OperatingCashFlow float64 `json:"operatingCashFlow"`
+	OperatingCashFlow  float64 `json:"operatingCashFlow"`
+	SalesCashReceived  float64 `json:"salesCashReceived"`
+	PurchaseFixedAsset float64 `json:"purchaseFixedAsset"`
+	OperatingCost      float64 `json:"operatingCost"`
 }
 
 type datacenterResponse struct {
@@ -80,7 +85,18 @@ func FetchFinanceReport(code string) (*FinanceReport, error) {
 		return nil, fmt.Errorf("获取资产负债表失败: %w", err)
 	}
 
-	report := buildReport(code, incomeData, balanceData)
+	// 现金流量表与完整资产负债表用于补上摘要接口缺失的科目(经营现金流、销售收现、
+	// 合同负债、购建长期资产)。失败不阻断:只是这些科目留空,辩论会标注"缺科目"。
+	cashData, err := fetchCashFlowStatement(code)
+	if err != nil {
+		logger.Warn("获取现金流量表失败,相关科目将缺失", zap.String("code", code), zap.Error(err))
+	}
+	fullBalance, err := fetchFullBalanceSheet(code)
+	if err != nil {
+		logger.Warn("获取完整资产负债表失败,合同负债等科目将缺失", zap.String("code", code), zap.Error(err))
+	}
+
+	report := buildReport(code, incomeData, balanceData, cashData, fullBalance)
 	return report, nil
 }
 
@@ -151,7 +167,62 @@ func fetchBalanceSheet(code string) (map[string]any, error) {
 	return result.Result.Data[0], nil
 }
 
-func buildReport(code string, incomeData []map[string]any, balanceData map[string]any) *FinanceReport {
+// secucode 给纯数字代码补交易所后缀，完整报表接口(F10)按 SECUCODE 过滤。
+func secucode(code string) string {
+	switch {
+	case strings.HasPrefix(code, "6"):
+		return code + ".SH"
+	case strings.HasPrefix(code, "0"), strings.HasPrefix(code, "3"):
+		return code + ".SZ"
+	case strings.HasPrefix(code, "4"), strings.HasPrefix(code, "8"):
+		return code + ".BJ"
+	default:
+		return code
+	}
+}
+
+// fetchF10Statement 拉取完整报表(F10)。完整报表字段比摘要接口全，
+// 现金流量表、合同负债、研发/无形资产等科目只在完整报表里有。
+func fetchF10Statement(reportName, code string, pageSize int) (map[string]any, error) {
+	filter := fmt.Sprintf(`(SECUCODE="%s")`, secucode(code))
+	apiURL := fmt.Sprintf(
+		"https://datacenter.eastmoney.com/securities/api/data/v1/get?sortColumns=REPORT_DATE&sortTypes=-1&pageSize=%d&pageNumber=1&reportName=%s&columns=ALL&filter=%s",
+		pageSize, reportName, url.QueryEscape(filter),
+	)
+
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	req.Header.Set("Referer", "https://emweb.securities.eastmoney.com/")
+
+	client := httpclient.New(30 * time.Second)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var result datacenterResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	if !result.Success || len(result.Result.Data) == 0 {
+		return nil, fmt.Errorf("未找到 %s 的 %s 数据", code, reportName)
+	}
+	return result.Result.Data[0], nil
+}
+
+func fetchCashFlowStatement(code string) (map[string]any, error) {
+	return fetchF10Statement("RPT_F10_FINANCE_GCASHFLOW", code, 1)
+}
+
+func fetchFullBalanceSheet(code string) (map[string]any, error) {
+	return fetchF10Statement("RPT_F10_FINANCE_GBALANCE", code, 1)
+}
+
+func buildReport(code string, incomeData []map[string]any, balanceData, cashData, fullBalance map[string]any) *FinanceReport {
 	cur := incomeData[0]
 
 	report := &FinanceReport{
@@ -188,6 +259,7 @@ func buildReport(code string, incomeData []map[string]any, balanceData map[strin
 	report.TotalCost = getFloat64(cur, "TOTAL_OPERATE_COST")
 
 	operatingCost := getFloat64(cur, "OPERATE_COST")
+	report.OperatingCost = operatingCost
 	if report.Revenue > 0 {
 		report.GrossMargin = (report.Revenue - operatingCost) / report.Revenue * 100
 		report.NetMargin = report.NetProfit / report.Revenue * 100
@@ -196,7 +268,14 @@ func buildReport(code string, incomeData []map[string]any, balanceData map[strin
 	report.TotalAssets = getFloat64(balanceData, "TOTAL_ASSETS")
 	report.TotalLiabilities = getFloat64(balanceData, "TOTAL_LIABILITIES")
 	report.TotalEquity = getFloat64(balanceData, "TOTAL_EQUITY")
-	report.ContractLiability = getFloat64(balanceData, "CONTRACT_LIABILITY")
+	// 摘要接口没有 CONTRACT_LIABILITY,完整报表里叫 CONTRACT_LIAB。
+	report.ContractLiability = getFloat64(fullBalance, "CONTRACT_LIAB")
+	if report.ContractLiability == 0 {
+		report.ContractLiability = getFloat64(balanceData, "CONTRACT_LIAB")
+	}
+	report.OperatingCashFlow = getFloat64(cashData, "NETCASH_OPERATE")
+	report.SalesCashReceived = getFloat64(cashData, "SALES_SERVICES")
+	report.PurchaseFixedAsset = getFloat64(cashData, "CONSTRUCT_LONG_ASSET")
 	report.MonetaryFunds = getFloat64(balanceData, "MONETARYFUNDS")
 	report.Inventory = getFloat64(balanceData, "INVENTORY")
 	report.AccountsReceivable = getFloat64(balanceData, "ACCOUNTS_RECE")
@@ -293,6 +372,21 @@ func findSamePeriodLastYear(incomeData []map[string]any) map[string]any {
 	return nil
 }
 
+// PeriodDays 返回年初到报告期的天数。累计报表用它把"期内成本"还原成日均。
+func PeriodDays(reportDate string) int {
+	t, err := time.Parse("2006-01-02 15:04:05", reportDate)
+	if err != nil {
+		if t, err = time.Parse("2006-01-02", reportDate); err != nil {
+			return 365
+		}
+	}
+	days := t.YearDay()
+	if days <= 0 || days > 366 {
+		return 365
+	}
+	return days
+}
+
 func FormatFinanceReport(report *FinanceReport) string {
 	if report == nil {
 		return ""
@@ -347,14 +441,35 @@ func FormatFinanceReport(report *FinanceReport) string {
 	sb.WriteString(fmt.Sprintf("  存货: %.2f 亿\n", report.Inventory/1e8))
 	sb.WriteString(fmt.Sprintf("  应收账款: %.2f 亿\n", report.AccountsReceivable/1e8))
 
+	sb.WriteString("\n💵 现金流\n")
+	if report.OperatingCashFlow != 0 {
+		sb.WriteString(fmt.Sprintf("  经营活动现金流净额: %.2f 亿\n", report.OperatingCashFlow/1e8))
+	}
+	if report.SalesCashReceived != 0 {
+		sb.WriteString(fmt.Sprintf("  销售商品收到的现金: %.2f 亿\n", report.SalesCashReceived/1e8))
+		if report.Revenue > 0 {
+			sb.WriteString(fmt.Sprintf("  收现比(含税口径): %.3f\n", report.SalesCashReceived/report.Revenue))
+		}
+	}
+	if report.PurchaseFixedAsset != 0 {
+		sb.WriteString(fmt.Sprintf("  购建长期资产支付的现金: %.2f 亿\n", report.PurchaseFixedAsset/1e8))
+	}
+	if report.OperatingCashFlow == 0 && report.SalesCashReceived == 0 {
+		sb.WriteString("  （现金流量表未取到,相关科目按缺失处理）\n")
+	}
+
 	sb.WriteString("\n⚕️ 财务健康\n")
 	sb.WriteString(fmt.Sprintf("  资产负债率: %.1f%%\n", report.DebtAssetRatio))
 	if report.CurrentRatio > 0 {
 		sb.WriteString(fmt.Sprintf("  流动比率: %.1f%%\n", report.CurrentRatio))
 	}
-	if report.Revenue > 0 {
-		invTurnover := report.Revenue / report.Inventory
-		sb.WriteString(fmt.Sprintf("  存货周转: %.1f 天\n", 365/invTurnover))
+	// 存货周转必须用营业成本口径。用营收当分母会把天数压低一个量级
+	// (茅台实测:营收口径 168 天 vs 成本口径 1228 天),辩论会据此误判"压货"。
+	if report.Inventory > 0 && report.OperatingCost > 0 {
+		// 利润表是年初至今的累计数,分母必须先按报告期天数还原成"日均成本",
+		// 否则 Q3 会被当成全年,天数虚高(茅台:1642 天 vs 实际 1228 天)。
+		days := PeriodDays(report.ReportDate)
+		sb.WriteString(fmt.Sprintf("  存货周转(成本口径,按 %d 天): %.1f 天\n", days, float64(days)*report.Inventory/report.OperatingCost))
 	}
 
 	return sb.String()

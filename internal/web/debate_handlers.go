@@ -271,8 +271,23 @@ func structuredPromptForOrchestrator(data map[string]any) string {
 	if cr := getF("currentRatio"); cr > 0 {
 		b.WriteString(fmt.Sprintf("流动比率|%.1f\n", cr))
 	}
-	b.WriteString(fmt.Sprintf("合同负债|%.2f亿\n", getF("contractLiability")/1e8))
-	b.WriteString(fmt.Sprintf("经营现金流|%.2f亿\n", getF("operatingCashFlow")/1e8))
+	if v := getF("contractLiability"); v != 0 {
+		b.WriteString(fmt.Sprintf("合同负债|%.2f亿\n", v/1e8))
+	} else {
+		b.WriteString("合同负债|未取到\n")
+	}
+	if v := getF("operatingCashFlow"); v != 0 {
+		b.WriteString(fmt.Sprintf("经营现金流|%.2f亿\n", v/1e8))
+	} else {
+		b.WriteString("经营现金流|未取到\n")
+	}
+	if v := getF("salesCashReceived"); v != 0 {
+		b.WriteString(fmt.Sprintf("销售收现|%.2f亿\n", v/1e8))
+	}
+	if cost := getF("operatingCost"); cost > 0 && getF("inventory") > 0 {
+		days := fetcher.PeriodDays(getS("reportDate"))
+		b.WriteString(fmt.Sprintf("存货周转(成本口径,按%d天)|%.1f天\n", days, float64(days)*getF("inventory")/cost))
+	}
 
 	return b.String()
 }

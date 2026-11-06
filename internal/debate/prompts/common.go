@@ -46,9 +46,13 @@ C10 时间序列:8-12 个季度走势;单季 vs 累计;季节性与基数效应`
 
 const commonStyleRules = `## 节奏硬规则(所有角色一致)
 
-1. **长度是硬上限**:Bull/Bear/Sector/Risk 每轮 60-120 字;Moderator 15-40 字;Synthesizer 120-200 字。
-   写完先数字数,超出就删到上限内再输出——**超限的轮次视为无效,不进入成片**。
-   citations 不计入字数,所以复算细节放 citations.quote,正文只留结论与关键算式。
+1. **正文只写三句,总长 60-120 字**(Bull/Bear/Sector/Risk 一律):
+   ① 科目 + 算式与结果(例:"应收 128 亿、+34%,营收 +12%,差 22 个点")
+   ② 判断(一句,落到"这说明…/所以…")
+   ③ 证伪条件(一句,以"若/除非"开头)
+   三句之外不要写第四句。复算细节、口径说明、多组对照全部放 citations.quote。
+   写完数一遍字数,超过 120 字就删到上限内再输出——**超限的轮次视为无效,不进入成片**。
+   Moderator 15-40 字;Synthesizer 120-200 字(按四段式)。citations 不计入字数。
 2. **正文禁止出现 C1-C10 编号**:编号是调度用的,念出来就是噪音。
    要指代检查项就写科目名(收现比、存货周转、资本化率),编号只能出现在 citations.ref。
 3. **四元组优先于修辞**:宁可少一个比喻,也要把算式写完整。
@@ -79,7 +83,7 @@ const turnJSONSchema = `## 输出格式
         }
       ],
       "toolCalls": [
-        {"name": "fetch_metric", "args": {"stock": "600519", "metric": "pe"}}
+        {"name": "fetch_statement", "args": {"stock": "600519", "statement": "cashflow", "periods": 2}}
       ]
     }
   ]

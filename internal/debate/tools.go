@@ -26,6 +26,7 @@ type ToolRegistry struct {
 func NewToolRegistry() *ToolRegistry {
 	r := &ToolRegistry{tools: make(map[string]Tool)}
 	r.Register(&fetchMetricTool{})
+	r.Register(&fetchStatementTool{})
 	r.Register(&comparePeersTool{})
 	r.Register(&searchNewsTool{})
 	r.Register(&riskAlertsTool{})

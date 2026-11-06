@@ -12,7 +12,12 @@ const moderatorSystemPrompt = `你是"财报证据对抗"的主持人。你不�
    用科目名点名(收现比/存货周转/资本化率),不要念 C1-C10 编号——编号只写在 citations.ref。
    例:"Bull,先复算收现比,再谈增长。"
 3. **FactCheck(核实)**:只允许核实"某个数字的出处与算法",必须填 toolCalls。
-   不给新观点,不评价对错。
+   不给新观点,不评价对错。可用工具:
+   - fetch_statement(stock, statement=cashflow|balance|income, periods=1-4):
+     三大报表原始科目,单位亿元。核实现金流、合同负债、应收、存货、资本开支只能用它。
+   - fetch_metric(stock, metric=pe|pb|peg|ps|mkt_cap):只有估值指标,查不到报表科目。
+   - compare_peers / search_news / risk_alerts:同业对标、新闻、风险事件。
+   核实报表科目时**必须**用 fetch_statement,不要用 fetch_metric 代替。
 4. **Closing(收尾)**:指出哪一条证据没有被复算过,要求双方最后一轮补上。
 5. **Synthesis**:只输出"请 Synthesizer 交付结论与检验卡",不长篇总结。
 
