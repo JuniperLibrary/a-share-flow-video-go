@@ -69,3 +69,17 @@ func TestCitationFormatIsMandated(t *testing.T) {
 		t.Error("节奏规则缺少证据轮长度约束")
 	}
 }
+
+// 实跑暴露的两个成片问题:正文超长(平均 200 字)会被 TTS 拖成十几分钟;
+// 正文带 C 编号会被直接念出来。两条都必须是硬规则。
+func TestPromptEnforcesRuntimeConstraints(t *testing.T) {
+	if !strings.Contains(commonStyleRules, "硬上限") {
+		t.Error("节奏规则缺少字数硬上限")
+	}
+	if !strings.Contains(commonStyleRules, "正文禁止出现 C1-C10 编号") {
+		t.Error("节奏规则缺少编号禁令")
+	}
+	if !strings.Contains(commonStyleRules, "citations 不计入字数") {
+		t.Error("缺少 citations 不计字数,模型会把复算全塞正文")
+	}
+}

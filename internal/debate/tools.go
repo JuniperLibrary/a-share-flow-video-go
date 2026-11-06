@@ -100,10 +100,24 @@ func (s *fetchMetricTool) Name() string { return "fetch_metric" }
 func (s *fetchMetricTool) Description() string {
 	return "拉取股票实时指标 (PE/PE-TTM/PB/PEG/PS/总市值)"
 }
+
+// fetchMetricSupported 是本工具真实能查的字段。args.metric 目前不参与取数,
+// 只做白名单校验:模型经常来查"经营现金流""销售收现"这类报表科目,
+// 若不拒绝,它会拿到 PE/PB 却以为核实过了——假核实比不核实更危险。
+var fetchMetricSupported = map[string]bool{
+	"": true, "price": true, "pe": true, "pe_ttm": true, "pe_lyr": true,
+	"pb": true, "peg": true, "ps": true, "ps_ttm": true,
+	"mkt_cap": true, "circ_cap": true, "valuation": true,
+}
+
 func (s *fetchMetricTool) Execute(ctx context.Context, args map[string]any) (any, error) {
 	code, _ := args["stock"].(string)
 	if code == "" {
 		return nil, fmt.Errorf("args.stock 必填")
+	}
+	metric, _ := args["metric"].(string)
+	if !fetchMetricSupported[strings.ToLower(strings.TrimSpace(metric))] {
+		return nil, fmt.Errorf("fetch_metric 只支持估值指标(price/pe/pb/peg/ps/mkt_cap),无法查询 %q；报表科目请从财报原文或结构化字段取,查不到就写「缺 XX 科目」", metric)
 	}
 	secID, err := normalizeStockCode(code)
 	if err != nil {

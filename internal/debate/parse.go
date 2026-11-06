@@ -44,15 +44,15 @@ func parseTurn(raw string, expectedSpeaker Speaker, expectedPhase Phase) (Turn, 
 			return Turn{}, fmt.Errorf("speaker 应为 %s,实际 %s", expectedSpeaker, t.Speaker)
 		}
 	}
+	// 必须规范化:模型常返回 "Synthesizer"/"Bull" 这种首字母大写形式,
+	// 下游(verdict 提取、前端角色映射、TTS 音色选择)都按小写枚举匹配,
+	// 不规范化会导致 verdict 丢失、角色串味。
+	t.Speaker = expectedSpeaker
 	if strings.TrimSpace(t.Text) == "" {
 		return Turn{}, fmt.Errorf("text 为空")
 	}
-	if t.Phase == "" {
-		t.Phase = expectedPhase
-	} else if !strings.EqualFold(string(t.Phase), string(expectedPhase)) {
-		// LLM 返回的 phase 与预期不符，但使用 LLM 返回的值（信任 LLM 的阶段判断）
-		// 仅记录 debug 日志，不作为错误处理
-	}
+	// phase 同理:统一用调度阶段,避免模型自造阶段名导致前端分组错乱。
+	t.Phase = expectedPhase
 	if t.Emotion == "" {
 		t.Emotion = "neutral"
 	}
