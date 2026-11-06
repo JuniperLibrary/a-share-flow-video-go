@@ -207,3 +207,75 @@ func TestChatCompletionRawWithSystemUser(t *testing.T) {
 		t.Errorf("content = %q, want %q", got, "classified")
 	}
 }
+
+// Kimi coding 端点(api.kimi.com/coding)与 Anthropic 官方都是 Messages API。
+// 这里钉住三件事:URL 换成 /v1/messages、鉴权头换成 x-api-key、响应从 text 块里取。
+func TestChatCompletionAnthropicProtocol(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/coding/v1/messages" {
+			t.Errorf("path = %s, want /coding/v1/messages", r.URL.Path)
+		}
+		if r.Header.Get("x-api-key") == "" {
+			t.Error("missing x-api-key header")
+		}
+		if r.Header.Get("Authorization") != "" {
+			t.Error("anthropic 协议不应带 Authorization Bearer")
+		}
+		var req struct {
+			Model     string `json:"model"`
+			MaxTokens int    `json:"max_tokens"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.MaxTokens == 0 {
+			t.Error("anthropic 请求必须带 max_tokens")
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"content": []map[string]any{
+				{"type": "thinking", "thinking": "先想想"},
+				{"type": "text", "text": "{\"turns\":[]}"},
+			},
+		})
+	}))
+	defer ts.Close()
+
+	// 用 /coding 后缀触发协议检测(与 api.kimi.com/coding 同形)
+	cfg := testCfg(ts.URL + "/coding")
+	got, err := ChatCompletion(context.Background(), cfg, "你好", 0.1, 100)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != `{"turns":[]}` {
+		t.Errorf("content = %q, 应跳过 thinking 块取 text 块", got)
+	}
+}
+
+func TestUseAnthropicProtocol(t *testing.T) {
+	cases := map[string]bool{
+		"https://api.kimi.com/coding/":                      true,
+		"https://api.kimi.com/coding":                       true,
+		"https://api.anthropic.com":                         true,
+		"https://api.moonshot.cn/v1":                        false,
+		"https://dashscope.aliyuncs.com/compatible-mode/v1": false,
+		"https://api.openai.com/v1":                         false,
+	}
+	for url, want := range cases {
+		if got := useAnthropicProtocol(url); got != want {
+			t.Errorf("useAnthropicProtocol(%q) = %v, want %v", url, got, want)
+		}
+	}
+}
+
+func TestParseAnthropicContentSkipsThinking(t *testing.T) {
+	body := []byte(`{"content":[{"type":"thinking","thinking":"..."},{"type":"text","text":"hello"}]}`)
+	got, err := parseAnthropicContent(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "hello" {
+		t.Errorf("got %q, want hello", got)
+	}
+	if _, err := parseAnthropicContent([]byte(`{"content":[{"type":"thinking","thinking":"..."}]}`)); err == nil {
+		t.Error("只有 thinking 块时应报错,提示调大 max_tokens")
+	}
+}

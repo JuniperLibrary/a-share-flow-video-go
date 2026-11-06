@@ -131,6 +131,50 @@ type chatResponse struct {
 	} `json:"choices"`
 }
 
+// anthropicRequest 是 Anthropic Messages API 的请求体。
+// 与 OpenAI 的差异:temperature 不强制,thinking 模型必须走默认值,故省略;
+// max_tokens 是必填(thinking 会先消耗其中一部分)。
+type anthropicRequest struct {
+	Model     string        `json:"model"`
+	MaxTokens int           `json:"max_tokens"`
+	Messages  []ChatMessage `json:"messages"`
+}
+
+type anthropicResponse struct {
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+}
+
+// useAnthropicProtocol 按 baseURL 判断走哪套协议。
+// Anthropic 官方(api.anthropic.com)与 Kimi coding 端点(api.kimi.com/coding)
+// 都是 Messages API,请求/响应格式与 OpenAI 不兼容,不能共用 /chat/completions。
+func useAnthropicProtocol(baseURL string) bool {
+	u := strings.ToLower(strings.TrimRight(baseURL, "/"))
+	return strings.Contains(u, "anthropic") || strings.HasSuffix(u, "/coding")
+}
+
+// parseAnthropicContent 抽取 Anthropic 响应里的 text 块。
+// thinking 块直接跳过——它是推理过程,不是给解析器的最终输出。
+func parseAnthropicContent(b []byte) (string, error) {
+	var parsed anthropicResponse
+	if err := json.Unmarshal(b, &parsed); err != nil {
+		return "", fmt.Errorf("解析响应失败: %w", err)
+	}
+	var sb strings.Builder
+	for _, blk := range parsed.Content {
+		if blk.Type == "text" {
+			sb.WriteString(blk.Text)
+		}
+	}
+	out := strings.TrimSpace(sb.String())
+	if out == "" {
+		return "", fmt.Errorf("AI 返回无 text 块(max_tokens 可能被 thinking 用尽,请调大预算)")
+	}
+	return out, nil
+}
+
 // isRetryable reports whether a failed attempt should be retried.
 // Transient: network/timeout errors, connection resets, HTTP 429 (rate limit),
 // and 5xx (server errors). Permanent: 4xx client errors (auth, bad request) are NOT retried.
@@ -238,17 +282,35 @@ func ChatCompletionRaw(ctx context.Context, aiCfg config.AIConfig, messages []Ch
 // time (the previous reader is drained after a send), avoiding the empty-body
 // bug seen in callers that reused a bytes.Reader across retries.
 func doAttempt(ctx context.Context, baseURL, apiKey string, reqBody chatRequest) (content string, status int, err error) {
-	bodyBytes, mErr := json.Marshal(reqBody)
+	anthropic := useAnthropicProtocol(baseURL)
+	url := baseURL + "/chat/completions"
+	var bodyBytes []byte
+	var mErr error
+	if anthropic {
+		url = baseURL + "/v1/messages"
+		bodyBytes, mErr = json.Marshal(anthropicRequest{
+			Model:     reqBody.Model,
+			MaxTokens: reqBody.MaxTokens,
+			Messages:  reqBody.Messages,
+		})
+	} else {
+		bodyBytes, mErr = json.Marshal(reqBody)
+	}
 	if mErr != nil {
 		return "", 0, fmt.Errorf("marshal request: %w", mErr)
 	}
 
-	req, rErr := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/chat/completions", bytes.NewReader(bodyBytes))
+	req, rErr := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
 	if rErr != nil {
 		return "", 0, rErr
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	if anthropic {
+		req.Header.Set("x-api-key", apiKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
+	} else {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
 
 	resp, dErr := sharedClient.Do(req)
 	if dErr != nil {
@@ -274,6 +336,14 @@ func doAttempt(ctx context.Context, baseURL, apiKey string, reqBody chatRequest)
 		// 带上响应体片段：4xx/5xx 的原因（余额、模型名、max_tokens 超限）都在 body 里，
 		// 只报状态码会让线上排查变成猜谜。
 		return "", resp.StatusCode, fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncate(string(b), 300))
+	}
+
+	if anthropic {
+		out, pErr := parseAnthropicContent(b)
+		if pErr != nil {
+			return "", resp.StatusCode, pErr
+		}
+		return out, resp.StatusCode, nil
 	}
 
 	var parsed chatResponse
