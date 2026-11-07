@@ -356,13 +356,13 @@ func (o *Orchestrator) runTurn(ctx context.Context, state *DebateState, speaker 
 					zap.Int("rawLen2", len(raw2)),
 				)
 				turn2.Index = len(state.Turns)
-				return turn2, nil
+				return o.enforceEvidence(ctx, combined, turn2, speaker, phase), nil
 			}
 		}
 		return Turn{}, err
 	}
 	turn.Index = len(state.Turns)
-	return turn, nil
+	return o.enforceEvidence(ctx, combined, turn, speaker, phase), nil
 }
 
 // buildTurnPrompt 组装单轮 prompt。抽成独立函数是为了能单测:
