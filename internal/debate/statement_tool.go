@@ -72,6 +72,14 @@ var statementSpecs = map[string]statementSpec{
 			{"CONTRACT_LIAB", "合同负债", false},
 			{"CONTRACT_ASSET", "合同资产", false},
 			{"ACCOUNTS_PAYABLE", "应付账款", false},
+			// 核实阶段最常被问到的三个科目:现金缺口的常见解释项。
+			// 2026-11-06 的实跑里 Bear 明确要求「应交税费」,
+			// 但工具当时拿不出来,只能写"无科目对应",整条反证落空。
+			{"TAX_PAYABLE", "应交税费", false},
+			{"STAFF_SALARY_PAYABLE", "应付职工薪酬", false},
+			{"TOTAL_OTHER_PAYABLE", "其他应付款", false},
+			{"PREPAYMENT", "预付款项", false},
+			{"CIP", "在建工程", false},
 			{"FIXED_ASSET", "固定资产", false},
 			{"INTANGIBLE_ASSET", "无形资产", false},
 			{"DEVELOP_EXPENSE", "开发支出", false},

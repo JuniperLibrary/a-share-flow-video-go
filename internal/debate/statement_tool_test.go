@@ -75,3 +75,54 @@ func TestAnnotateCashflowScope(t *testing.T) {
 		t.Error("口径正常时不应加说明")
 	}
 }
+
+// 应交税费/应付职工薪酬/其他应付款是"经营现金流与净利润的缺口由什么解释"
+// 最常见的答案。2026-11-06 的实跑里 Bear 点名要「应交税费」,
+// 工具当时拿不出来,只能写"无科目对应",整条反证落空。
+func TestBalanceSpecCoversCashGapAccounts(t *testing.T) {
+	want := map[string]string{
+		"TAX_PAYABLE":          "应交税费",
+		"STAFF_SALARY_PAYABLE": "应付职工薪酬",
+		"TOTAL_OTHER_PAYABLE":  "其他应付款",
+		"PREPAYMENT":           "预付款项",
+		"CIP":                  "在建工程",
+	}
+	got := map[string]string{}
+	for _, f := range statementSpecs["balance"].Fields {
+		got[f.Key] = f.Label
+	}
+	for key, label := range want {
+		if got[key] != label {
+			t.Errorf("balance 缺少科目 %s(%s):核实阶段的常见解释项", label, key)
+		}
+	}
+}
+
+// 新增科目必须和其他科一样做亿元换算与报告期截断。
+func TestBalanceResultScalesNewAccounts(t *testing.T) {
+	rows := []map[string]any{{
+		"REPORT_DATE":          "2026-09-30 00:00:00",
+		"REPORT_TYPE":          "三季报",
+		"TAX_PAYABLE":          7528578502.94,
+		"CIP":                  2826319454.49,
+		"TOTAL_OTHER_PAYABLE":  6887840325.35,
+		"STAFF_SALARY_PAYABLE": nil,
+	}}
+	out := buildStatementResult(statementSpecs["balance"], rows)
+	if len(out) != 1 {
+		t.Fatalf("got %d periods, want 1", len(out))
+	}
+	got := out[0]
+	if v, _ := got["应交税费"].(float64); v != 75.29 {
+		t.Errorf("应交税费 = %v 亿, want 75.29", v)
+	}
+	if v, _ := got["在建工程"].(float64); v != 28.26 {
+		t.Errorf("在建工程 = %v 亿, want 28.26", v)
+	}
+	if v, _ := got["其他应付款"].(float64); v != 68.88 {
+		t.Errorf("其他应付款 = %v 亿, want 68.88", v)
+	}
+	if _, ok := got["应付职工薪酬"]; ok {
+		t.Error("null 科目不应出现(nil 与 0 是两回事)")
+	}
+}
