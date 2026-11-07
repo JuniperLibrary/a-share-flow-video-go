@@ -201,12 +201,19 @@ func isRetryable(err error, statusCode int) bool {
 		return false
 	}
 	msg := err.Error()
+	// "operation timed out" 是 Darwin 上读超时的真实文本(read tcp ...: operation
+	// timed out),它不含 "i/o timeout" 也不含 "Client.Timeout"。2026-11-06 一场
+	// 9 分钟的深度辩论就因为这个漏判,单轮超时直接把整场打挂。
 	return strings.Contains(msg, "context deadline exceeded") ||
 		strings.Contains(msg, "Client.Timeout") ||
 		strings.Contains(msg, "connection reset") ||
 		strings.Contains(msg, "connection refused") ||
 		strings.Contains(msg, "EOF") ||
 		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "operation timed out") ||
+		strings.Contains(msg, "connection timed out") ||
+		strings.Contains(msg, "network is unreachable") ||
+		strings.Contains(msg, "broken pipe") ||
 		strings.Contains(msg, "TLS handshake timeout") ||
 		strings.Contains(msg, "no such host") ||
 		strings.Contains(msg, "can't assign requested address") ||
