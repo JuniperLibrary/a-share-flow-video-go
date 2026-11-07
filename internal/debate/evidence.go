@@ -24,9 +24,17 @@ var (
 type evidenceGap struct {
 	NeedFormula   bool
 	NeedFalsifier bool
+	// BadMath 是算错的二元算式。它比"缺算式"更危险:算式形状是对的,
+	// 只是结论错了,观众与下游都不会再验一遍。
+	BadMath []arithIssue
+	// FourSection 表示这一轮正文是四段式(裁决者)。
+	// 返工提示不能对它要求"三句式",那会把结论结构改坏。
+	FourSection bool
 }
 
-func (g evidenceGap) Empty() bool { return !g.NeedFormula && !g.NeedFalsifier }
+func (g evidenceGap) Empty() bool {
+	return !g.NeedFormula && !g.NeedFalsifier && len(g.BadMath) == 0
+}
 
 // Instruction 生成返工要求,直接拼到原 prompt 后面。
 func (g evidenceGap) Instruction() string {
@@ -39,26 +47,83 @@ func (g evidenceGap) Instruction() string {
 	if g.NeedFalsifier {
 		b.WriteString("- 正文第③句缺少证伪条件:必须以\"若\"或\"除非\"开头,给一个可判定的触发条件。\n")
 	}
-	b.WriteString("保持三句式与字数上限,不得引入上一轮没有的新数字,不得新增第四句。\n")
+	if len(g.BadMath) > 0 {
+		b.WriteString("- 下面这些算式算错了。只把结果数字改成正确值,论据、指标与结论一律不动:\n")
+		for i, issue := range g.BadMath {
+			if i >= 3 {
+				break
+			}
+			b.WriteString("  · " + issue.String() + "\n")
+		}
+	}
+	if g.FourSection {
+		b.WriteString("保持四段式结构与 240 字上限。四个小标题必须逐字保留:\n")
+		b.WriteString("  结论: / 最强证据: / 最致命反证: / 检验卡:\n")
+		b.WriteString("只改算错的数字,不得更换论据或指标,不得新增论据。\n")
+	} else {
+		b.WriteString("保持三句式与字数上限,不得引入上一轮没有的新数字,不得新增第四句。\n")
+	}
 	b.WriteString("只输出与上次相同结构的 JSON。\n")
 	return b.String()
 }
 
 // checkEvidence 判断一轮正文是否满足证据纪律。
 //
-// 只约束 Bull/Bear/Sector/Risk:
+// 三句式与证伪条件只约束 Bull/Bear/Sector/Risk:
 //   - Moderator 的职责是点名谁该复算什么,它本身不产出证据单元;
 //   - Synthesizer 的四段式已经内含"检验卡"作为证伪条件,
 //     再要求它写"若…"的第三句会和四段式打架。
+//
+// 但算式对所有角色都生效:裁决者会复述双方的算式,那句
+// "Bull 复算 840.59-70.9=769.69 亿"是全片最被引用的数字,
+// 抄错时如果没人验,错的结论就被当成定论播出去。
 func checkEvidence(speaker Speaker, text string) evidenceGap {
 	switch speaker {
-	case Moderator, Synthesizer:
-		return evidenceGap{}
+	case Moderator:
+		return evidenceGap{BadMath: checkArithmetic(text)}
+	case Synthesizer:
+		return evidenceGap{BadMath: checkArithmetic(text), FourSection: true}
 	}
 	return evidenceGap{
 		NeedFormula:   !evidenceFormulaRe.MatchString(text),
 		NeedFalsifier: !evidenceTriggerRe.MatchString(text),
+		BadMath:       checkArithmetic(text),
 	}
+}
+
+// TurnInspection 是一轮正文的证据体检结果。
+//
+// 抽成导出类型是为了让门禁命令(cmd/debategate)与前端的质量标记
+// 共用同一套判据:两处各写一份正则,迟早会出现"页面显示合格、
+// 门禁判不合格"的对不上。
+type TurnInspection struct {
+	Chars        int
+	HasFormula   bool
+	HasFalsifier bool
+	// Checked 表示这一轮是否受证据纪律约束(主持人/裁决者不受约束)。
+	Checked    bool
+	MathIssues []string
+}
+
+// Missing 表示这一轮该有证据要素却缺了。
+func (t TurnInspection) Missing() bool {
+	return t.Checked && (!t.HasFormula || !t.HasFalsifier)
+}
+
+// InspectTurn 体检一轮正文。
+func InspectTurn(turn Turn) TurnInspection {
+	gap := checkEvidence(turn.Speaker, turn.Text)
+	checked := turn.Speaker != Moderator && turn.Speaker != Synthesizer
+	out := TurnInspection{
+		Chars:        len([]rune(turn.Text)),
+		HasFormula:   !gap.NeedFormula,
+		HasFalsifier: !gap.NeedFalsifier,
+		Checked:      checked,
+	}
+	for _, issue := range gap.BadMath {
+		out.MathIssues = append(out.MathIssues, issue.String())
+	}
+	return out
 }
 
 // buildEvidenceRetryPrompt 把返工要求拼到原 prompt 上,并回贴上一轮正文。
@@ -84,6 +149,7 @@ func (o *Orchestrator) enforceEvidence(ctx context.Context, basePrompt string, t
 		zap.String("phase", string(phase)),
 		zap.Bool("needFormula", gap.NeedFormula),
 		zap.Bool("needFalsifier", gap.NeedFalsifier),
+		zap.Int("badMath", len(gap.BadMath)),
 	)
 
 	_, retryBudget := o.tokenBudgets()

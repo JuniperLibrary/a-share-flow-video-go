@@ -44,15 +44,23 @@ func TestCheckEvidence(t *testing.T) {
 			want:    evidenceGap{},
 		},
 		{
-			name:    "裁决者四段式自带检验卡,不受约束",
+			name:    "裁决者四段式自带检验卡,不要求三句式",
 			speaker: Synthesizer,
 			text:    "持有。最强证据是收现比 1.077。",
-			want:    evidenceGap{},
+			want:    evidenceGap{FourSection: true},
+		},
+		{
+			name:    "裁决者复述的算式算错仍要退回",
+			speaker: Synthesizer,
+			text:    "结论:持有。最强证据:经营现金流840.59÷净利644.67=0.30。",
+			want:    evidenceGap{FourSection: true, BadMath: []arithIssue{{}}},
 		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := checkEvidence(c.speaker, c.text); got != c.want {
+			got := checkEvidence(c.speaker, c.text)
+			if got.NeedFormula != c.want.NeedFormula || got.NeedFalsifier != c.want.NeedFalsifier ||
+				len(got.BadMath) != len(c.want.BadMath) || got.FourSection != c.want.FourSection {
 				t.Errorf("checkEvidence() = %+v, want %+v", got, c.want)
 			}
 		})
@@ -66,6 +74,25 @@ func TestBuildEvidenceRetryPrompt(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("返工 prompt 缺少 %q\n实际:\n%s", want, got)
 		}
+	}
+}
+
+// 裁决者的返工提示不能要求"三句式",否则会把四段式结论改成三段,
+// 渲染层拿不到结论/最强证据/最致命反证/检验卡这四块。
+func TestInstructionKeepsStructurePerRole(t *testing.T) {
+	three := evidenceGap{NeedFormula: true}.Instruction()
+	if !strings.Contains(three, "三句式") {
+		t.Errorf("普通轮次返工应保持三句式:\n%s", three)
+	}
+	four := evidenceGap{BadMath: []arithIssue{{Expr: "1÷2=3", Expected: 0.5, Stated: 3}}, FourSection: true}.Instruction()
+	if !strings.Contains(four, "四段式") {
+		t.Errorf("裁决者返工应保持四段式:\n%s", four)
+	}
+	if strings.Contains(four, "三句式") {
+		t.Errorf("裁决者返工不应出现三句式:\n%s", four)
+	}
+	if !strings.Contains(four, "240 字上限") {
+		t.Errorf("裁决者返工应给出字数上限:\n%s", four)
 	}
 }
 
