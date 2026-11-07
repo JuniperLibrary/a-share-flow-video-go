@@ -30,6 +30,18 @@ const (
 	ProfileQuick Profile = "quick"
 )
 
+// ParseProfile 严格解析档位字符串,未知值直接报错。
+// 门禁命令与脚本用它,避免把拼错的档位静默降级成 deep 白跑 9 分钟。
+func ParseProfile(s string) (Profile, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case string(ProfileDeep):
+		return ProfileDeep, nil
+	case string(ProfileQuick):
+		return ProfileQuick, nil
+	}
+	return "", fmt.Errorf("未知辩论档位 %q(可选 deep / quick)", s)
+}
+
 func normalizeProfile(p Profile) Profile {
 	if p == ProfileQuick {
 		return ProfileQuick
