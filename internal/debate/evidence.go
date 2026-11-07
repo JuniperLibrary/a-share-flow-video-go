@@ -153,7 +153,7 @@ func (o *Orchestrator) enforceEvidence(ctx context.Context, basePrompt string, t
 	)
 
 	_, retryBudget := o.tokenBudgets()
-	raw, err := callLLM(o.cfg, buildEvidenceRetryPrompt(basePrompt, turn.Text, gap), 0.3, retryBudget)
+	raw, err := callLLM(ctx, o.cfg, buildEvidenceRetryPrompt(basePrompt, turn.Text, gap), 0.3, retryBudget)
 	if err != nil {
 		logger.Warn("返工调用失败,保留原文", zap.Error(err))
 		return turn

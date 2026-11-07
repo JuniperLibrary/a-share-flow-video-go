@@ -103,3 +103,28 @@ func TestNormalizeProfile(t *testing.T) {
 		}
 	}
 }
+
+// 单轮失败不该毁掉整场:前面十几轮已经花了八分钟,
+// 但裁决轮失败必须中止——没有 verdict 就没有片子。
+func TestShouldAbortOnTurnError(t *testing.T) {
+	cases := []struct {
+		name      string
+		speaker   Speaker
+		skipped   int
+		wantAbort bool
+	}{
+		{"主持人失败可跳过", Moderator, 0, false},
+		{"多方失败可跳过", Bull, 0, false},
+		{"风控失败可跳过", Risk, 0, false},
+		{"已跳过两轮还能再跳一轮", Bear, 2, false},
+		{"跳过三轮后放弃", Bear, 3, true},
+		{"裁决轮失败立即中止", Synthesizer, 0, true},
+		{"裁决轮失败即使没跳过也中止", Synthesizer, 2, true},
+	}
+	for _, c := range cases {
+		if got := shouldAbortOnTurnError(c.speaker, c.skipped); got != c.wantAbort {
+			t.Errorf("%s: shouldAbortOnTurnError(%s, %d) = %v, want %v",
+				c.name, c.speaker, c.skipped, got, c.wantAbort)
+		}
+	}
+}

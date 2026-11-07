@@ -60,6 +60,10 @@ type Script struct {
 	PreviousRefs string `json:"previousRefs,omitempty"`
 	Verdict      string `json:"verdict,omitempty"`
 	Phase        Phase  `json:"phase,omitempty"`
+	// SkippedTurns 记录因为模型/网络失败而缺席的轮次。
+	// 非零表示这是一场残缺的辩论,前端与门禁据此提示,
+	// 而不是让观众自己发现某个角色从没说过话。
+	SkippedTurns int `json:"skippedTurns,omitempty"`
 }
 
 // AudioTurn 单轮发言的音频元数据。

@@ -49,6 +49,7 @@ type gateReport struct {
 	MissingCount int          `json:"missingEvidenceTurns"`
 	MathErrCount int          `json:"mathErrorTurns"`
 	VerdictChars int          `json:"verdictChars"`
+	SkippedTurns int          `json:"skippedTurns"`
 	TurnDetails  []turnReport `json:"turnDetails"`
 	Verdict      string       `json:"verdict"`
 }
@@ -136,6 +137,7 @@ func buildReport(code, name, period, profile string, elapsed time.Duration, scri
 		ElapsedSec:   int64(elapsed.Round(time.Second).Seconds()),
 		Turns:        len(script.Turns),
 		VerdictChars: len([]rune(script.Verdict)),
+		SkippedTurns: script.SkippedTurns,
 		Verdict:      script.Verdict,
 	}
 	for _, t := range script.Turns {
@@ -182,4 +184,9 @@ func printReport(r gateReport) {
 	}
 	fmt.Printf("\n=== %s 档 %d 轮, %ds, 总字数 %d, 成片约 %.1f 分钟, 缺项 %d 轮, 算式错 %d 轮 ===\n",
 		r.Profile, r.Turns, r.ElapsedSec, r.TotalChars, r.VideoMinutes, r.MissingCount, r.MathErrCount)
+	if r.SkippedTurns > 0 {
+		// 缺席轮次不判失败(成片仍然完整),但必须让人看见,
+		// 否则会把一场残缺的辩论当成正常产出存档。
+		fmt.Printf("!! %d 轮缺席:本次可能是残缺的辩论,与同档位历史产出对比时要注意\n", r.SkippedTurns)
+	}
 }

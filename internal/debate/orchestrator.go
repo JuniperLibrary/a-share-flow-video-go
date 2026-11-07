@@ -193,6 +193,7 @@ func (o *Orchestrator) Run(ctx context.Context, state DebateState) (Script, erro
 	}
 
 	totalTurns := 0
+	skipped := 0
 	plan := o.phasePlan()
 	logger.Info("辩论档位",
 		zap.String("sessionId", state.SessionID),
@@ -220,7 +221,18 @@ func (o *Orchestrator) Run(ctx context.Context, state DebateState) (Script, erro
 						zap.Int("round", round+1),
 						zap.Error(err),
 					)
-					return Script{}, fmt.Errorf("phase=%s speaker=%s 失败: %w", step.Phase, speaker, err)
+					if shouldAbortOnTurnError(speaker, skipped) {
+						return Script{}, fmt.Errorf("phase=%s speaker=%s 失败: %w", step.Phase, speaker, err)
+					}
+					// 单轮失败不该毁掉整场:前面十几轮已经花了八分钟,
+					// 少一个角色的发言仍能剪出完整片子。代价只是这一轮缺席。
+					skipped++
+					logger.Warn("跳过失败轮次,继续辩论",
+						zap.String("sessionId", state.SessionID),
+						zap.String("speaker", string(speaker)),
+						zap.Int("skipped", skipped),
+					)
+					continue
 				}
 				// 非 FactCheck 阶段的工具调用不执行也不保留:模型常无视阶段约束照样吐
 				// toolCalls,留着会让下游误以为核实过。
@@ -271,11 +283,13 @@ func (o *Orchestrator) Run(ctx context.Context, state DebateState) (Script, erro
 		SessionID:    state.SessionID,
 		PreviousRefs: state.PreviousRefs,
 		Verdict:      verdict,
+		SkippedTurns: skipped,
 	}
 
 	logger.Info("辩论完成",
 		zap.String("sessionId", state.SessionID),
 		zap.Int("totalTurns", totalTurns),
+		zap.Int("skippedTurns", skipped),
 		zap.Int("verdictLen", len(verdict)),
 	)
 
@@ -292,6 +306,22 @@ func (o *Orchestrator) Run(ctx context.Context, state DebateState) (Script, erro
 	}
 
 	return script, nil
+}
+
+// maxSkippedTurns 是允许缺席的轮次上限。
+// 超过这个数说明不是偶发抖动(网络/解析),而是模型或凭证出了系统性问题,
+// 此时继续跑只会产出一场残缺的辩论。
+const maxSkippedTurns = 3
+
+// shouldAbortOnTurnError 决定某一轮失败后是否放弃整场。
+//
+// 裁决轮必须成功:没有 verdict 就没有片子,而且它要引用全场证据,
+// 用前面的发言硬凑一个结论等于让程序替模型下判断。
+func shouldAbortOnTurnError(speaker Speaker, skippedSoFar int) bool {
+	if speaker == Synthesizer {
+		return true
+	}
+	return skippedSoFar+1 > maxSkippedTurns
 }
 
 // planTurnCount 统计一个阶段计划的总轮次,用于日志与护栏测试。
@@ -318,7 +348,7 @@ func (o *Orchestrator) runTurn(ctx context.Context, state *DebateState, speaker 
 	// max_tokens=500 时 finish_reason=length、JSON 不闭合;1500 时 stop、约 250-420 token。
 	budget, retryBudget := o.tokenBudgets()
 	llmStart := time.Now()
-	raw, err := callLLM(o.cfg, combined, 0.8, budget)
+	raw, err := callLLM(ctx, o.cfg, combined, 0.8, budget)
 	if errors.Is(err, ai.ErrNoTextBlock) {
 		// thinking 把预算吃光:同预算重试没意义,直接用重试预算再来一次。
 		logger.Warn("thinking 占满预算,提高 max_tokens 重试",
@@ -327,7 +357,7 @@ func (o *Orchestrator) runTurn(ctx context.Context, state *DebateState, speaker 
 			zap.Int("budget", budget),
 			zap.Int("retryBudget", retryBudget),
 		)
-		raw, err = callLLM(o.cfg, combined, 0.8, retryBudget)
+		raw, err = callLLM(ctx, o.cfg, combined, 0.8, retryBudget)
 	}
 	llmLatency := time.Since(llmStart)
 	if err != nil {
@@ -359,7 +389,7 @@ func (o *Orchestrator) runTurn(ctx context.Context, state *DebateState, speaker 
 		)
 		// 最常见原因是输出被 max_tokens 截断。单轮失败会让整场作废,
 		// 所以用更大预算 + 更低温度重试一次,仍失败才放弃。
-		raw2, err2 := callLLM(o.cfg, combined, 0.4, retryBudget)
+		raw2, err2 := callLLM(ctx, o.cfg, combined, 0.4, retryBudget)
 		if err2 == nil {
 			if turn2, parseErr2 := parseTurn(raw2, speaker, phase); parseErr2 == nil {
 				logger.Info("解析失败后重试成功",
