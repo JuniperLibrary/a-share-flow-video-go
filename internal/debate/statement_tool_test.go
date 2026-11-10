@@ -2,6 +2,7 @@ package debate
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 )
 
@@ -124,5 +125,35 @@ func TestBalanceResultScalesNewAccounts(t *testing.T) {
 	}
 	if _, ok := got["应付职工薪酬"]; ok {
 		t.Error("null 科目不应出现(nil 与 0 是两回事)")
+	}
+}
+
+// 工具参数的类型因协议而异。只认 float64 时,传字符串 "4" 会静默回落到 2 期:
+// 模型以为拿到了年报数,实际没有,只能凭记忆补——2026-11-06 的 80.07 亿就这么来的。
+func TestArgIntAcceptsEveryJSONNumberShape(t *testing.T) {
+	cases := []struct {
+		name string
+		val  any
+		want int
+	}{
+		{"float64(JSON 默认)", float64(4), 4},
+		{"json.Number", json.Number("4"), 4},
+		{"字符串", "4", 4},
+		{"带空格字符串", " 4 ", 4},
+		{"int(直接调用)", 4, 4},
+		{"缺失回退默认", nil, 2},
+		{"非法值回退默认", "四期", 2},
+		{"零回退默认", float64(0), 2},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			args := map[string]any{}
+			if c.val != nil {
+				args["periods"] = c.val
+			}
+			if got := argInt(args, "periods", 2); got != c.want {
+				t.Errorf("argInt(%v) = %d, want %d", c.val, got, c.want)
+			}
+		})
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +24,8 @@ func (s *fetchStatementTool) Name() string { return "fetch_statement" }
 
 func (s *fetchStatementTool) Description() string {
 	return "拉取三大报表原始科目(最近 1-4 期,金额单位亿元):statement=cashflow|balance|income。" +
+		"periods 默认 2 期(本期+上期),要核对上一年年报口径必须显式传 4——" +
+		"否则拿不到年报数,只能凭记忆补数,而凭记忆补的数不该进结论。" +
 		"口径提示:cashflow 的\"经营活动现金流入合计\"含财务公司等金融业务科目" +
 		"(客户存款和同业存放款项净增加额、向央行借款净增加额等,可为负数)," +
 		"因此它可以小于\"销售商品提供劳务收到的现金\"。两者之差不是数据矛盾," +
@@ -122,10 +125,7 @@ func (s *fetchStatementTool) Execute(ctx context.Context, args map[string]any) (
 		return nil, fmt.Errorf("args.statement 只支持 cashflow/balance/income,收到 %q", statement)
 	}
 
-	periods := 2
-	if v, ok := args["periods"].(float64); ok && v > 0 {
-		periods = int(v)
-	}
+	periods := argInt(args, "periods", 2)
 	if periods > 4 {
 		periods = 4
 	}
@@ -196,6 +196,38 @@ func buildStatementResult(spec statementSpec, rows []map[string]any) []map[strin
 		out = append(out, item)
 	}
 	return out
+}
+
+// argInt 宽容解析工具参数里的整数。
+//
+// 模型的 tool call 参数经 JSON 反序列化后是 float64,但不同协议/客户端
+// 会给出 json.Number 甚至字符串 "4"。以前只认 float64,传 "4" 时静默
+// 回落到默认 2 期,于是"核对上一年年报"永远拿不到年报数——
+// 实测 2026-11-06 的一场辩论就是这样逼着模型凭记忆补出 80.07 亿。
+func argInt(args map[string]any, key string, def int) int {
+	v, ok := args[key]
+	if !ok {
+		return def
+	}
+	switch n := v.(type) {
+	case float64:
+		if n > 0 {
+			return int(n)
+		}
+	case int:
+		if n > 0 {
+			return n
+		}
+	case json.Number:
+		if i, err := n.Int64(); err == nil && i > 0 {
+			return int(i)
+		}
+	case string:
+		if i, err := strconv.Atoi(strings.TrimSpace(n)); err == nil && i > 0 {
+			return i
+		}
+	}
+	return def
 }
 
 func toFloat(v any) (float64, bool) {
