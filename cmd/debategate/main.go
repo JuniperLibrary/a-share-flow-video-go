@@ -41,22 +41,27 @@ type turnReport struct {
 }
 
 type gateReport struct {
-	GeneratedAt     string       `json:"generatedAt"`
-	Profile         string       `json:"profile"`
-	StockCode       string       `json:"stockCode"`
-	StockName       string       `json:"stockName"`
-	ReportPeriod    string       `json:"reportPeriod"`
-	ElapsedSec      int64        `json:"elapsedSec"`
-	Turns           int          `json:"turns"`
-	TotalChars      int          `json:"totalChars"`
-	VideoMinutes    float64      `json:"videoMinutes"`
-	MissingCount    int          `json:"missingEvidenceTurns"`
-	MathErrCount    int          `json:"mathErrorTurns"`
-	UnverifiedCount int          `json:"unverifiedAmountTurns"`
-	VerdictChars    int          `json:"verdictChars"`
-	SkippedTurns    int          `json:"skippedTurns"`
-	TurnDetails     []turnReport `json:"turnDetails"`
-	Verdict         string       `json:"verdict"`
+	GeneratedAt     string  `json:"generatedAt"`
+	Profile         string  `json:"profile"`
+	StockCode       string  `json:"stockCode"`
+	StockName       string  `json:"stockName"`
+	ReportPeriod    string  `json:"reportPeriod"`
+	ElapsedSec      int64   `json:"elapsedSec"`
+	Turns           int     `json:"turns"`
+	TotalChars      int     `json:"totalChars"`
+	VideoMinutes    float64 `json:"videoMinutes"`
+	MissingCount    int     `json:"missingEvidenceTurns"`
+	MathErrCount    int     `json:"mathErrorTurns"`
+	UnverifiedCount int     `json:"unverifiedAmountTurns"`
+	VerdictChars    int     `json:"verdictChars"`
+	SkippedTurns    int     `json:"skippedTurns"`
+	// Proposition 是主持人开场那句待证命题,以及它带没带算式、
+	// 第一位答者有没有复算同一条算式。命题没算法时,整场辩论就没有同一个靶子。
+	Proposition         string       `json:"proposition"`
+	PropositionFormula  bool         `json:"propositionFormula"`
+	PropositionAnswered bool         `json:"propositionAnswered"`
+	TurnDetails         []turnReport `json:"turnDetails"`
+	Verdict             string       `json:"verdict"`
 }
 
 func main() {
@@ -131,6 +136,12 @@ func main() {
 			report.MissingCount, report.MathErrCount, report.UnverifiedCount)
 		os.Exit(1)
 	}
+	// 命题这一关单独报:它不属于单轮四元组,而是"整场有没有同一个靶子"。
+	if !report.PropositionFormula || !report.PropositionAnswered {
+		fmt.Fprintf(os.Stderr, "\n门禁未通过: 命题缺算式=%v, 第一轮未复算命题=%v\n",
+			!report.PropositionFormula, !report.PropositionAnswered)
+		os.Exit(1)
+	}
 }
 
 func buildReport(code, name, period, profile string, elapsed time.Duration, script debate.Script) gateReport {
@@ -175,6 +186,10 @@ func buildReport(code, name, period, profile string, elapsed time.Duration, scri
 	}
 	// 4.5 字/秒是 TTS 实测的稳定语速,用来把字数折算成成片时长。
 	report.VideoMinutes = float64(report.TotalChars) / 4.5 / 60
+	prop := debate.CheckProposition(script.Turns)
+	report.Proposition = prop.Proposition
+	report.PropositionFormula = prop.HasFormula
+	report.PropositionAnswered = prop.Answered
 	return report
 }
 
@@ -200,6 +215,16 @@ func printReport(r gateReport) {
 	}
 	fmt.Printf("\n=== %s 档 %d 轮, %ds, 总字数 %d, 成片约 %.1f 分钟, 缺项 %d 轮, 算式错 %d 轮, 无出处 %d 轮 ===\n",
 		r.Profile, r.Turns, r.ElapsedSec, r.TotalChars, r.VideoMinutes, r.MissingCount, r.MathErrCount, r.UnverifiedCount)
+	if r.Proposition != "" {
+		status := "命题=未复算"
+		switch {
+		case !r.PropositionFormula:
+			status = "命题=缺算式"
+		case r.PropositionAnswered:
+			status = "命题=已复算"
+		}
+		fmt.Printf("命题: %s\n  -> %s\n", r.Proposition, status)
+	}
 	if r.SkippedTurns > 0 {
 		// 缺席轮次不判失败(成片仍然完整),但必须让人看见,
 		// 否则会把一场残缺的辩论当成正常产出存档。

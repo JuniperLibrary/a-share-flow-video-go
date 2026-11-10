@@ -83,3 +83,19 @@ func TestPromptEnforcesRuntimeConstraints(t *testing.T) {
 		t.Error("缺少 citations 不计字数,模型会把复算全塞正文")
 	}
 }
+
+// 2026-11-07 的 v3 实跑里主持人写「经营现金流支撑的部分不低于 90%」,
+// 没给算法;Bull 于是复算了另一个指标「销售收现/营收=1.077」,
+// 前两轮完全没对上题。命题必须自带算式,后面才有同一个靶子。
+func TestPropositionMustCarryFormula(t *testing.T) {
+	for _, want := range []string{"可复算的指标", "÷", "阈值"} {
+		if !strings.Contains(moderatorSystemPrompt, want) {
+			t.Errorf("主持人开场缺少 %q 要求", want)
+		}
+	}
+	for _, want := range []string{"先答命题", "同一个分子", "同一个分母"} {
+		if !strings.Contains(evidenceRules, want) {
+			t.Errorf("共享证据纪律缺少 %q(回答者会换成自己顺手的指标)", want)
+		}
+	}
+}

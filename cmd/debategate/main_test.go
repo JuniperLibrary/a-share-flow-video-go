@@ -13,7 +13,8 @@ func TestBuildReportCountsGaps(t *testing.T) {
 	script := debate.Script{
 		Turns: []debate.Turn{
 			// 主持人不受证据纪律约束:没有算式也不算缺项。
-			{Index: 0, Phase: debate.PhaseOpen, Speaker: debate.Moderator, Text: "命题:现金流覆盖率不低于 1.1。"},
+			{Index: 0, Phase: debate.PhaseOpen, Speaker: debate.Moderator,
+				Text: "命题:销售收现/营收 = 1435.23÷1332.84 = 1.077,本期是否 ≥ 1.0。"},
 			// 合格轮。
 			{Index: 1, Phase: debate.PhaseOpening, Speaker: debate.Bull,
 				Text: "销售收现1435.23亿÷营收1332.84亿=1.077,增长有现金支撑。若收现比跌破1.0,此论作废。"},
@@ -55,13 +56,36 @@ func TestBuildReportCountsGaps(t *testing.T) {
 func TestBuildReportCleanRun(t *testing.T) {
 	script := debate.Script{
 		Turns: []debate.Turn{
-			{Index: 0, Speaker: debate.Moderator, Text: "命题:覆盖率不低于 1.1。"},
-			{Index: 1, Speaker: debate.Bull, Text: "840.59-70.9=769.69亿。若跌破1.0,此论作废。"},
+			{Index: 0, Phase: debate.PhaseOpen, Speaker: debate.Moderator,
+				Text: "命题:现金/归母 = 840.59÷644.67 = 1.30,本期是否 ≥ 1.1。"},
+			{Index: 1, Speaker: debate.Bull, Text: "复算 840.59÷644.67=1.30,利润被现金覆盖。若跌破1.0,此论作废。"},
 		},
 	}
 	got := buildReport("600519", "贵州茅台", "2026-09-30", "quick", time.Minute, script)
 	if got.MissingCount != 0 || got.MathErrCount != 0 {
 		t.Errorf("合格产出被误判: 缺项 %d, 算式错 %d", got.MissingCount, got.MathErrCount)
+	}
+	if !got.PropositionFormula || !got.PropositionAnswered {
+		t.Errorf("命题自带算式且被复算,不该判失败: %+v", got)
+	}
+}
+
+// 命题没有算式时,每个人都在打自己的靶子(2026-11-07 的 quick 产出就是这样:
+// 主持人问"现金支撑",Bull 答"收现比"),门禁必须把它标出来。
+func TestBuildReportFlagsUnansweredProposition(t *testing.T) {
+	script := debate.Script{
+		Turns: []debate.Turn{
+			{Index: 0, Phase: debate.PhaseOpen, Speaker: debate.Moderator, Text: "命题:本期现金支撑不低于 90%。"},
+			{Index: 1, Phase: debate.PhaseOpening, Speaker: debate.Bull,
+				Text: "销售收现1435.23亿÷营收1332.84亿=1.077。若跌破1.0,此论作废。"},
+		},
+	}
+	got := buildReport("600519", "贵州茅台", "2026-09-30", "quick", time.Minute, script)
+	if got.PropositionFormula {
+		t.Fatal("没有算式的命题不该被判成有算式")
+	}
+	if got.PropositionAnswered {
+		t.Fatal("命题没算法时不存在复算,不该判成已复算")
 	}
 }
 
