@@ -104,3 +104,35 @@ func TestEvidenceGapEmpty(t *testing.T) {
 		t.Error("缺算式不应为 Empty")
 	}
 }
+
+// 溯源只在拿到池子时启用:池子不完整就判断"没有出处"必然误判。
+func TestCheckEvidenceWithSourcesOnlyTracesVerdict(t *testing.T) {
+	verdict := "结论:持有。最强证据:经营现金流840.59亿÷归母净利644.67亿=1.30。" +
+		"最致命反证:2025年报实际仅80.07亿,短11.65亿。检验卡:若跌破1.0,作废。"
+	sources := []string{"经营现金流840.59亿,归母净利644.67亿"}
+
+	got := checkEvidenceWithSources(Synthesizer, verdict, sources)
+	if len(got.Unverified) != 2 {
+		t.Fatalf("Unverified = %v, 期望 2 项(80.07、11.65)", got.Unverified)
+	}
+	if got.Empty() {
+		t.Error("有无出处金额时不能判为合格,否则不会触发返工")
+	}
+	if got := checkEvidenceWithSources(Synthesizer, verdict, nil); len(got.Unverified) != 0 {
+		t.Errorf("没有溯源池却做了判断: %v", got.Unverified)
+	}
+	// 非裁决角色不查:他们的职责就是引入新的科目与工具结果。
+	if got := checkEvidenceWithSources(Bull, verdict, sources); len(got.Unverified) != 0 {
+		t.Errorf("多方被误查了溯源: %v", got.Unverified)
+	}
+}
+
+// 返工提示必须点名具体金额,否则模型不知道该删哪个数。
+func TestInstructionListsUnverifiedAmounts(t *testing.T) {
+	got := evidenceGap{FourSection: true, Unverified: []string{"80.07亿", "11.65亿"}}.Instruction()
+	for _, want := range []string{"找不到出处", "80.07亿", "11.65亿", "四段式", "240 字上限"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("返工提示缺少 %q\n实际:\n%s", want, got)
+		}
+	}
+}

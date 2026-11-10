@@ -17,6 +17,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/a-share-flow-video-go/internal/config"
@@ -33,25 +34,29 @@ type turnReport struct {
 	HasFormula   bool     `json:"hasFormula"`
 	HasFalsifier bool     `json:"hasFalsifier"`
 	MathIssues   []string `json:"mathIssues,omitempty"`
-	Text         string   `json:"text"`
+	// Unverified 是裁决段里找不到出处的金额。非空即门禁失败:
+	// 这是比算错更危险的一类错误——算错还能查算式,造数连查的地方都没有。
+	Unverified []string `json:"unverifiedAmounts,omitempty"`
+	Text       string   `json:"text"`
 }
 
 type gateReport struct {
-	GeneratedAt  string       `json:"generatedAt"`
-	Profile      string       `json:"profile"`
-	StockCode    string       `json:"stockCode"`
-	StockName    string       `json:"stockName"`
-	ReportPeriod string       `json:"reportPeriod"`
-	ElapsedSec   int64        `json:"elapsedSec"`
-	Turns        int          `json:"turns"`
-	TotalChars   int          `json:"totalChars"`
-	VideoMinutes float64      `json:"videoMinutes"`
-	MissingCount int          `json:"missingEvidenceTurns"`
-	MathErrCount int          `json:"mathErrorTurns"`
-	VerdictChars int          `json:"verdictChars"`
-	SkippedTurns int          `json:"skippedTurns"`
-	TurnDetails  []turnReport `json:"turnDetails"`
-	Verdict      string       `json:"verdict"`
+	GeneratedAt     string       `json:"generatedAt"`
+	Profile         string       `json:"profile"`
+	StockCode       string       `json:"stockCode"`
+	StockName       string       `json:"stockName"`
+	ReportPeriod    string       `json:"reportPeriod"`
+	ElapsedSec      int64        `json:"elapsedSec"`
+	Turns           int          `json:"turns"`
+	TotalChars      int          `json:"totalChars"`
+	VideoMinutes    float64      `json:"videoMinutes"`
+	MissingCount    int          `json:"missingEvidenceTurns"`
+	MathErrCount    int          `json:"mathErrorTurns"`
+	UnverifiedCount int          `json:"unverifiedAmountTurns"`
+	VerdictChars    int          `json:"verdictChars"`
+	SkippedTurns    int          `json:"skippedTurns"`
+	TurnDetails     []turnReport `json:"turnDetails"`
+	Verdict         string       `json:"verdict"`
 }
 
 func main() {
@@ -121,8 +126,9 @@ func main() {
 		fmt.Printf("\n完整报告已写入 %s\n", *outPath)
 	}
 
-	if report.MissingCount > 0 || report.MathErrCount > 0 {
-		fmt.Fprintf(os.Stderr, "\n门禁未通过: 缺证据 %d 轮, 算式算错 %d 轮\n", report.MissingCount, report.MathErrCount)
+	if report.MissingCount > 0 || report.MathErrCount > 0 || report.UnverifiedCount > 0 {
+		fmt.Fprintf(os.Stderr, "\n门禁未通过: 缺证据 %d 轮, 算式算错 %d 轮, 裁决段无出处 %d 轮\n",
+			report.MissingCount, report.MathErrCount, report.UnverifiedCount)
 		os.Exit(1)
 	}
 }
@@ -149,6 +155,7 @@ func buildReport(code, name, period, profile string, elapsed time.Duration, scri
 			Chars:        detail.Chars,
 			HasFormula:   detail.HasFormula,
 			HasFalsifier: detail.HasFalsifier,
+			Unverified:   t.UnverifiedAmounts,
 			Text:         t.Text,
 		}
 		for _, issue := range detail.MathIssues {
@@ -160,6 +167,9 @@ func buildReport(code, name, period, profile string, elapsed time.Duration, scri
 		}
 		if len(detail.MathIssues) > 0 {
 			report.MathErrCount++
+		}
+		if len(t.UnverifiedAmounts) > 0 {
+			report.UnverifiedCount++
 		}
 		report.TurnDetails = append(report.TurnDetails, tr)
 	}
@@ -177,13 +187,19 @@ func printReport(r gateReport) {
 		if len(t.MathIssues) > 0 {
 			flagText += fmt.Sprintf(" 算式错=%d", len(t.MathIssues))
 		}
+		if len(t.Unverified) > 0 {
+			flagText += " 无出处=" + strings.Join(t.Unverified, ",")
+		}
 		fmt.Printf("[%02d %-10s %-11s %3d字 %s] %s\n", t.Index, t.Phase, t.Speaker, t.Chars, flagText, t.Text)
 		for _, issue := range t.MathIssues {
 			fmt.Printf("    ! %s\n", issue)
 		}
+		if len(t.Unverified) > 0 {
+			fmt.Printf("    ! 这些金额在财报原文与前序发言里都没有出处,不得作为论据\n")
+		}
 	}
-	fmt.Printf("\n=== %s 档 %d 轮, %ds, 总字数 %d, 成片约 %.1f 分钟, 缺项 %d 轮, 算式错 %d 轮 ===\n",
-		r.Profile, r.Turns, r.ElapsedSec, r.TotalChars, r.VideoMinutes, r.MissingCount, r.MathErrCount)
+	fmt.Printf("\n=== %s 档 %d 轮, %ds, 总字数 %d, 成片约 %.1f 分钟, 缺项 %d 轮, 算式错 %d 轮, 无出处 %d 轮 ===\n",
+		r.Profile, r.Turns, r.ElapsedSec, r.TotalChars, r.VideoMinutes, r.MissingCount, r.MathErrCount, r.UnverifiedCount)
 	if r.SkippedTurns > 0 {
 		// 缺席轮次不判失败(成片仍然完整),但必须让人看见,
 		// 否则会把一场残缺的辩论当成正常产出存档。

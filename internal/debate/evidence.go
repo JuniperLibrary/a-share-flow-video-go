@@ -30,10 +30,12 @@ type evidenceGap struct {
 	// FourSection 表示这一轮正文是四段式(裁决者)。
 	// 返工提示不能对它要求"三句式",那会把结论结构改坏。
 	FourSection bool
+	// Unverified 是裁决段里找不到出处的金额(只在拿到溯源池时检查)。
+	Unverified []string
 }
 
 func (g evidenceGap) Empty() bool {
-	return !g.NeedFormula && !g.NeedFalsifier && len(g.BadMath) == 0
+	return !g.NeedFormula && !g.NeedFalsifier && len(g.BadMath) == 0 && len(g.Unverified) == 0
 }
 
 // Instruction 生成返工要求,直接拼到原 prompt 后面。
@@ -56,10 +58,28 @@ func (g evidenceGap) Instruction() string {
 			b.WriteString("  · " + issue.String() + "\n")
 		}
 	}
+	if len(g.Unverified) > 0 {
+		b.WriteString("- 下面这些金额在财报原文与前序发言里都找不到出处,不得作为论据:\n")
+		for i, amount := range g.Unverified {
+			if i >= 3 {
+				break
+			}
+			b.WriteString("  · " + amount + "\n")
+		}
+		b.WriteString("  要么删掉相关表述,要么换成有出处、可复算的数字。\n")
+	}
 	if g.FourSection {
 		b.WriteString("保持四段式结构与 240 字上限。四个小标题必须逐字保留:\n")
 		b.WriteString("  结论: / 最强证据: / 最致命反证: / 检验卡:\n")
-		b.WriteString("只改算错的数字,不得更换论据或指标,不得新增论据。\n")
+		switch {
+		case len(g.Unverified) > 0 && len(g.BadMath) > 0:
+			b.WriteString("算错的算式只改结果;无出处的金额删掉或换成有出处的数字。其余文字逐字保留。\n")
+		case len(g.Unverified) > 0:
+			// 这里不能写"不得更换论据":删掉一个编造的金额本身就会改变论据。
+			b.WriteString("除上面点名要处理的无出处金额外,其余文字逐字保留,结论与检验卡不动。\n")
+		default:
+			b.WriteString("除上面要求修正的数字外,其余文字逐字保留,不得更换论据或指标。\n")
+		}
 	} else {
 		b.WriteString("保持三句式与字数上限,不得引入上一轮没有的新数字,不得新增第四句。\n")
 	}
@@ -89,6 +109,19 @@ func checkEvidence(speaker Speaker, text string) evidenceGap {
 		NeedFalsifier: !evidenceTriggerRe.MatchString(text),
 		BadMath:       checkArithmetic(text),
 	}
+}
+
+// checkEvidenceWithSources 在 checkEvidence 之上补数字溯源。
+//
+// sources 为空时不做溯源:没有完整溯源池就判断"这个数没有出处"必然误判,
+// 而误判会让每轮多烧一次模型调用。调用方(orchestrator)必须传
+// 财报原文 + 前序发言 + 工具结果三部分。
+func checkEvidenceWithSources(speaker Speaker, text string, sources []string) evidenceGap {
+	gap := checkEvidence(speaker, text)
+	if speaker == Synthesizer && len(sources) > 0 {
+		gap.Unverified = unverifiedAmounts(text, sources...)
+	}
+	return gap
 }
 
 // TurnInspection 是一轮正文的证据体检结果。
@@ -138,8 +171,12 @@ func buildEvidenceRetryPrompt(basePrompt, prevText string, gap evidenceGap) stri
 // 只在确实缺项时才多调一次模型(实测每场 2-3 轮,约 1 分钟),
 // 返工结果必须自己也合规才替换,否则保留原文——
 // 宁可少一条算式,也不要让返工把已经算对的内容改坏。
-func (o *Orchestrator) enforceEvidence(ctx context.Context, basePrompt string, turn Turn, speaker Speaker, phase Phase) Turn {
-	gap := checkEvidence(speaker, turn.Text)
+//
+// sources 是数字溯源的池子(财报原文/前序发言/工具结果)。
+// 返工失败时把残留的无出处金额记到 Turn 上,门禁据此判失败:
+// 保留原文是无奈之举,但"留下了问题"必须被看见,不能静默通过。
+func (o *Orchestrator) enforceEvidence(ctx context.Context, basePrompt string, turn Turn, speaker Speaker, phase Phase, sources []string) Turn {
+	gap := checkEvidenceWithSources(speaker, turn.Text, sources)
 	if gap.Empty() {
 		return turn
 	}
@@ -150,24 +187,29 @@ func (o *Orchestrator) enforceEvidence(ctx context.Context, basePrompt string, t
 		zap.Bool("needFormula", gap.NeedFormula),
 		zap.Bool("needFalsifier", gap.NeedFalsifier),
 		zap.Int("badMath", len(gap.BadMath)),
+		zap.Int("unverified", len(gap.Unverified)),
 	)
 
 	_, retryBudget := o.tokenBudgets()
 	raw, err := callLLM(ctx, o.cfg, buildEvidenceRetryPrompt(basePrompt, turn.Text, gap), 0.3, retryBudget)
 	if err != nil {
 		logger.Warn("返工调用失败,保留原文", zap.Error(err))
+		turn.UnverifiedAmounts = gap.Unverified
 		return turn
 	}
 	rebuilt, err := parseTurn(raw, speaker, phase)
 	if err != nil {
 		logger.Warn("返工结果解析失败,保留原文", zap.Error(err))
+		turn.UnverifiedAmounts = gap.Unverified
 		return turn
 	}
-	if !checkEvidence(speaker, rebuilt.Text).Empty() {
+	if rebuiltGap := checkEvidenceWithSources(speaker, rebuilt.Text, sources); !rebuiltGap.Empty() {
 		logger.Warn("返工结果仍不合规,保留原文",
 			zap.String("speaker", string(speaker)),
 			zap.Int("textLen", len([]rune(rebuilt.Text))),
+			zap.Int("unverified", len(rebuiltGap.Unverified)),
 		)
+		turn.UnverifiedAmounts = gap.Unverified
 		return turn
 	}
 

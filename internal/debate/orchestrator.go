@@ -342,6 +342,9 @@ func (o *Orchestrator) runTurn(ctx context.Context, state *DebateState, speaker 
 	)
 
 	combined := buildTurnPrompt(state, speaker, phase, allowTools)
+	// 溯源池:财报原文 + 前序发言 + 已核实工具结果。
+	// 裁决者只能称量这些,不允许凭空引入新金额。
+	sources := []string{state.ReportText, formatTranscript(state.Turns), state.ToolResults}
 
 	// 证据型轮次要求 60-120 字正文 + citations(科目/算式/期间),500 token 会把 JSON 截断,
 	// 表现为 "unexpected end of JSON input"。实测(2026-11, qwen-plus/qwen-max 直连):
@@ -398,13 +401,13 @@ func (o *Orchestrator) runTurn(ctx context.Context, state *DebateState, speaker 
 					zap.Int("rawLen2", len(raw2)),
 				)
 				turn2.Index = len(state.Turns)
-				return o.enforceEvidence(ctx, combined, turn2, speaker, phase), nil
+				return o.enforceEvidence(ctx, combined, turn2, speaker, phase, sources), nil
 			}
 		}
 		return Turn{}, err
 	}
 	turn.Index = len(state.Turns)
-	return o.enforceEvidence(ctx, combined, turn, speaker, phase), nil
+	return o.enforceEvidence(ctx, combined, turn, speaker, phase, sources), nil
 }
 
 // buildTurnPrompt 组装单轮 prompt。抽成独立函数是为了能单测:

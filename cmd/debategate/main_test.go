@@ -64,3 +64,26 @@ func TestBuildReportCleanRun(t *testing.T) {
 		t.Errorf("合格产出被误判: 缺项 %d, 算式错 %d", got.MissingCount, got.MathErrCount)
 	}
 }
+
+// 裁决段的无出处金额必须计入失败:造数比算错更危险,
+// 而它不会表现为"缺项"或"算式错",漏计就等于门禁放行。
+func TestBuildReportCountsUnverifiedVerdictAmounts(t *testing.T) {
+	script := debate.Script{
+		Turns: []debate.Turn{
+			{Index: 0, Speaker: debate.Bull, Text: "840.59−644.67=195.92亿。若跌破1.0,此论作废。"},
+			{Index: 1, Speaker: debate.Synthesizer, Text: "结论:持有。2025年报实际仅80.07亿。检验卡:若跌破1.0,作废。",
+				UnverifiedAmounts: []string{"80.07亿"}},
+		},
+	}
+	got := buildReport("600519", "贵州茅台", "2026-09-30", "deep", 90*time.Second, script)
+	if got.UnverifiedCount != 1 {
+		t.Errorf("UnverifiedCount = %d, 期望 1", got.UnverifiedCount)
+	}
+	if got.MissingCount != 0 || got.MathErrCount != 0 {
+		t.Errorf("无出处金额被算进了别的判据: 缺项 %d, 算式错 %d", got.MissingCount, got.MathErrCount)
+	}
+	last := got.TurnDetails[len(got.TurnDetails)-1]
+	if len(last.Unverified) != 1 || last.Unverified[0] != "80.07亿" {
+		t.Errorf("报告没有带出具体金额: %v", last.Unverified)
+	}
+}

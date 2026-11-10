@@ -48,6 +48,9 @@ type Turn struct {
 	Emotion   string     `json:"emotion,omitempty"`
 	Citations []Citation `json:"citations,omitempty"`
 	ToolCalls []ToolCall `json:"toolCalls,omitempty"`
+	// UnverifiedAmounts 记录返工后仍然找不到出处的金额(仅裁决者检查)。
+	// 非空表示这一轮保留了原文但问题没解决,门禁据此判失败。
+	UnverifiedAmounts []string `json:"unverifiedAmounts,omitempty"`
 }
 
 type Script struct {

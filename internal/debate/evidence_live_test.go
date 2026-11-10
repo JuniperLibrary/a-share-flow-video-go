@@ -60,7 +60,7 @@ func TestEnforceEvidenceLive(t *testing.T) {
 		t.Fatal("测试样本本身就合规,改样本再跑")
 	}
 
-	got := o.enforceEvidence(context.Background(), prompt, deficient, Risk, PhaseRebuttal)
+	got := o.enforceEvidence(context.Background(), prompt, deficient, Risk, PhaseRebuttal, nil)
 	t.Logf("返工前: %s", deficient.Text)
 	t.Logf("返工后: %s", got.Text)
 
@@ -123,7 +123,7 @@ func TestEnforceEvidenceSynthesizerLive(t *testing.T) {
 		t.Fatal("样本里的算式错误没被识别,测试前提不成立")
 	}
 
-	got := o.enforceEvidence(context.Background(), prompt, deficient, Synthesizer, PhaseSynthesis)
+	got := o.enforceEvidence(context.Background(), prompt, deficient, Synthesizer, PhaseSynthesis, nil)
 	t.Logf("返工前: %s", deficient.Text)
 	t.Logf("返工后: %s", got.Text)
 
@@ -142,5 +142,77 @@ func TestEnforceEvidenceSynthesizerLive(t *testing.T) {
 	// 换成"840.59÷644.67 充足"就是另一条论据了,结论的说服力随之改变。
 	if !strings.Contains(got.Text, "769.69") {
 		t.Errorf("返工把论据换掉了,原文的 769.69 不见了: %s", got.Text)
+	}
+}
+
+// 数字溯源的返工必须真的把"没有出处的金额"改掉,而不是换个说法保留。
+// 用 2026-11-06 的真实缺陷样本:模型凭记忆写"2025 年报实际仅 80.07 亿"。
+func TestEnforceEvidenceUnverifiedVerdictLive(t *testing.T) {
+	if os.Getenv("LIVE_AI_TEST") != "1" {
+		t.Skip("需要 LIVE_AI_TEST=1 与 DEBATE_LIVE_KEY")
+	}
+	key := os.Getenv("DEBATE_LIVE_KEY")
+	if key == "" {
+		t.Skip("需要 DEBATE_LIVE_KEY")
+	}
+	base := os.Getenv("DEBATE_LIVE_BASE")
+	if base == "" {
+		base = "https://api.deepseek.com"
+	}
+	model := os.Getenv("DEBATE_LIVE_MODEL")
+	if model == "" {
+		model = "deepseek-chat"
+	}
+
+	cfg := config.AIConfig{
+		APIKey:           key,
+		BaseURL:          base,
+		Model:            model,
+		TimeoutSec:       120,
+		MaxRetries:       1,
+		RetryBaseDelayMs: 1000,
+	}
+	o := NewOrchestrator(cfg)
+
+	report := "贵州茅台 2026 三季报:营业收入 1332.84 亿(+1.8%),归母净利润 644.67 亿(-0.2%)," +
+		"经营活动现金流净额 840.59 亿,合同负债 20.84 亿,应收账款 3.65 亿。"
+	transcript := "Bull: 经营现金流 840.59 亿÷归母净利 644.67 亿=1.30,利润全部变现。\n" +
+		"Bear: 现金桥缺口 195.92 亿,需期初合同负债 91.72 亿才能闭合。"
+	state := &DebateState{
+		ReportText: report,
+		StockName:  "贵州茅台",
+		StockCode:  "600519",
+	}
+	prompt := buildTurnPrompt(state, Synthesizer, PhaseSynthesis, false)
+
+	deficient := Turn{
+		Text: "结论:持有。最强证据:经营现金流840.59亿÷归母净利644.67亿=1.30。" +
+			"最致命反证:Bull需期初合同负债91.72亿,2025年报实际仅80.07亿,短11.65亿。" +
+			"检验卡:年报收现比若跌破1.0,本次结论作废。",
+		Speaker: Synthesizer,
+		Phase:   PhaseSynthesis,
+	}
+	if got := unverifiedAmounts(deficient.Text, report, transcript); len(got) == 0 {
+		t.Fatal("样本里的无出处金额没被识别,测试前提不成立")
+	}
+
+	got := o.enforceEvidence(context.Background(), prompt, deficient, Synthesizer, PhaseSynthesis,
+		[]string{report, transcript})
+	t.Logf("返工前: %s", deficient.Text)
+	t.Logf("返工后: %s", got.Text)
+
+	if leftover := unverifiedAmounts(got.Text, report, transcript); len(leftover) > 0 {
+		t.Errorf("返工后仍有无法溯源的金额: %v\n正文: %s", leftover, got.Text)
+	}
+	if len(got.UnverifiedAmounts) > 0 {
+		t.Errorf("返工成功却记录了残留: %v", got.UnverifiedAmounts)
+	}
+	if got.Text == deficient.Text {
+		t.Error("正文没变化,返工没有真正执行")
+	}
+	for _, want := range []string{"结论", "最强证据", "最致命反证", "检验"} {
+		if !strings.Contains(got.Text, want) {
+			t.Errorf("返工后丢了四段式中的 %q: %s", want, got.Text)
+		}
 	}
 }
